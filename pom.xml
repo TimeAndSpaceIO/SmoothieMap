@@ -15,8 +15,7 @@
   ~      along with this program.  If not, see <http://www.gnu.org/licenses />.
   -->
 
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
@@ -27,7 +26,7 @@
     </parent>
 
     <artifactId>smoothie-map</artifactId>
-    <version>1.0-SNAPSHOT</version>
+    <version>1.0</version>
     <name>SmoothieMap</name>
     <description>SmoothieMap is a java.util.Map implementation with worst put(k, v) operation
         latencies more than 100 times smaller than in ordinary hash table implementations like
@@ -112,7 +111,7 @@
         <connection>scm:git:git@github.com:OpenHFT/SmoothieMap.git</connection>
         <developerConnection>scm:git:git@github.com:OpenHFT/SmoothieMap.git
         </developerConnection>
-        <tag>master</tag>
+        <tag>smoothie-map-1.0</tag>
     </scm>
 
 </project>
