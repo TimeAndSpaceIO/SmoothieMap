@@ -123,8 +123,8 @@ Points against:
 
 ### Quick start
 
-Add the [`net.openhft:smoothie-map:1.0-rc`
-](http://search.maven.org/#artifactdetails%7Cnet.openhft%7Csmoothie-map%7C1.0-rc%7Cjar) dependency
+Add the [`net.openhft:smoothie-map:1.0`
+](http://search.maven.org/#artifactdetails%7Cnet.openhft%7Csmoothie-map%7C1.0%7Cjar) dependency
 to your project (you can copy a snippet for your favourite build system on the linked page).
 
 E. g. Maven:
@@ -132,7 +132,7 @@ E. g. Maven:
     <dependency>
       <groupId>net.openhft</groupId>
       <artifactId>smoothie-map</artifactId>
-      <version>1.0-rc</version>
+      <version>1.0</version>
     </dependency>
 
 Then use it in Java:
