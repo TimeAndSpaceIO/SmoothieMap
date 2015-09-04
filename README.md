@@ -49,7 +49,7 @@ the same ballpark, regardless map size), unlike, e. g. `java.util.TreeMap`.
 
 If you are curious how this has been achieved and what algorithm is behind `SmoothieMap`, read the
 implementation comment in [`SmoothieMap`
-class](https://github.com/OpenHFT/SmoothieMap/blob/master/src/main/java/net/openhft/SmoothieMap.java)
+class](https://github.com/OpenHFT/SmoothieMap/blob/master/src/main/java/net/openhft/smoothie/SmoothieMap.java)
 (on top of the class body).
 
 ### Other "real-time `Map`" field players
