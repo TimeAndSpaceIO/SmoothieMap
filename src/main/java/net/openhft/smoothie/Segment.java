@@ -73,6 +73,10 @@ class Segment<K, V> extends SegmentPrimitiveArea implements Cloneable {
         return (slotIndex + 1) & (HASH_TABLE_SIZE - 1);
     }
 
+    static long prevSlotIndex(long slotIndex) {
+        return (slotIndex - 1) & (HASH_TABLE_SIZE - 1);
+    }
+
     final long readSlot(long slotIndex) {
         return U.getChar(this, HASH_TABLE_OFFSET + (slotIndex << 1));
     }
@@ -319,15 +323,21 @@ class Segment<K, V> extends SegmentPrimitiveArea implements Cloneable {
         throw new ConcurrentModificationException("Unable to find entry in segment's hash table");
     }
 
-    final void remove(SmoothieMap<K, V> map, long slotIndex, long allocIndex) {
+    /**
+     * @return true if shifted
+     */
+    final boolean remove(SmoothieMap<K, V> map, long slotIndex, long allocIndex) {
         eraseAlloc(allocIndex);
-        removeButAlloc(map, slotIndex);
+        return removeButAlloc(map, slotIndex);
     }
 
-    private void removeButAlloc(SmoothieMap<K, V> map, long slotIndex) {
-        shiftRemove(slotIndex);
+    /**
+     * @return true if shifted
+     */
+    private boolean removeButAlloc(SmoothieMap<K, V> map, long slotIndex) {
         map.size--;
         map.modCount++;
+        return slotIndex != shiftRemove(slotIndex);
     }
 
     final V compute(SmoothieMap<K, V> map, long hash, K key,
@@ -593,7 +603,8 @@ class Segment<K, V> extends SegmentPrimitiveArea implements Cloneable {
              slotIndex = nextSlotIndex(slotIndex)) {
             if ((slot = readSlot(slotIndex)) != 0) {
                 if (filter.test(readKey((allocIndex = allocIndex(slot))), readValue(allocIndex))) {
-                    remove(map, slotIndex, allocIndex);
+                    if (remove(map, slotIndex, allocIndex))
+                        slotIndex = prevSlotIndex(slotIndex);
                     modCount++;
                 }
             }
