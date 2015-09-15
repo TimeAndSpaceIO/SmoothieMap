@@ -380,8 +380,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements Cloneable, S
     private transient Set<Entry<K, V>> entrySet;
 
     /**
-     * Creates a new, empty {@code SmoothieMap} which is able to accommodate 63 entries without the
-     * need to dynamically resize.
+     * Creates a new, empty {@code SmoothieMap}.
      */
     public SmoothieMap() {
         this(MAX_ROUNDED_UP_AVERAGE_ENTRIES_PER_SEGMENT);
