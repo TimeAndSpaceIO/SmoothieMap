@@ -189,7 +189,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements Cloneable, S
      * For our ranges of load factor:
      *  average entries/segment: - load factor - av. success checks - av. unsuccess. checks
      * 32 - 0.25 - 1.17 - 1.39
-     * 63 - 0.41 - 1.48 - 2.43
+     * 63 - 0.49 - 1.48 - 2.43
      *
      * ~~~
      *
