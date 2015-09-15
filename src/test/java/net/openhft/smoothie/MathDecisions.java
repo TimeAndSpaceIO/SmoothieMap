@@ -30,15 +30,19 @@ public class MathDecisions {
     public static void main(String[] args) {
         int min = SmoothieMap.MIN_ROUNDED_UP_AVERAGE_ENTRIES_PER_SEGMENT;
         int max = SmoothieMap.MAX_ROUNDED_UP_AVERAGE_ENTRIES_PER_SEGMENT;
-        printAllocCapacities(min, max);
-        printSegmentsToScaleSegmentsArrayFrom(min, max);
-        printFootprints(min, max);
+        for (int refSize : new int[] {4, 8}) {
+            System.out.println("REF SIZE " + refSize);
+            printAllocCapacities(min, max, refSize);
+            printSegmentsToScaleSegmentsArrayFrom(min, max, refSize);
+            printFootprints(min, max, refSize);
+            printOptimalCaps(refSize);
+        }
     }
 
-    private static void printAllocCapacities(int min, int max) {
+    private static void printAllocCapacities(int min, int max, int refSize) {
         System.out.println("Alloc capacities:");
         for (int i = min; i <= max; i++) {
-            System.out.printf("%d, ", cap(i));
+            System.out.printf("%d, ", cap(i, refSize));
         }
         System.out.println();
     }
@@ -50,12 +54,12 @@ public class MathDecisions {
      * segment. In this case we are going to allocate doubled (quadrupled, eight-ed) segments array
      * up front, to avoid even little pause and garbaging previous segments array.
      */
-    private static void printSegmentsToScaleSegmentsArrayFrom(int min, int max) {
+    private static void printSegmentsToScaleSegmentsArrayFrom(int min, int max, int refSize) {
         System.out.println("Segments to double (quadruple, eight) segments from:");
         for (int d = 1; d <= 4; d *= 2) {
             for (int i = min; i <= max; i++) {
                 PoissonDistribution p = new PoissonDistribution(i / (1.0 * d));
-                int cap = cap(i);
+                int cap = cap(i, refSize);
                 System.out.printf("%d, ",
                         (long) (THRESHOLD / (1.0 - p.cumulativeProbability(cap))));
             }
@@ -63,56 +67,65 @@ public class MathDecisions {
         }
     }
 
-    private static void printFootprints(int min, int max) {
+    private static void printFootprints(int min, int max, int refSize) {
         System.out.println("Footprints:");
         for (int i = min; i <= max; i++) {
             System.out.println("average entries/segment: " + i + " " +
-                    "4, double: " + footprint(i, 4, 1) +
-                    " 4, quad: " + footprint(i, 4, 2) +
-                    " 8, double: " + footprint(i, 8, 1) +
-                    " 8, quad: " + footprint(i, 8, 2));
+                    " double: " + footprint(i, refSize, 1) +
+                    " quad: " + footprint(i, refSize, 2));
         }
         System.out.println("Footprint if size not specified:");
-        for (int refSize : new int[] {4, 8}) {
-            double minF = Double.MAX_VALUE, maxF = Double.MIN_VALUE;
-            int minE = 0, maxE = 0;
-            for (int i = cap(max) / 2; i <= cap(max); i++) {
-                double f = footprint(i, refSize, 1, max);
-                if (f < minF) {
-                    minF = f;
-                    minE = i;
-                }
-                if (f > maxF) {
-                    maxF = f;
-                    maxE = i;
-                }
+        double minF = Double.MAX_VALUE, maxF = Double.MIN_VALUE;
+        int minE = 0, maxE = 0;
+        int maxCap = cap(max, refSize);
+        for (int i = maxCap / 2; i <= maxCap; i++) {
+            double f = footprint(i, refSize, 1, maxCap);
+            if (f < minF) {
+                minF = f;
+                minE = i;
             }
-            System.out.println("Best case: " + refSize + ": " + minE + " " + minF);
-            System.out.println("Worst case: " + refSize + ": " + maxE + " " + maxF);
+            if (f > maxF) {
+                maxF = f;
+                maxE = i;
+            }
         }
+        System.out.println("Best case: " + refSize + ": " + minE + " " + minF);
+        System.out.println("Worst case: " + refSize + ": " + maxE + " " + maxF);
+    }
 
+    static int chooseOptimalCap(int average, int refSize) {
+        double minFootprint = Double.MAX_VALUE;
+        int bestCap = -1;
+        for (int cap = average; cap <= Math.min(average * 2, 63); cap++) {
+            double footprint = footprint(average, refSize, 1, cap);
+            if (footprint < minFootprint) {
+                minFootprint = footprint;
+                bestCap = cap;
+            }
+        }
+        return bestCap;
+    }
+
+    static void printOptimalCaps(int refSize) {
+        for (int average = 20; average <= 63; average++) {
+            int cap = chooseOptimalCap(average, refSize);
+            System.out.println("Optimal for average " + average + " is " + cap +
+                    " with footprint " + footprint(average, refSize, 1, cap));
+        }
     }
 
     /**
      * @param average average number of entries going to the segment
-     * @return capacity of segment, so that overflow probability < 10%
      */
-    static int cap(int average) {
-        PoissonDistribution p = new PoissonDistribution(average);
-        for (int cap = average; ; cap++) {
-            if (p.cumulativeProbability(cap) >= PROB_63_BY_53)
-                return cap;
-        }
+    static int cap(int average, int refSize) {
+        return chooseOptimalCap(average, refSize);
     }
-
-    /** ~ 0.92 */
-    static final double PROB_63_BY_53 = new PoissonDistribution(53).cumulativeProbability(63);
 
     /**
      * Average extra retention bytes per entry
      */
     static double footprint(int averageEntries, int refSize, int upFrontScale) {
-        int cap = cap(averageEntries);
+        int cap = cap(averageEntries, refSize);
         return footprint(averageEntries, refSize, upFrontScale, cap);
     }
 
@@ -122,7 +135,7 @@ public class MathDecisions {
         int objectHeaderSize = 8 + refSize;
         int segmentSize = objectSizeRoundUp(
                 (objectHeaderSize + (Segment.HASH_TABLE_SIZE * 2) +
-                        8 + /* bit set*/
+                        8 + /* bit set */
                         4 /* tier */ + (cap * 2 * refSize)));
         double totalSegmentsSize =
                 (stayCapProb + (1 - stayCapProb) * 2) * segmentSize;

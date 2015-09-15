@@ -26,15 +26,15 @@ Final major advantage of `SmoothieMap` over traditional `HashMap` is memory foot
   </tr>
   <tr>
     <td>4 bytes, <code>-XX:+UseCompressedOops</code></td>
-    <td>16.1-22.5</td>
-    <td>17.5-23.0</td>
-    <td>37.3-42.7</td>
+    <td>16.1—20.4</td>
+    <td>16.1—25.5</td>
+    <td>37.3—42.7</td>
   </tr>
   <tr>
     <td>8 bytes, <code>-XX:-UseCompressedOops</code></td>
-    <td>26.7-34.3</td>
-    <td>28.2-37.2</td>
-    <td>58.7-69.3</td>
+    <td>26.7—32.0</td>
+    <td>26.7—42.3</td>
+    <td>58.7—69.3</td>
   </tr>
 </table>
 
@@ -168,9 +168,9 @@ for implementing caches.
  - `HashObjObjMap` doesn't have latency guarantees, so it is similar to `HashMap` on this regard.
 
  - `HashObjObjMap` has smaller footprint on average in case of 4-byte Java refs
- (`-XX:+UseCompressedOops`), but with greater variance: 12-24 bytes per entry. If references are
+ (`-XX:+UseCompressedOops`), but with greater variance: 12—24 bytes per entry. If references are
  8-byte (`-XX:-UseCompressedOops`), `HashObjObjMap` takes even more memory than
- `SmoothieMap`: 24-48 bytes per entry, 36 bytes on average.
+ `SmoothieMap`: 24—48 bytes per entry, 36 bytes on average.
 
  - The same with performance: on average `HashObjObjMap` is faster (especially if
  keys are effectively compared by identity `==`, and/or only successful queries are performed (i. e.

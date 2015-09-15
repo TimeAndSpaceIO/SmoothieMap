@@ -150,7 +150,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements Cloneable, S
      * hash code computation, though), so this is O(1)
      *
      * Major hiccup is allocation a new array +
-     * System.arrayCopy of ~ ([map size] / 27-53 [average entries per segment] * 2-4 [array scale])
+     * System.arrayCopy of ~ ([map size] / 32-63 [average entries per segment] * 2-4 [array scale])
      * + Minor hiccup,
      * so this is O(N), but with very low constant, (~200 times smaller constant that O(N) of
      * ordinary rehash in hash tables)
@@ -175,7 +175,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements Cloneable, S
      * - actual comparison on non-equal keys
      * - actual touch of alloc area when querying absent key
      *
-     * by factor of 16, though already not very probably with 27-53 entries per segment on average.
+     * by factor of 16, though already not very probably with 32-63 entries per segment on average.
      *
      * ~~~
      *
@@ -188,27 +188,32 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements Cloneable, S
      *
      * For our ranges of load factor:
      *  average entries/segment: - load factor - av. success checks - av. unsuccess. checks
-     * 27 - 0.21 - 1.13 - 1.3
-     * 53 - 0.41 - 1.35 - 1.96
+     * 32 - 0.25 - 1.17 - 1.39
+     * 63 - 0.41 - 1.48 - 2.43
      *
      * ~~~
      *
-     * Why that 27 - 53 average entries per segment?
+     * Why that 32 - 63 average entries per segment?
      *
      * When average entries per segment is N, actual distribution of entries per segment is
-     * Poisson(N). So to avoid segment split (that hurts footprint) being too frequent, actual
-     * capacity is chosen so that split probability = 1.0 - CDF[Poisson(N, capacity)] < 0.1 (10%)
-     * see {@link #ALLOC_CAPACITIES} and MathDecisions class in tests/
+     * Poisson(N). Allocation capacity of segment is chosen to minimize expected footprint,
+     * accounting probability the segment to oversize capacity -> need to split in two segments. See
+     * See MathDecisions#chooseOptimalCap().
      *
-     * So 53 is because allocation capacity chosen for 53 av. entries/segment is 63 (see below),
-     * 27 is roundUp[53/2], need to support a range of average entries/segment [x, y] where x = y/2
-     * because segment's array sizes are granular to powers of 2.
+     * We need to support a range of average entries/segment [x, y] where x = y/2 because
+     * segment's array sizes are granular to powers of 2.
+     *
+     * [32, 63] is the optimal [roundUp(y/2), y] frame in terms of average footprint, when
+     * allocation capacity is limited by 63.
      *
      * ~~~
      *
      * Why want allocation capacity to be at most 63? To keep the whole allocation state in a single
      * {@code long} and find free places with cheap bitwise ops. This also explains why segments
-     * are generally not larger than just a few dozens of entries
+     * are generally not larger than just a few dozens of entries. Also, at most 63 entries in
+     * a segment allow to stored hash to overlap with hash bits, used to compute initial slot
+     * index, only by 6 lower bits (57th - 62nd bits), still without need to recompute hash code
+     * during {@link Segment#shiftRemove(long)}, see {@link Segment#shiftDistance(long, long)}.
      *
      * ~~~
      *
@@ -299,16 +304,27 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements Cloneable, S
     }
 
     // See MathDecisions in test/
-    static final int MIN_ROUNDED_UP_AVERAGE_ENTRIES_PER_SEGMENT = 27;
-    static final int MAX_ROUNDED_UP_AVERAGE_ENTRIES_PER_SEGMENT = 53;
+    static final int MIN_ROUNDED_UP_AVERAGE_ENTRIES_PER_SEGMENT = 32;
+    static final int MAX_ROUNDED_UP_AVERAGE_ENTRIES_PER_SEGMENT = 63;
 
     // See MathDecisions in test/
-    static final int[] SEGMENTS_QUADRUPLING_FROM = {
-            1059222, 1239349, 1454005, 1709986, 2015467, 2380284, 2816280, 3337709, 10321069,
-            12190537, 14421616, 17086182, 20270682, 24079121, 28636678, 34094055, 40632749,
-            122555604, 145661381, 173297419, 206371111, 245974345, 293421288, 350294261, 418498811,
-            500330468, 598555262,
+    static final long[] SEGMENTS_QUADRUPLING_FROM_REF_SIZE_4 = {
+            17237966, 20085926, 23461869, 27467051, 32222765, 101478192, 118705641, 139126526,
+            163353618, 192120413, 226305341, 266960817, 825529841, 971366784, 1144556172,
+            1350385115, 1595184608, 1886539115, 2233536926L, 2647074163L, 1244014982, 598555262,
+            294588684, 148182403, 76120369, 39902677, 21329967, 11619067, 6445637, 3639219,
+            2089996, 1220217,
     };
+
+    static final long[] SEGMENTS_QUADRUPLING_FROM_REF_SIZE_8 = {
+            6333006, 7437876, 8753429, 10321069, 12190537, 37874373, 44596145, 52597103, 62128040,
+            73490002, 87044486, 266960817, 315348276, 372980187, 441670897, 523597560, 621373710,
+            738137712, 2233536926L, 2647074163L, 1244014982, 598555262, 294588684, 148182403,
+            76120369, 39902677, 21329967, 11619067, 6445637, 3639219, 2089996, 1220217,
+    };
+
+    static final long[] SEGMENTS_QUADRUPLING_FROM = ARRAY_OBJECT_INDEX_SCALE == 4 ?
+            SEGMENTS_QUADRUPLING_FROM_REF_SIZE_4 : SEGMENTS_QUADRUPLING_FROM_REF_SIZE_8;
 
     /**
      * @return 0 - default, 1 - doubling, 2 - quadrupling
@@ -321,10 +337,11 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements Cloneable, S
                 Math.max((int) roundedUpDivide(expectedSize, segments),
                         MIN_ROUNDED_UP_AVERAGE_ENTRIES_PER_SEGMENT);
         assert roundedUpAverageEntriesPerSegment <= MAX_ROUNDED_UP_AVERAGE_ENTRIES_PER_SEGMENT;
+        int indexInSegmentsQuadruplingFromArray =
+                roundedUpAverageEntriesPerSegment - MIN_ROUNDED_UP_AVERAGE_ENTRIES_PER_SEGMENT;
         if (segments * 4L <= GUARANTEED_JAVA_ARRAY_POWER_OF_TWO_CAPACITY &&
-                segments >= SEGMENTS_QUADRUPLING_FROM[
-                        roundedUpAverageEntriesPerSegment -
-                                MIN_ROUNDED_UP_AVERAGE_ENTRIES_PER_SEGMENT]) {
+                indexInSegmentsQuadruplingFromArray < SEGMENTS_QUADRUPLING_FROM.length &&
+                segments >= SEGMENTS_QUADRUPLING_FROM[indexInSegmentsQuadruplingFromArray]) {
             return 2; // quadrupling
         } else {
             if (segments * 2L <= GUARANTEED_JAVA_ARRAY_POWER_OF_TWO_CAPACITY) {
@@ -340,10 +357,18 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements Cloneable, S
     }
 
     // See MathDecisions in test/
-    static final byte[] ALLOC_CAPACITIES = {
-            35, 36, 37, 38, 39, 40, 41, 42, 44, 45, 46, 47, 48, 49, 50, 51, 52, 54, 55, 56, 57, 58,
-            59, 60, 61, 62, 63,
+    static final byte[] ALLOC_CAPACITIES_REF_SIZE_4 = {
+            42, 43, 44, 45, 46, 48, 49, 50, 51, 52, 53, 54, 56, 57, 58, 59, 60, 61, 62, 63, 63, 63,
+            63, 63, 63, 63, 63, 63, 63, 63, 63, 63,
     };
+
+    static final byte[] ALLOC_CAPACITIES_REF_SIZE_8 = {
+            41, 42, 43, 44, 45, 47, 48, 49, 50, 51, 52, 54, 55, 56, 57, 58, 59, 60, 62, 63, 63, 63,
+            63, 63, 63, 63, 63, 63, 63, 63, 63, 63,
+    };
+
+    static final byte[] ALLOC_CAPACITIES = ARRAY_OBJECT_INDEX_SCALE == 4 ?
+            ALLOC_CAPACITIES_REF_SIZE_4 : ALLOC_CAPACITIES_REF_SIZE_8;
 
     static final int MAX_ALLOC_CAPACITY = ALLOC_CAPACITIES[ALLOC_CAPACITIES.length - 1];
     static final int MIN_ALLOC_CAPACITY = ALLOC_CAPACITIES[0];
