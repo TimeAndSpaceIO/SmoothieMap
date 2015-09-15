@@ -170,7 +170,7 @@ for implementing caches.
  - `HashObjObjMap` has smaller footprint on average in case of 4-byte Java refs
  (`-XX:+UseCompressedOops`), but with greater variance: 12—24 bytes per entry. If references are
  8-byte (`-XX:-UseCompressedOops`), `HashObjObjMap` takes even more memory than
- `SmoothieMap`: 24—48 bytes per entry, 36 bytes on average.
+ `SmoothieMap`: 24—48 bytes per entry, 32 bytes on average.
 
  - The same with performance: on average `HashObjObjMap` is faster (especially if
  keys are effectively compared by identity `==`, and/or only successful queries are performed (i. e.
@@ -182,7 +182,7 @@ for implementing caches.
 `SmoothieMap` is specially designed for `Object` keys and values. For primitive Map specializations
 you would better use [Koloboke](https://github.com/OpenHFT/Koloboke) or other similar libs.
 
-#### How `SmoothieMap` is compared to [Chronicle Map](https://github.com/OpenHFT/Chronicle-Map)
+#### How `SmoothieMap` is compared to [Chronicle Map](https://github.com/OpenHFT/Chronicle-Map)?
 
 Chronicle Map stores keys and values off-heap (in shared memory), SmoothieMap is an ordinary vanilla
 Java `Map` implementation. Actually SmoothieMap is the result of the idea "what if we try to move
