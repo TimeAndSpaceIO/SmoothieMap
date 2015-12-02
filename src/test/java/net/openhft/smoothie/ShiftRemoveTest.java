@@ -17,6 +17,7 @@
 package net.openhft.smoothie;
 
 import com.google.common.collect.ImmutableSet;
+import org.jetbrains.annotations.Nullable;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
@@ -43,5 +44,22 @@ public class ShiftRemoveTest {
         public int hashCode() {
             return 0;
         }
+    }
+
+    @Test
+    public void shiftRemoveEarlyBreakTest() {
+        SmoothieMap<Long, Integer> map = new SmoothieMap<Long, Integer>() {
+            @Override
+            protected long keyHashCode(@Nullable Object key) {
+                return ((Long) key).longValue();
+            }
+        };
+
+        map.put(0L, 0);
+        map.put(2L << (64 - Segment.LOG_HASH_TABLE_SIZE), 2);
+        map.put(3L << (64 - Segment.LOG_HASH_TABLE_SIZE), 3);
+
+        map.removeIf((k, v) -> true);
+        assertEquals(0, map.size());
     }
 }
