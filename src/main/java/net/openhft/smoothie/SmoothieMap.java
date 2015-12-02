@@ -463,10 +463,6 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements Cloneable, S
      * OK to override this method just returning {@code false}: <pre><code>
      * class IdentitySmoothieMap&lt;K, V&gt; extends SmoothieMap&lt;K, V&gt; {
      *
-     *     public IdentitySmoothieMap(long expectedSize) {
-     *         super(expectedSize);
-     *     }
-     *
      *     &#064;Override
      *     protected boolean keysEqual(&#064;NotNull Object queriedKey, &#064;Nullable K keyInMap) {
      *         return false;
@@ -483,6 +479,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements Cloneable, S
      * If you want to subclass parameterized {@code SmoothieMap}, you should cast the arguments to
      * the key parameter class yourself, e. g.: <pre><code>
      * class DomainToIpMap extends SmoothieMap&lt;String, Integer&gt; {
+     *
      *     &#064;Override
      *     protected boolean keysEqual(&#064;NotNull Object queriedDomain,
      *             &#064;Nullable String domainInMap) {
@@ -491,7 +488,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements Cloneable, S
      *
      *     &#064;Override
      *     protected long keyHashCode(&#064;Nullable Object domain) {
-     *         return LongHashFunctions.xx_r39().hashChars(((String) domain).toLowerCase());
+     *         return LongHashFunction.xx_r39().hashChars(((String) domain).toLowerCase());
      *     }
      * }</code></pre>
      *
@@ -529,10 +526,6 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements Cloneable, S
      * occasionally, you could skip {@code null} checks in this method: <pre><code>
      * class NonNullKeysSmoothieMap&lt;K, V&gt; extends SmoothieMap&lt;K, V&gt; {
      *
-     *     public NonNullKeysSmoothieMap(long expectedSize) {
-     *         super(expectedSize);
-     *     }
-     *
      *     &#064;Override
      *     protected long keyHashCode(Object key) {
      *         // throws NullPointerException if the key is null
@@ -568,6 +561,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements Cloneable, S
      * ClassCastException}. If you want to subclass parameterized {@code SmoothieMap}, you should
      * cast the arguments to the value parameter class yourself, e. g.: <pre><code>
      * class IpToDomainMap extends SmoothieMap&lt;Integer, String&gt; {
+     *
      *     &#064;Override
      *     protected boolean valuesEqual(&#064;NotNull Object d1, &#064;Nullable String d2) {
      *         return ((String) d1).equalsIgnoreCase(d2);
