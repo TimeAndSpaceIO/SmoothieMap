@@ -26,7 +26,7 @@
     </parent>
 
     <artifactId>smoothie-map</artifactId>
-    <version>1.1-SNAPSHOT</version>
+    <version>1.1</version>
     <name>SmoothieMap</name>
     <description>SmoothieMap is a java.util.Map implementation with worst put(k, v) operation
         latencies more than 100 times smaller than in ordinary hash table implementations like
@@ -112,7 +112,7 @@
         <connection>scm:git:git@github.com:OpenHFT/SmoothieMap.git</connection>
         <developerConnection>scm:git:git@github.com:OpenHFT/SmoothieMap.git
         </developerConnection>
-        <tag>master</tag>
+        <tag>smoothie-map-1.1</tag>
     </scm>
 
 </project>
