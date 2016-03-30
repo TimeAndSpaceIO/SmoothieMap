@@ -18,7 +18,7 @@ package net.openhft.smoothie;
 
 import java.util.concurrent.atomic.AtomicReferenceArray;
 
-import static net.openhft.compiler.CompilerUtils.CACHED_COMPILER;
+import static net.openhft.smoothie.CompilerUtils.CACHED_COMPILER;
 
 final class SegmentClassGenerator {
 
@@ -38,6 +38,7 @@ final class SegmentClassGenerator {
         if ((c = classCache.get(allocationCapacity)) != null)
             return c;
 
+        ClassLoader cl = BytecodeGen.getClassLoader(Segment.class);
         StringBuilder sb = new StringBuilder();
         String pkg = Segment.class.getPackage().getName();
         sb.append("package " + pkg + ";\n");
@@ -48,7 +49,7 @@ final class SegmentClassGenerator {
         }
         sb.append("}");
         try {
-            c = CACHED_COMPILER.loadFromJava(pkg + "." + className, sb.toString());
+            c = CACHED_COMPILER.loadFromJava(cl, pkg + "." + className, sb.toString());
             classCache.set(allocationCapacity, c);
             return c;
         } catch (ClassNotFoundException e) {
