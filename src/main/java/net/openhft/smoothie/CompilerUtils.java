@@ -19,9 +19,6 @@ package net.openhft.smoothie;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import javax.tools.JavaCompiler;
-import javax.tools.StandardJavaFileManager;
-import javax.tools.ToolProvider;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 
@@ -30,11 +27,8 @@ import java.lang.reflect.Method;
  */
 enum CompilerUtils {
     ;
-    public static final CachedCompiler CACHED_COMPILER = new CachedCompiler();
 
     private static final Method DEFINE_CLASS_METHOD;
-    static JavaCompiler s_compiler;
-    static StandardJavaFileManager s_standardJavaFileManager;
 
     static {
         try {
@@ -44,25 +38,6 @@ enum CompilerUtils {
         } catch (NoSuchMethodException e) {
             throw new AssertionError(e);
         }
-    }
-
-    static {
-        reset();
-    }
-
-    private static void reset() {
-        s_compiler = ToolProvider.getSystemJavaCompiler();
-        if (s_compiler == null) {
-            try {
-                Class<?> javacTool = Class.forName("com.sun.tools.javac.api.JavacTool");
-                Method create = javacTool.getMethod("create");
-                s_compiler = (JavaCompiler) create.invoke(null);
-            } catch (Exception e) {
-                throw new AssertionError(e);
-            }
-        }
-
-        s_standardJavaFileManager = s_compiler.getStandardFileManager(null, null, null);
     }
 
     /**

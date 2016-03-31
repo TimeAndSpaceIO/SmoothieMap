@@ -16,9 +16,13 @@
 
 package net.openhft.smoothie;
 
+import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.FieldVisitor;
+import org.objectweb.asm.MethodVisitor;
+
 import java.util.concurrent.atomic.AtomicReferenceArray;
 
-import static net.openhft.smoothie.CompilerUtils.CACHED_COMPILER;
+import static org.objectweb.asm.Opcodes.*;
 
 final class SegmentClassGenerator {
 
@@ -39,22 +43,43 @@ final class SegmentClassGenerator {
             return c;
 
         ClassLoader cl = BytecodeGen.getClassLoader(Segment.class);
-        StringBuilder sb = new StringBuilder();
-        String pkg = Segment.class.getPackage().getName();
-        sb.append("package " + pkg + ";\n");
-        String className = "Segment" + allocationCapacity;
-        sb.append("class " + className + " extends " + Segment.class.getSimpleName() + " {\n");
-        for (int i = 1; i < allocationCapacity; i++) {
-            sb.append("Object k" + i + ", v" + i + ";\n");
-        }
-        sb.append("}");
+        String className = Segment.class.getName() + allocationCapacity;
         try {
-            c = CACHED_COMPILER.loadFromJava(cl, pkg + "." + className, sb.toString());
-            classCache.set(allocationCapacity, c);
-            return c;
-        } catch (ClassNotFoundException e) {
-            throw new RuntimeException(e);
+            c = (Class<Segment>) cl.loadClass(className);
+        } catch (ClassNotFoundException ignored) {
+            byte[] classBytes = classBytes(Segment.class.getName(), allocationCapacity);
+            c = CompilerUtils.defineClass(cl, className, classBytes);
         }
+        classCache.set(allocationCapacity, c);
+        return c;
+    }
+
+    private static byte[] classBytes(String segmentClassName, int allocationCapacity) {
+        ClassWriter cw = new ClassWriter(0);
+        String segmentClassNameWithSlashes = segmentClassName.replace('.', '/');
+        cw.visit(52, ACC_PUBLIC + ACC_SUPER, segmentClassNameWithSlashes + allocationCapacity,
+                null, segmentClassNameWithSlashes, null);
+
+        for (int i = 1; i < allocationCapacity; i++) {
+            FieldVisitor fv;
+            fv = cw.visitField(0, "k" + i, "Ljava/lang/Object;", null, null);
+            fv.visitEnd();
+            fv = cw.visitField(0, "v" + i, "Ljava/lang/Object;", null, null);
+            fv.visitEnd();
+        }
+        {
+            MethodVisitor mv = cw.visitMethod(ACC_PUBLIC, "<init>", "()V", null, null);
+            mv.visitCode();
+            mv.visitVarInsn(ALOAD, 0);
+            mv.visitMethodInsn(INVOKESPECIAL, segmentClassNameWithSlashes, "<init>", "()V",
+                    false);
+            mv.visitInsn(RETURN);
+            mv.visitMaxs(1, 1);
+            mv.visitEnd();
+        }
+        cw.visitEnd();
+
+        return cw.toByteArray();
     }
 
     private SegmentClassGenerator() {
