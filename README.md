@@ -1,6 +1,6 @@
 # Chronicle-Values
 <a href="https://maven-badges.herokuapp.com/maven-central/net.openhft/smoothie-map">
-<img src="https://maven-badges.herokuapp.com/maven-central/net.openhft/smoothie-map/badge.svg" />
+<img src="https://maven-badges.herokuapp.com/maven-central/net.openhft/smoothie-map/badge.svg" /></a>
 
 `SmoothieMap` is a `java.util.Map` implementation with worst write (`put(k, v)`) operation latencies
 more than 100 times smaller than in ordinary hash table implementations like `java.util.HashMap`.
