@@ -1,4 +1,6 @@
-# SmoothieMap
+# Chronicle-Values
+<a href="https://maven-badges.herokuapp.com/maven-central/net.openhft/smoothie-map">
+<img src="https://maven-badges.herokuapp.com/maven-central/net.openhft/smoothie-map/badge.svg" />
 
 `SmoothieMap` is a `java.util.Map` implementation with worst write (`put(k, v)`) operation latencies
 more than 100 times smaller than in ordinary hash table implementations like `java.util.HashMap`.
@@ -26,15 +28,15 @@ Final major advantage of `SmoothieMap` over traditional `HashMap` is memory foot
   </tr>
   <tr>
     <td>4 bytes, <code>-XX:+UseCompressedOops</code></td>
-    <td>16.1—20.4</td>
-    <td>16.1—25.5</td>
-    <td>37.3—42.7</td>
+    <td>16.1â€”20.4</td>
+    <td>16.1â€”25.5</td>
+    <td>37.3â€”42.7</td>
   </tr>
   <tr>
     <td>8 bytes, <code>-XX:-UseCompressedOops</code></td>
-    <td>26.7—32.0</td>
-    <td>26.7—42.3</td>
-    <td>58.7—69.3</td>
+    <td>26.7â€”32.0</td>
+    <td>26.7â€”42.3</td>
+    <td>58.7â€”69.3</td>
   </tr>
 </table>
 
@@ -123,8 +125,8 @@ Points against:
 
 ### Quick start
 
-Add the [`net.openhft:smoothie-map:1.1`
-](http://search.maven.org/#artifactdetails%7Cnet.openhft%7Csmoothie-map%7C1.1%7Cjar) dependency
+Add the [`net.openhft:smoothie-map:1.3`
+](http://search.maven.org/#search%7Cga%7C1%7Cg%3A%22net.openhft%22%20AND%20a%3A%22smoothie-map%22) dependency
 to your project (you can copy a snippet for your favourite build system on the linked page).
 
 E. g. Maven:
@@ -132,7 +134,7 @@ E. g. Maven:
     <dependency>
       <groupId>net.openhft</groupId>
       <artifactId>smoothie-map</artifactId>
-      <version>1.1</version>
+      <version>1.3</version>
     </dependency>
 
 Then use it in Java:
@@ -168,9 +170,9 @@ for implementing caches.
  - `HashObjObjMap` doesn't have latency guarantees, so it is similar to `HashMap` on this regard.
 
  - `HashObjObjMap` has smaller footprint on average in case of 4-byte Java refs
- (`-XX:+UseCompressedOops`), but with greater variance: 12—24 bytes per entry. If references are
+ (`-XX:+UseCompressedOops`), but with greater variance: 12â€”24 bytes per entry. If references are
  8-byte (`-XX:-UseCompressedOops`), `HashObjObjMap` takes even more memory than
- `SmoothieMap`: 24—48 bytes per entry, 32 bytes on average.
+ `SmoothieMap`: 24â€”48 bytes per entry, 32 bytes on average.
 
  - The same with performance: on average `HashObjObjMap` is faster (especially if
  keys are effectively compared by identity `==`, and/or only successful queries are performed (i. e.
