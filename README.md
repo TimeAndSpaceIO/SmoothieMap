@@ -1,4 +1,4 @@
-# Chronicle-Values
+# SmoothieMap
 <a href="https://maven-badges.herokuapp.com/maven-central/net.openhft/smoothie-map">
 <img src="https://maven-badges.herokuapp.com/maven-central/net.openhft/smoothie-map/badge.svg" /></a>
 
