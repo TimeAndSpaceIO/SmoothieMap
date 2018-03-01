@@ -19,15 +19,17 @@ package net.openhft.smoothie;
 import org.junit.Assert;
 import org.junit.Test;
 
-public class SegmentClassGeneratorTest {
+import java.lang.invoke.MethodHandle;
+
+public class SegmentClassesTest {
 
     @Test
-    public void segmentClassGeneratorTest() throws IllegalAccessException, InstantiationException {
+    public void segmentClassGeneratorTest() throws Throwable {
         for (int i = SmoothieMap.MIN_ALLOC_CAPACITY; i <= SmoothieMap.MAX_ALLOC_CAPACITY; i++) {
-            Class<Segment> c = SegmentClassGenerator.acquireClass(i);
-            c.newInstance();
-            Class<Segment> c2 = SegmentClassGenerator.acquireClass(i);
-            Assert.assertEquals(c, c2);
+            MethodHandle mh = SegmentClasses.acquireClassConstructor(i);
+            mh.invoke();
+            MethodHandle mh2 = SegmentClasses.acquireClassConstructor(i);
+            Assert.assertEquals(mh, mh2);
         }
     }
 }

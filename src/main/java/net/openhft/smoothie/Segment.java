@@ -52,9 +52,6 @@ class SegmentPrimitiveArea {
 
 class Segment<K, V> extends SegmentPrimitiveArea implements Cloneable {
 
-    @SuppressWarnings("unused")
-    Object k0, v0;
-
     static final int STORED_HASH_BITS = 10;
     static final int ALLOC_INDEX_BITS = 6;
     static final int HASH_TABLE_SLOT_SIZE = 2; // in bytes
@@ -631,4 +628,240 @@ class Segment<K, V> extends SegmentPrimitiveArea implements Cloneable {
             throw new AssertionError(e);
         }
     }
+
+    @SuppressWarnings("unused")
+    Object k0, v0;
+}
+/**
+ * This class through {@link Segment63} effectively emulate a "fused" fields + array Java object.
+ *
+ * We don't need capacity smaller than 41, see {@link SmoothieMap#ALLOC_CAPACITIES_REF_SIZE_4} and
+ * {@link SmoothieMap#ALLOC_CAPACITIES_REF_SIZE_8}.
+ */
+@SuppressWarnings("unused")
+class Segment41<K, V> extends Segment<K, V> {
+    Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
+    Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
+    Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
+    Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
+    Object k40, v40;
+}
+
+/**
+ * Don't create a single long extension chain (Segment42 extends {@link Segment41}, etc), because
+ * it might cause more classes to be loaded (e. g. if just {@link Segment63} is used), and could
+ * also be more troublesome for some dynamic dispatch and GC algorithms.
+ */
+@SuppressWarnings("unused")
+class Segment42<K, V> extends Segment<K, V> {
+    Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
+    Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
+    Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
+    Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
+    Object k40, v40, k41, v41;
+}
+
+@SuppressWarnings("unused")
+class Segment43<K, V> extends Segment<K, V> {
+    Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
+    Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
+    Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
+    Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
+    Object k40, v40, k41, v41, k42, v42;
+}
+
+@SuppressWarnings("unused")
+class Segment44<K, V> extends Segment<K, V> {
+    Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
+    Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
+    Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
+    Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
+    Object k40, v40, k41, v41, k42, v42, k43, v43;
+}
+
+@SuppressWarnings("unused")
+class Segment45<K, V> extends Segment<K, V> {
+    Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
+    Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
+    Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
+    Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
+    Object k40, v40, k41, v41, k42, v42, k43, v43, k44, v44;
+}
+
+@SuppressWarnings("unused")
+class Segment46<K, V> extends Segment<K, V> {
+    Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
+    Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
+    Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
+    Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
+    Object k40, v40, k41, v41, k42, v42, k43, v43, k44, v44, k45, v45;
+}
+
+@SuppressWarnings("unused")
+class Segment47<K, V> extends Segment<K, V> {
+    Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
+    Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
+    Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
+    Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
+    Object k40, v40, k41, v41, k42, v42, k43, v43, k44, v44, k45, v45, k46, v46;
+}
+
+@SuppressWarnings("unused")
+class Segment48<K, V> extends Segment<K, V> {
+    Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
+    Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
+    Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
+    Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
+    Object k40, v40, k41, v41, k42, v42, k43, v43, k44, v44, k45, v45, k46, v46, k47, v47;
+}
+
+@SuppressWarnings("unused")
+class Segment49<K, V> extends Segment<K, V> {
+    Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
+    Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
+    Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
+    Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
+    Object k40, v40, k41, v41, k42, v42, k43, v43, k44, v44, k45, v45, k46, v46, k47, v47, k48, v48;
+}
+
+@SuppressWarnings("unused")
+class Segment50<K, V> extends Segment<K, V> {
+    Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
+    Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
+    Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
+    Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
+    Object k40, v40, k41, v41, k42, v42, k43, v43, k44, v44, k45, v45, k46, v46, k47, v47, k48, v48, k49, v49;
+}
+
+@SuppressWarnings("unused")
+class Segment51<K, V> extends Segment<K, V> {
+    Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
+    Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
+    Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
+    Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
+    Object k40, v40, k41, v41, k42, v42, k43, v43, k44, v44, k45, v45, k46, v46, k47, v47, k48, v48, k49, v49;
+    Object k50, v50;
+}
+
+@SuppressWarnings("unused")
+class Segment52<K, V> extends Segment<K, V> {
+    Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
+    Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
+    Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
+    Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
+    Object k40, v40, k41, v41, k42, v42, k43, v43, k44, v44, k45, v45, k46, v46, k47, v47, k48, v48, k49, v49;
+    Object k50, v50, k51, v51;
+}
+
+@SuppressWarnings("unused")
+class Segment53<K, V> extends Segment<K, V> {
+    Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
+    Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
+    Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
+    Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
+    Object k40, v40, k41, v41, k42, v42, k43, v43, k44, v44, k45, v45, k46, v46, k47, v47, k48, v48, k49, v49;
+    Object k50, v50, k51, v51, k52, v52;
+}
+
+@SuppressWarnings("unused")
+class Segment54<K, V> extends Segment<K, V> {
+    Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
+    Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
+    Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
+    Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
+    Object k40, v40, k41, v41, k42, v42, k43, v43, k44, v44, k45, v45, k46, v46, k47, v47, k48, v48, k49, v49;
+    Object k50, v50, k51, v51, k52, v52, k53, v53;
+}
+
+@SuppressWarnings("unused")
+class Segment55<K, V> extends Segment<K, V> {
+    Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
+    Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
+    Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
+    Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
+    Object k40, v40, k41, v41, k42, v42, k43, v43, k44, v44, k45, v45, k46, v46, k47, v47, k48, v48, k49, v49;
+    Object k50, v50, k51, v51, k52, v52, k53, v53, k54, v54;
+}
+
+@SuppressWarnings("unused")
+class Segment56<K, V> extends Segment<K, V> {
+    Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
+    Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
+    Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
+    Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
+    Object k40, v40, k41, v41, k42, v42, k43, v43, k44, v44, k45, v45, k46, v46, k47, v47, k48, v48, k49, v49;
+    Object k50, v50, k51, v51, k52, v52, k53, v53, k54, v54, k55, v55;
+}
+
+@SuppressWarnings("unused")
+class Segment57<K, V> extends Segment<K, V> {
+    Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
+    Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
+    Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
+    Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
+    Object k40, v40, k41, v41, k42, v42, k43, v43, k44, v44, k45, v45, k46, v46, k47, v47, k48, v48, k49, v49;
+    Object k50, v50, k51, v51, k52, v52, k53, v53, k54, v54, k55, v55, k56, v56;
+}
+
+@SuppressWarnings("unused")
+class Segment58<K, V> extends Segment<K, V> {
+    Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
+    Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
+    Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
+    Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
+    Object k40, v40, k41, v41, k42, v42, k43, v43, k44, v44, k45, v45, k46, v46, k47, v47, k48, v48, k49, v49;
+    Object k50, v50, k51, v51, k52, v52, k53, v53, k54, v54, k55, v55, k56, v56, k57, v57;
+}
+
+@SuppressWarnings("unused")
+class Segment59<K, V> extends Segment<K, V> {
+    Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
+    Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
+    Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
+    Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
+    Object k40, v40, k41, v41, k42, v42, k43, v43, k44, v44, k45, v45, k46, v46, k47, v47, k48, v48, k49, v49;
+    Object k50, v50, k51, v51, k52, v52, k53, v53, k54, v54, k55, v55, k56, v56, k57, v57, k58, v58;
+}
+
+@SuppressWarnings("unused")
+class Segment60<K, V> extends Segment<K, V> {
+    Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
+    Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
+    Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
+    Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
+    Object k40, v40, k41, v41, k42, v42, k43, v43, k44, v44, k45, v45, k46, v46, k47, v47, k48, v48, k49, v49;
+    Object k50, v50, k51, v51, k52, v52, k53, v53, k54, v54, k55, v55, k56, v56, k57, v57, k58, v58, k59, v59;
+}
+
+@SuppressWarnings("unused")
+class Segment61<K, V> extends Segment<K, V> {
+    Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
+    Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
+    Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
+    Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
+    Object k40, v40, k41, v41, k42, v42, k43, v43, k44, v44, k45, v45, k46, v46, k47, v47, k48, v48, k49, v49;
+    Object k50, v50, k51, v51, k52, v52, k53, v53, k54, v54, k55, v55, k56, v56, k57, v57, k58, v58, k59, v59;
+    Object k60, v60;
+}
+
+@SuppressWarnings("unused")
+class Segment62<K, V> extends Segment<K, V> {
+    Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
+    Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
+    Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
+    Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
+    Object k40, v40, k41, v41, k42, v42, k43, v43, k44, v44, k45, v45, k46, v46, k47, v47, k48, v48, k49, v49;
+    Object k50, v50, k51, v51, k52, v52, k53, v53, k54, v54, k55, v55, k56, v56, k57, v57, k58, v58, k59, v59;
+    Object k60, v60, k61, v61;
+}
+
+@SuppressWarnings("unused")
+class Segment63<K, V> extends Segment<K, V> {
+    Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
+    Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
+    Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
+    Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
+    Object k40, v40, k41, v41, k42, v42, k43, v43, k44, v44, k45, v45, k46, v46, k47, v47, k48, v48, k49, v49;
+    Object k50, v50, k51, v51, k52, v52, k53, v53, k54, v54, k55, v55, k56, v56, k57, v57, k58, v58, k59, v59;
+    Object k60, v60, k61, v61, k62, v62;
 }

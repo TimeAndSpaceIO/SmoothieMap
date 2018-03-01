@@ -20,6 +20,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.*;
+import java.lang.invoke.MethodHandle;
 import java.util.*;
 import java.util.function.*;
 
@@ -244,8 +245,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements Cloneable, S
      *
      * Segment is a single object with hash table area (see {@link Segment#t0}) as long fields
      * and variable sized (object array like) allocation area, this requires to generate Segment
-     * subclasses for all all distinct capacities, see {@link SegmentClassGenerator}. There might
-     * be some negative consequences. Class cache pollution?
+     * subclasses for all all distinct capacities, see {@link SegmentClasses}. There might be some
+     * negative consequences. Class cache pollution?
      *
      * ~~~
      *
@@ -393,7 +394,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements Cloneable, S
     protected static final long LONG_PHI_MAGIC = -7046029254386353131L;
 
     final int allocCapacity;
-    final Class<Segment<K, V>> segmentClass;
+    transient MethodHandle segmentClassConstructor;
     int segmentsMask;
     int segmentsTier;
     transient Segment[] segments;
@@ -424,7 +425,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements Cloneable, S
         int segmentsTier = segmentsTier(segments);
         int upFrontScale = chooseUpFrontScale(expectedSize, segments);
         allocCapacity = chooseAllocCapacity(expectedSize, segments);
-        segmentClass = SegmentClassGenerator.acquireClass(allocCapacity);
+        segmentClassConstructor = SegmentClasses.acquireClassConstructor(allocCapacity);
 
         initSegments(segments, segmentsTier, upFrontScale);
         updateSegmentsMask();
@@ -586,11 +587,16 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements Cloneable, S
 
     final Segment<K, V> makeSegment(int tier) {
         try {
-            Segment<K, V> segment = segmentClass.newInstance();
+            @SuppressWarnings("unchecked")
+            Segment<K, V> segment = (Segment<K, V>) segmentClassConstructor.invoke();
             segment.tier = tier;
             return segment;
-        } catch (InstantiationException | IllegalAccessException e) {
-            throw new AssertionError(e);
+        } catch (Throwable t) {
+            if (t instanceof Error) {
+                throw (Error) t;
+            } else {
+                throw new AssertionError(t);
+            }
         }
     }
 
@@ -1196,6 +1202,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements Cloneable, S
 
     private void readObject(ObjectInputStream s) throws IOException, ClassNotFoundException {
         s.defaultReadObject();
+        segmentClassConstructor = SegmentClasses.acquireClassConstructor(allocCapacity);
         long size = s.readLong();
         if (size < 0)
             throw new InvalidObjectException("Invalid size: " + size);
