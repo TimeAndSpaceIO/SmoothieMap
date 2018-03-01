@@ -148,8 +148,7 @@ for more information.
 
  - SmoothieMap supports Java 8 or newer only
 
- - SmoothieMap is licensed under [LGPL, version 3
-](https://tldrlegal.com/license/gnu-lesser-general-public-license-v3-(lgpl-3))
+ - SmoothieMap is licensed under Apache 2 license
 
  - There are some unit tests, including generated with `guava-testlib`.
 
