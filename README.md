@@ -97,7 +97,7 @@ Points for:
 
 Points against:
 
- - :confused: You run your application on an outdated CPU (but desktop- of server-class)
+ - :confused: You run your application on an outdated CPU (but desktop- or server-class)
 
  - :worried: Your map(s) are not very large (say smaller than of 1000 entries), particularly
  :persevere: if smaller than 32 entries. In this case even full `HashMap` resize could complete in
