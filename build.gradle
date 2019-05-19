@@ -16,7 +16,7 @@ plugins {
 
     id 'checkstyle'
     id 'de.thetaphi.forbiddenapis' version '2.6'
-    id 'net.ltgt.errorprone' version '0.7'
+    id 'net.ltgt.errorprone' version '0.8'
 }
 
 // The plugin inhibits annotation processing, disabling for now: see
@@ -45,6 +45,7 @@ dependencies {
     testImplementation 'com.google.guava:guava-testlib:27.0.1-jre'
     testImplementation 'org.apache.commons:commons-math3:3.2'
 
+    errorprone 'com.google.errorprone:error_prone_core:2.3.3'
     errorproneJavac 'org.codehaus.plexus:plexus-compiler-javac-errorprone:2.8.5'
 }
 
