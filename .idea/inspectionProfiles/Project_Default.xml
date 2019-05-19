@@ -1,0 +1,64 @@
+<component name="InspectionProjectProfileManager">
+  <profile version="1.0">
+    <option name="myName" value="Project Default" />
+    <inspection_tool class="AutoBoxing" enabled="true" level="WEAK WARNING" enabled_by_default="true">
+      <scope name="Production" level="ERROR" enabled="true">
+        <option name="ignoreAddedToCollection" value="false" />
+      </scope>
+      <option name="ignoreAddedToCollection" value="false" />
+    </inspection_tool>
+    <inspection_tool class="ConstantConditions" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="SUGGEST_NULLABLE_ANNOTATIONS" value="false" />
+      <option name="DONT_REPORT_TRUE_ASSERT_STATEMENTS" value="true" />
+    </inspection_tool>
+    <inspection_tool class="Duplicates" enabled="true" level="WEAK WARNING" enabled_by_default="true">
+      <Java>
+        <minSize>50</minSize>
+        <isEnabled>true</isEnabled>
+      </Java>
+    </inspection_tool>
+    <inspection_tool class="GrMethodMayBeStatic" enabled="true" level="ERROR" enabled_by_default="true" />
+    <inspection_tool class="ImplicitNumericConversion" enabled="true" level="WEAK WARNING" enabled_by_default="true">
+      <scope name="Production" level="ERROR" enabled="true">
+        <option name="ignoreWideningConversions" value="false" />
+        <option name="ignoreCharConversions" value="false" />
+        <option name="ignoreConstantConversions" value="true" />
+      </scope>
+      <option name="ignoreWideningConversions" value="false" />
+      <option name="ignoreCharConversions" value="false" />
+      <option name="ignoreConstantConversions" value="true" />
+    </inspection_tool>
+    <inspection_tool class="JavadocReference" enabled="true" level="ERROR" enabled_by_default="true">
+      <option name="REPORT_INACCESSIBLE" value="false" />
+    </inspection_tool>
+    <inspection_tool class="MethodComplexity" enabled="false" level="WARNING" enabled_by_default="false" />
+    <inspection_tool class="MethodMayBeStatic" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="m_onlyPrivateOrFinal" value="false" />
+      <option name="m_ignoreEmptyMethods" value="true" />
+    </inspection_tool>
+    <inspection_tool class="ObjectEquality" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="m_ignoreEnums" value="true" />
+      <option name="m_ignoreClassObjects" value="true" />
+      <option name="m_ignorePrivateConstructors" value="false" />
+    </inspection_tool>
+    <inspection_tool class="SSBasedInspection" enabled="true" level="ERROR" enabled_by_default="true">
+      <searchConfiguration name="&quot;SmoothieMap&quot; shouldn't leak to string literals, e. g. exception messages" text="&quot;$String$&quot;" recursive="true" caseInsensitive="false" type="JAVA">
+        <constraint name="__context__" target="true" within="" contains="" />
+        <constraint name="String" regexp=".*SmoothieMap.*" within="" contains="" />
+      </searchConfiguration>
+      <searchConfiguration name="Method names shouldn't leak to string literals, e. g. exception messages" text="&quot;$String$&quot;" recursive="true" caseInsensitive="false" type="JAVA">
+        <constraint name="__context__" target="true" within="" contains="" />
+        <constraint name="String" regexp=".*\(\).*" within="" contains="" />
+      </searchConfiguration>
+      <searchConfiguration name="static fields that are not final" text="class $Class$ {&#10;  static $Type$ $Variable$ = $Init$;&#10;}" recursive="true" caseInsensitive="true" type="JAVA">
+        <constraint name="__context__" within="" contains="" />
+        <constraint name="Class" within="" contains="" />
+        <constraint name="Type" within="" contains="" />
+        <constraint name="Variable" script="&quot;!__context__.hasModifierProperty(&quot;final&quot;)&quot;" maxCount="2147483647" target="true" within="" contains="" />
+        <constraint name="Init" minCount="0" within="" contains="" />
+      </searchConfiguration>
+    </inspection_tool>
+    <inspection_tool class="UnnecessaryBoxing" enabled="true" level="ERROR" enabled_by_default="true" />
+    <inspection_tool class="UnnecessaryLabelOnContinueStatement" enabled="false" level="WARNING" enabled_by_default="false" />
+  </profile>
+</component>

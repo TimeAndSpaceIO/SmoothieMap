@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="CompilerConfiguration">
+    <option name="USE_RELEASE_OPTION" value="false" />
+    <bytecodeTargetLevel>
+      <module name="io.timeandspace.smoothie-map.main" target="1.8" />
+      <module name="io.timeandspace.smoothie-map.test" target="1.8" />
+    </bytecodeTargetLevel>
+  </component>
+  <component name="JavacSettings">
+    <option name="PREFER_TARGET_JDK_COMPILER" value="false" />
+    <option name="ADDITIONAL_OPTIONS_STRING" value="--add-modules jdk.unsupported" />
+    <option name="ADDITIONAL_OPTIONS_OVERRIDE">
+      <module name="io.timeandspace.smoothie-map.main" options="-target 9" />
+      <module name="io.timeandspace.smoothie-map.test" options="-target 9" />
+    </option>
+  </component>
+</project>

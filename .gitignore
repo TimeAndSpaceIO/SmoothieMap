@@ -1,0 +1,42 @@
+# From: https://github.com/github/gitignore/blob/cdab24d9e98bbb78da9002a57b348d749e46c76b/Gradle.gitignore
+.gradle
+/build/
+
+# Ignore Gradle GUI config
+gradle-app.setting
+
+# Avoid ignoring Gradle wrapper jar file (.jar files are usually ignored)
+!gradle-wrapper.jar
+
+# Cache of project
+.gradletasknamecache
+
+# From: https://github.com/github/gitignore/blob/b5aa92c05f3659fcb5910836199ce836291158be/Global/JetBrains.gitignore
+# User-specific stuff
+.idea/**/workspace.xml
+.idea/**/tasks.xml
+.idea/**/usage.statistics.xml
+.idea/**/shelf
+
+# Generated files
+.idea/**/contentModel.xml
+
+# Sensitive or high-churn files
+.idea/**/dataSources/
+.idea/**/dataSources.ids
+.idea/**/dataSources.local.xml
+.idea/**/sqlDataSources.xml
+.idea/**/dynamic.xml
+.idea/**/uiDesigner.xml
+.idea/**/dbnavigator.xml
+
+# Gradle
+.idea/**/gradle.xml
+.idea/**/libraries
+
+# Gradle and Maven with auto-import
+.idea/modules.xml
+.idea/*.iml
+.idea/modules
+*.iml
+*.ipr
