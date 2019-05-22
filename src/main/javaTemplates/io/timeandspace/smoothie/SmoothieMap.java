@@ -58,6 +58,7 @@ import java.util.function.Function;
 import java.util.function.ToLongFunction;
 
 import static io.timeandspace.smoothie.InflatedSegmentQueryContext.COMPUTE_IF_PRESENT_ENTRY_REMOVED;
+import static io.timeandspace.smoothie.InflatedSegmentQueryContext.Node;
 import static io.timeandspace.smoothie.IntMath.toUnsignedInt;
 import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE;
 import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.DELETED_SLOT_COUNT_UNIT;
@@ -88,16 +89,14 @@ import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.setLowestA
 import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.updateDeletedSlotCountAndSetLowestAllocBit;
 import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.GROUP_BITS;
 import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.GROUP_SLOTS_DIVISION_SHIFT;
-import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.HASH_TABLE_GROUPS;
 import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.HASH_TABLE_SLOTS;
-import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.SLOT_MASK;
 import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.groupIndexesEqualModuloHashTableGroups;
 import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.readControlByte;
-import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.readDataGroup;
 import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.replaceData;
 import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.writeControlByte;
 import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.writeControlByteWithConditionalCloning;
 import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.writeData;
+import static io.timeandspace.smoothie.SmoothieMap.Segment.DELETED_CONTROL;
 import static io.timeandspace.smoothie.SmoothieMap.Segment.EMPTY_CONTROL;
 import static io.timeandspace.smoothie.SmoothieMap.Segment.HASH_CONTROL_BITS;
 import static io.timeandspace.smoothie.SmoothieMap.Segment.HASH_DATA_BITS;
@@ -113,17 +112,13 @@ import static io.timeandspace.smoothie.SmoothieMap.Segment.checkAllocIndex;
 import static io.timeandspace.smoothie.SmoothieMap.Segment.clearLowestSetBit;
 import static io.timeandspace.smoothie.SmoothieMap.Segment.covertAllDeletedToEmptyAndFullToDeletedControlSlots;
 import static io.timeandspace.smoothie.SmoothieMap.Segment.eraseKeyAndValue;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.extractDataByte;
 import static io.timeandspace.smoothie.SmoothieMap.Segment.extractMatchingEmpty;
 import static io.timeandspace.smoothie.SmoothieMap.Segment.hashControlBits;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.isDeleted;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.isFirstSlotFull;
 import static io.timeandspace.smoothie.SmoothieMap.Segment.isMatchingEmpty;
 import static io.timeandspace.smoothie.SmoothieMap.Segment.lowestMatchIndex;
 import static io.timeandspace.smoothie.SmoothieMap.Segment.lowestMatchIndexFromTrailingZeros;
 import static io.timeandspace.smoothie.SmoothieMap.Segment.makeData;
 import static io.timeandspace.smoothie.SmoothieMap.Segment.match;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.matchDeleted;
 import static io.timeandspace.smoothie.SmoothieMap.Segment.matchEmpty;
 import static io.timeandspace.smoothie.SmoothieMap.Segment.matchEmptyOrDeleted;
 import static io.timeandspace.smoothie.SmoothieMap.Segment.matchHashDataBits;
@@ -151,7 +146,6 @@ import static io.timeandspace.smoothie.Utils.assertThat;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
 import static sun.misc.Unsafe.ARRAY_OBJECT_INDEX_SCALE;
-import static io.timeandspace.smoothie.InflatedSegmentQueryContext.Node;
 
 /**
  * Unordered {@code Map} with worst {@link #put(Object, Object) put} latencies more than 100 times
@@ -2608,8 +2602,10 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         // [Byte-by-byte hash table iteration]
         // [Int-indexed loop to avoid a safepoint poll]
         for (int slotIndex = 0; slotIndex < HASH_TABLE_SLOTS; slotIndex++) {
-            boolean slotHasEntry = isDeleted(readControlByte(fromSegment, (long) slotIndex));
-            if (!slotHasEntry) {
+            // [Visiting only deleted slots]
+            boolean shouldVisitEntry =
+                    (int) readControlByte(fromSegment, (long) slotIndex) == DELETED_CONTROL;
+            if (!shouldVisitEntry) {
                 continue;
             }
             int dataByteToDisplace = readData(fromSegment, (long) slotIndex);
@@ -3003,8 +2999,11 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         //
         // [Int-indexed loop to avoid a safepoint poll]
         for (int slotIndex = 0; slotIndex < HASH_TABLE_SLOTS; slotIndex++) {
-            boolean slotHasEntry = isDeleted(readControlByte(segment, (long) slotIndex));
-            if (!slotHasEntry) {
+            // Visiting only deleted slots: full entries (which may appear as the result of wrap
+            // around and forward replacement in displacingLoop) are skipped.
+            boolean shouldVisitEntry =
+                    (int) readControlByte(segment, (long) slotIndex) == DELETED_CONTROL;
+            if (!shouldVisitEntry) {
                 continue;
             }
             int dataByteToDisplace = readData(segment, (long) slotIndex);
@@ -3022,9 +3021,9 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             // src/raw/mod.rs#L637
             //
             // The separate displacing loop allows avoiding repetition of a few operations in the
-            // beginning of the outer byte-by-byte loop: `boolean slotHasEntry = isDeleted(...)` and
-            // `if (!slotHasEntry)` which are unnecessary on the second and later iterations of the
-            // displacing loop. If [Branchless hash table iteration] was used instead of
+            // beginning of the outer byte-by-byte loop: `boolean shouldVisitEntry = ...`
+            // and `if (!shouldVisitEntry)` which are unnecessary on the second and later iterations
+            // of the displacing loop. If [Branchless hash table iteration] was used instead of
             // [Byte-by-byte hash table iteration] then the separate displacing loop would be
             // mandatory.
             //
@@ -4524,7 +4523,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         static final int SLOT_MASK = HASH_TABLE_SLOTS - 1;
         static final int GROUP_SLOTS = Long.BYTES;
         /** [Replacing division with shift] */
-        static final int GROUP_SLOTS_DIVISION_SHIFT = 3;
+        static final int GROUP_SLOTS_DIVISION_SHIFT = 3; // = numberOfTrailingZeros(GROUP_SLOTS)
         @IntVal(8)
         static final int HASH_TABLE_GROUPS = HASH_TABLE_SLOTS / GROUP_SLOTS;
         static final int GROUP_BITS = Long.SIZE;
@@ -5099,8 +5098,6 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         static final long MOST_SIGNIFICANT_BIT = 1L << 7;
 
-        static final int DELETED_CONTROL_AS_INT = (int) DELETED_CONTROL;
-
         /** {@link #EMPTY_CONTROL} repeated 8 times */
         static final long EMPTY_CONTROLS_GROUP = -1L;
 
@@ -5114,10 +5111,6 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         @SuppressWarnings({"NumericOverflow", "ConstantOverflow"})
         static final long INFLATED_SEGMENT_MARKER_CONTROLS_GROUP =
                 INFLATED_SEGMENT_MARKER_CONTROL * LEAST_SIGNIFICANT_BYTE_BITS;
-
-        static boolean isDeleted(byte controlByte) {
-            return (int) controlByte == DELETED_CONTROL_AS_INT;
-        }
 
         static boolean isFirstSlotFull(long controlsGroup) {
             return (controlsGroup & MOST_SIGNIFICANT_BIT) == 0;
@@ -5669,7 +5662,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             // See also [Branchless entries iteration].
             //
             // This two-level hash table iteration loop is the same as in Segment.removeIf().
-            // Modifications to these two instances of the loop must be done simultaneously.
+            // Modifications to these instances of the loop must be done simultaneously.
             // [Int-indexed loop to avoid a safepoint poll]
             for (int iterationGroupFirstSlotIndex = 0;
                  iterationGroupFirstSlotIndex < HASH_TABLE_SLOTS;
@@ -5977,8 +5970,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 //  the branch probability is different.
                 //
                 // This two-level hash table iteration loop is the same as in
-                // compactEntriesDuringSplit(). Modifications to these two instances of the loop
-                // must be done simultaneously.
+                // compactEntriesDuringSplit(). Modifications to these instances of the loop must be
+                // done simultaneously.
                 // [Int-indexed loop to avoid a safepoint poll]
                 for (int iterationGroupFirstSlotIndex = 0;
                      iterationGroupFirstSlotIndex < HASH_TABLE_SLOTS;
@@ -6057,21 +6050,16 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         @Nullable DebugHashTableSlot<K, V>[] debugHashTable(SmoothieMap<K, V> map) {
             @Nullable DebugHashTableSlot[] debugHashTableSlots =
                     new DebugHashTableSlot[HASH_TABLE_SLOTS + CLONED_CONTROL_SLOTS];
-            for (int iterationGroupFirstSlotIndex = 0;
-                 iterationGroupFirstSlotIndex < HASH_TABLE_SLOTS + CLONED_CONTROL_SLOTS;
-                 iterationGroupFirstSlotIndex += GROUP_SLOTS) {
-                long controlsGroup = readControlsGroup(this, (long) iterationGroupFirstSlotIndex);
-                for (long bitMask = matchFullOrDeleted(controlsGroup);
-                     bitMask != 0L;
-                     bitMask = clearLowestSetBit(bitMask)) {
-                    int slotIndex = lowestMatchIndex(iterationGroupFirstSlotIndex, bitMask);
-                    int relativeSlotIndex = slotIndex - iterationGroupFirstSlotIndex;
-                    int controlByte = toUnsignedInt(
-                            (byte) (controlsGroup >>> (relativeSlotIndex * Byte.SIZE)));
-                    int dataByte = readData(this, (long) slotIndex);
-                    debugHashTableSlots[slotIndex] =
-                            new DebugHashTableSlot<>(map, this, controlByte, dataByte);
+            // [Byte-by-byte hash table iteration]
+            for (int slotIndex = 0; slotIndex < HASH_TABLE_SLOTS + CLONED_CONTROL_SLOTS;
+                 slotIndex++) {
+                byte controlByte = readControlByte(this, (long) slotIndex);
+                if ((int) controlByte == EMPTY_CONTROL) {
+                    continue;
                 }
+                int dataByte = readData(this, (long) (slotIndex & SLOT_MASK));
+                debugHashTableSlots[slotIndex] =
+                        new DebugHashTableSlot<>(map, this, controlByte, dataByte);
             }
             //noinspection unchecked
             return debugHashTableSlots;
@@ -6090,8 +6078,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
             @SuppressWarnings("unchecked")
             DebugHashTableSlot(SmoothieMap<K, V> map, Segment<K, V> segment,
-                    int controlByte, int dataByte) {
-                this.controlByte = (byte) controlByte;
+                    byte controlByte, int dataByte) {
+                this.controlByte = controlByte;
                 this.dataByte = (byte) dataByte;
                 this.allocIndex = allocIndex(dataByte);
                 this.hashDataBits = debugExtractHashDataBits(dataByte);
