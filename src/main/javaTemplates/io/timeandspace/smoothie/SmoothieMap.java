@@ -2604,7 +2604,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         for (int slotIndex = 0; slotIndex < HASH_TABLE_SLOTS; slotIndex++) {
             // [Visiting only deleted slots]
             boolean shouldVisitEntry =
-                    (int) readControlByte(fromSegment, (long) slotIndex) == DELETED_CONTROL;
+                    readControlByte(fromSegment, (long) slotIndex) == DELETED_CONTROL;
             if (!shouldVisitEntry) {
                 continue;
             }
@@ -3002,7 +3002,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             // Visiting only deleted slots: full entries (which may appear as the result of wrap
             // around and forward replacement in displacingLoop) are skipped.
             boolean shouldVisitEntry =
-                    (int) readControlByte(segment, (long) slotIndex) == DELETED_CONTROL;
+                    readControlByte(segment, (long) slotIndex) == DELETED_CONTROL;
             if (!shouldVisitEntry) {
                 continue;
             }
@@ -4618,9 +4618,9 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             }
         }
 
-        static byte readControlByte(Object segment, long slotIndex) {
+        static int readControlByte(Object segment, long slotIndex) {
             /* if Enabled extraChecks */assertNonNullSegment(segment);/* endif */
-            return U.getByte(segment, CONTROLS_OFFSET + slotIndex);
+            return (int) U.getByte(segment, CONTROLS_OFFSET + slotIndex);
         }
 
         static void writeControlByte(Object segment, long slotIndex, byte controlByte) {
@@ -6053,13 +6053,13 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             // [Byte-by-byte hash table iteration]
             for (int slotIndex = 0; slotIndex < HASH_TABLE_SLOTS + CLONED_CONTROL_SLOTS;
                  slotIndex++) {
-                byte controlByte = readControlByte(this, (long) slotIndex);
-                if ((int) controlByte == EMPTY_CONTROL) {
+                int controlByte = readControlByte(this, (long) slotIndex);
+                if (controlByte == EMPTY_CONTROL) {
                     continue;
                 }
                 int dataByte = readData(this, (long) (slotIndex & SLOT_MASK));
                 debugHashTableSlots[slotIndex] =
-                        new DebugHashTableSlot<>(map, this, controlByte, dataByte);
+                        new DebugHashTableSlot<>(map, this, (byte) controlByte, dataByte);
             }
             //noinspection unchecked
             return debugHashTableSlots;
