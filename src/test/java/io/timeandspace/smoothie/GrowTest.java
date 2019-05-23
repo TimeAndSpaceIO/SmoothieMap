@@ -48,20 +48,7 @@ public class GrowTest {
     @Test
     public void growTest() {
         for (int i = 0; i < keys.size(); i++) {
-
             Integer key = keys.get(i);
-            if (i == 19) {
-                for (int segmentIndex = 0; segmentIndex < map.debugSegmentsArrayLength();
-                     segmentIndex++) {
-                    SmoothieMap.Segment<Integer, Integer> segment =
-                            map.debugSegmentByIndex(segmentIndex);
-                    segment.forEachKey(k -> {
-                        if (k.equals(key)) {
-                            int y = 0;
-                        }
-                    });
-                }
-            }
             assertEquals((Integer) 0, map.get(key));
         }
     }
