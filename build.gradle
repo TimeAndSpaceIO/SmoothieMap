@@ -142,6 +142,11 @@ forbiddenApis {
 //    ]
 //}
 
+test {
+    // Some of the tests create giant SmoothieMaps, e. g. GrowTest
+    maxHeapSize = "4g"
+}
+
 publishing {
     publications {
         mavenJava(MavenPublication) {
