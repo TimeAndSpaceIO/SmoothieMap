@@ -420,16 +420,23 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             ((long) SEGMENT_MAX_ALLOC_CAPACITY / MAX_ALLOC_CAPACITY_POWER_OF_TWO_COMPONENT_SIZE) *
                     MAX_SEGMENTS_ARRAY_LENGTH;
 
+    /**
+     * Returns the minimum of {@link #MAX_SEGMENTS_ARRAY_ORDER} and
+     * log2(ceilingPowerOfTwo(divideCeiling(size, {@link Segment#SEGMENT_MAX_ALLOC_CAPACITY}))).
+     * The given size must be positive.
+     */
     static int doComputeAverageSegmentOrder(long size) {
-        // The implementation of this method essentially computes
-        // min(MAX_SEGMENTS_ARRAY_ORDER, log2(ceilingPowerOfTwo(size / SEGMENT_MAX_ALLOC_CAPACITY)))
-        // but avoiding integral division and without branches. The idea is that instead of dividing
-        // the size by SEGMENT_MAX_ALLOC_CAPACITY = 48, the size is first divided by 16 (that is
-        // replaced with right shift) and then additionally by 3, that is replaceable with
-        // multiplication and right shift too (a bit twiddling hack).
+        assert size > 0;
+        // The implementation of this method aims to avoid integral division and branches. The idea
+        // is that instead of dividing the size by SEGMENT_MAX_ALLOC_CAPACITY = 48, the size is
+        // first divided by 16 (that is replaced with right shift) and then additionally by 3, that
+        // is replaceable with multiplication and right shift too (a bit twiddling hack).
+
+        // saturatedSize is needed for proper ceiling division by SEGMENT_MAX_ALLOC_CAPACITY.
+        long saturatedSize = size + SEGMENT_MAX_ALLOC_CAPACITY - 1;
         long segmentCapacityPowerOfTwoComponents = min(
                 // [Replacing division with shift]
-                size >>> MAX_ALLOC_CAPACITY_POWER_OF_TWO_COMPONENT_SIZE_DIVISION_SHIFT,
+                saturatedSize >>> MAX_ALLOC_CAPACITY_POWER_OF_TWO_COMPONENT_SIZE_DIVISION_SHIFT,
                 MAP_AVERAGE_SEGMENTS_SATURATION_SEGMENT_CAPACITY_POWER_OF_TWO_COMPONENTS
         );
         // The following line is an obscure form of
@@ -441,16 +448,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         // MAP_AVERAGE_SEGMENTS_SATURATION_SEGMENT_CAPACITY_POWER_OF_TWO_COMPONENTS = 3 * 2^30 =
         // 2^31 + 2^30.
         int averageSegments = (int) ((segmentCapacityPowerOfTwoComponents * 2863311531L) >>> 33);
-        // The following expression is based on code from Guava (see IntMath.ceilingPowerOfTwo()).
-        // Note that for averageSegments = 0 (i. e. there are less than SEGMENT_MAX_ALLOC_CAPACITY
-        // entries in the SmoothieMap) the returned average segment order will be 0, exactly what is
-        // needed.
-        if (averageSegments != 0) { // [Positive likely branch]
-            return 1 << -Integer.numberOfLeadingZeros(averageSegments - 1);
-        } else {
-            // TODO is there a branchless solution?
-            return 0;
-        }
+        return Integer.SIZE - Integer.numberOfLeadingZeros(averageSegments - 1);
     }
 
     /**
