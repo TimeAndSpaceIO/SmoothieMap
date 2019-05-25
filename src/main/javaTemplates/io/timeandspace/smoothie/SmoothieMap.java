@@ -413,7 +413,6 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
      */
     static final int MAX_SEGMENTS_ARRAY_ORDER = 30;
     private static final int MAX_SEGMENTS_ARRAY_LENGTH = 1 << MAX_SEGMENTS_ARRAY_ORDER;
-    private static final long MAX_SEGMENTS_ARRAY_LENGTH_AS_LONG = (long) MAX_SEGMENTS_ARRAY_LENGTH;
 
     private static final long
             MAP_AVERAGE_SEGMENTS_SATURATION_SEGMENT_CAPACITY_POWER_OF_TWO_COMPONENTS =
@@ -3645,7 +3644,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         int resultSegmentsAllocCapacity = getInitialSegmentAllocCapacity(resultSegmentsOrder);
         // Publishing result segments before population in splitInflated: result segments are first
         // published to segmentsArray and then populated using the "public" put() procedure (see
-        // doSplitInflated[1]) rather than populated privately as in doShrinkInto() and
+        // doSplitInflated()) rather than populated privately as in doShrinkInto() and
         // doDeflateSmall() because the inflated segment which is being split in this method may
         // contain more than SEGMENT_MAX_ALLOC_CAPACITY entries, therefore one of the result
         // segments might need to be inflated too while the entries are moved from the inflated
@@ -3657,7 +3656,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         // + MAX_SEGMENT_ORDER_DIFFERENCE_FROM_AVERAGE - 1 (which shouldn't normally happen, but
         // is possible if an artificial sequence of key insertions is constructed so that the
         // inflated segment is not accessed while the rest of the map has become more than four
-        // times bigger) then the result segments can even be split.
+        // times bigger) then the result segments can even be split during doSplitInflated().
         //
         // Accounting for these possibilities would make the private insertion procedure in this
         // method too complex, especially considering that methods handling inflated segments don't
@@ -3679,7 +3678,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 Segment.createNewSegment(resultSegmentsAllocCapacity, resultSegmentsOrder);
         replaceInSegmentsArray(
                 segmentsArray, firstIndexOfResultSegmentTwo, resultSegmentsOrder, resultSegmentTwo);
-        modCount++; // Matches the modCount field fiincrement performed in replaceInSegmentsArray().
+        modCount++; // Matches the modCount field increment performed in replaceInSegmentsArray().
 
         /* if Tracking segmentOrderStats */
         addToSegmentCountWithOrder(resultSegmentsOrder, 2);
@@ -3697,15 +3696,22 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     }
 
     private void doSplitInflated(InflatedSegment<K, V> inflatedSegment) {
+        int numMovedEntries = 0;
         for (Node<K, V> node : inflatedSegment.delegate.keySet()) {
             K key = node.getKey();
             V value = node.getValue();
             // [Possibly wrong hash from InflatedSegment's node]
             long hash = node.hash;
-            if (put(segmentByHash(hash), key, hash, value, true /* onlyIfAbsent */) != null) { //(1)
+            // [Publishing result segments before population in splitInflated] explains why we are
+            // using "public" put() method here. (1)
+            if (put(segmentByHash(hash), key, hash, value, true /* onlyIfAbsent */) != null) {
                 throw new ConcurrentModificationException();
             }
+            numMovedEntries++;
         }
+        // Restoring the correct size after calling put() with entries that are already in the map
+        // in the loop above.
+        size = size - (long) numMovedEntries;
     }
 
     // endregion
