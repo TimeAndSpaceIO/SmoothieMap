@@ -1,12 +1,19 @@
 package io.timeandspace.smoothie;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.function.IntConsumer;
 import java.util.function.IntToLongFunction;
 import java.util.stream.IntStream;
 
 import static io.timeandspace.smoothie.LongMath.percentOf;
 import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.SEGMENT_MAX_ALLOC_CAPACITY;
-import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.*;
+import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.GROUP_SLOTS;
+import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.GROUP_SLOTS_DIVISION_SHIFT;
+import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.HASH_TABLE_GROUPS;
+import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.SLOT_MASK;
+import static java.util.Collections.singletonList;
 
 /**
  * Stats of collision chain lengths and deleted slot counts for ordinary segments (that are, not
@@ -37,6 +44,10 @@ final class OrdinarySegmentStats {
 
     int getNumAggregatedSegments() {
         return numAggregatedSegments;
+    }
+
+    long getNumAggregatedFullSlots() {
+        return numAggregatedFullSlots;
     }
 
     void aggregateFullSlot(int slotIndexBase, int slotIndex) {
@@ -110,34 +121,68 @@ final class OrdinarySegmentStats {
                 averageChainLength));
 
         appendNonZeroOrderedCountsWithPercentiles(
-                sb, "chain length =", "slots", numSlotsPerChainLengths.length,
-                chainLength -> numSlotsPerChainLengths[chainLength],
+                sb, "chain length =", numSlotsPerChainLengths.length,
+                singletonList(
+                        new Count("slots", chainLength -> numSlotsPerChainLengths[chainLength])
+                ),
                 chainLength -> {});
+    }
+
+    static class Count {
+        final String name;
+        final IntToLongFunction countFunction;
+
+        Count(String name, IntToLongFunction countFunction) {
+            this.name = name;
+            this.countFunction = countFunction;
+        }
     }
 
     @SuppressWarnings("AutoBoxing")
     static void appendNonZeroOrderedCountsWithPercentiles(
-            StringBuilder sb, String orderPrefix, String countSuffix, int maxOrderExclusive,
-            IntToLongFunction getCount, IntConsumer perOrderAction) {
+            StringBuilder sb, String orderPrefix, int maxOrderExclusive,
+            List<Count> counts, IntConsumer perOrderAction) {
         int maxOrderWidth = String.valueOf(maxOrderExclusive - 1).length();
-        long maxCount = IntStream.range(0, maxOrderExclusive).mapToLong(getCount).max().orElse(0);
-        int maxCountWidth = String.valueOf(maxCount).length();
         // Ensures all counts, and the subsequent percentile columns are aligned.
-        String lineFormat = orderPrefix + " %" + maxOrderWidth + "d: " +
-                "%" + maxCountWidth + "d " + countSuffix + ", %3.2f%% %3.2f%%%n";
+        String lineFormat = orderPrefix + " %" + maxOrderWidth + "d:";
+        for (Count count : counts) {
+            long maxCount = IntStream
+                    .range(0, maxOrderExclusive).mapToLong(count.countFunction).max().orElse(0);
+            int maxCountWidth = String.valueOf(maxCount).length();
+            //noinspection StringConcatenationInLoop
+            lineFormat += " %" + maxCountWidth + "d " + count.name + ", %6.2f%% %6.2f%%";
+        }
+        lineFormat += "%n";
 
-        long totalCount = IntStream.range(0, maxOrderExclusive).mapToLong(getCount).sum();
-        long currentAggregatedCount = 0;
-        for (int i = 0; i < maxOrderExclusive; i++) {
-            long count = getCount.applyAsLong(i);
-            if (count == 0) {
-                continue; // skip zeros
+        long[] totalCounts = counts
+                .stream()
+                .mapToLong(count ->
+                        IntStream.range(0, maxOrderExclusive).mapToLong(count.countFunction).sum())
+                .toArray();
+        long[] currentAggregatedCounts = new long[counts.size()];
+        for (int order = 0; order < maxOrderExclusive; order++) {
+            int finalOrder = order;
+            long[] countsForOrder =  counts
+                    .stream().mapToLong(count -> count.countFunction.applyAsLong(finalOrder)).toArray();
+            if (Arrays.stream(countsForOrder).allMatch(c -> c == 0)) {
+                continue; // skip all-zero columns zeros
             }
-            currentAggregatedCount += count;
-            double percentile = percentOf(count, totalCount);
-            double currentAggregatedPercentile = percentOf(currentAggregatedCount, totalCount);
-            sb.append(String.format(lineFormat, i, count, percentile, currentAggregatedPercentile));
-            perOrderAction.accept(i);
+            Arrays.setAll(
+                    currentAggregatedCounts, i -> currentAggregatedCounts[i] + countsForOrder[i]);
+
+            List<Object> formatArguments = new ArrayList<>();
+            formatArguments.add(order);
+            for (int i = 0; i < counts.size(); i++) {
+                double percentile = percentOf(countsForOrder[i], totalCounts[i]);
+                double currentAggregatedPercentile =
+                        percentOf(currentAggregatedCounts[i], totalCounts[i]);
+                formatArguments.add(countsForOrder[i]);
+                formatArguments.add(percentile);
+                formatArguments.add(currentAggregatedPercentile);
+            }
+            sb.append(String.format(lineFormat, formatArguments.toArray()));
+
+            perOrderAction.accept(order);
         }
     }
 }

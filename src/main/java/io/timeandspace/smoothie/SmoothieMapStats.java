@@ -1,12 +1,16 @@
 package io.timeandspace.smoothie;
 
+import io.timeandspace.smoothie.OrdinarySegmentStats.Count;
 import org.checkerframework.checker.nullness.qual.Nullable;
 
 import java.util.Arrays;
 import java.util.Objects;
 
 import static io.timeandspace.smoothie.OrdinarySegmentStats.appendNonZeroOrderedCountsWithPercentiles;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.*;
+import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.deletedSlotCount;
+import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.isInflatedBitSetAndState;
+import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.segmentOrder;
+import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.segmentSize;
 import static io.timeandspace.smoothie.SmoothieMap.MAX_SEGMENTS_ARRAY_ORDER;
 import static io.timeandspace.smoothie.SmoothieMap.Segment.SEGMENT_MAX_NON_EMPTY_SLOTS;
 
@@ -23,7 +27,7 @@ final class SmoothieMapStats {
     }
 
     @SuppressWarnings("WeakerAccess")
-    int computeNumAggregatedOrdinarySegmentsForOrder(int segmentOrder) {
+    int computeNumAggregatedOrdinarySegmentsWithOrder(int segmentOrder) {
         //noinspection ConstantConditions: same as in computeTotalOrdinarySegmentStats()
         @Nullable OrdinarySegmentStats @Nullable [] statsForSegmentOrder =
                 ordinarySegmentStatsPerOrderAndNumNonEmptySlots[segmentOrder];
@@ -34,6 +38,20 @@ final class SmoothieMapStats {
                 .stream(statsForSegmentOrder)
                 .filter(Objects::nonNull)
                 .mapToInt(OrdinarySegmentStats::getNumAggregatedSegments)
+                .sum();
+    }
+
+    private long computeNumAggregatedFullSlotsInSegmentsWithOrder(int segmentOrder) {
+        //noinspection ConstantConditions: same as in computeTotalOrdinarySegmentStats()
+        @Nullable OrdinarySegmentStats @Nullable [] statsForSegmentOrder =
+                ordinarySegmentStatsPerOrderAndNumNonEmptySlots[segmentOrder];
+        if (statsForSegmentOrder == null) {
+            return 0;
+        }
+        return Arrays
+                .stream(statsForSegmentOrder)
+                .filter(Objects::nonNull)
+                .mapToLong(OrdinarySegmentStats::getNumAggregatedFullSlots)
                 .sum();
     }
 
@@ -113,23 +131,43 @@ final class SmoothieMapStats {
 
     String segmentOrderAndLoadDistribution() {
         StringBuilder sb = new StringBuilder();
+
+        Count numSegmentsWithOrder_count = new Count(
+                "segments",
+                segmentOrder -> (long) computeNumAggregatedOrdinarySegmentsWithOrder(segmentOrder)
+        );
+        Count numFullSlotsInSegmentsWithOrder_count =
+                new Count("full slots", this::computeNumAggregatedFullSlotsInSegmentsWithOrder);
         //noinspection ConstantConditions: same as in computeTotalOrdinarySegmentStats()
-        appendNonZeroOrderedCountsWithPercentiles(sb, "order", "segments",
+        appendNonZeroOrderedCountsWithPercentiles(sb, "order",
                 ordinarySegmentStatsPerOrderAndNumNonEmptySlots.length,
-                segmentOrder -> (long) computeNumAggregatedOrdinarySegmentsForOrder(segmentOrder),
+                Arrays.asList(numSegmentsWithOrder_count, numFullSlotsInSegmentsWithOrder_count),
                 segmentOrder -> {
                     @Nullable OrdinarySegmentStats @Nullable [] statsForSegmentOrder =
                             ordinarySegmentStatsPerOrderAndNumNonEmptySlots[segmentOrder];
                     if (statsForSegmentOrder == null) {
                         return;
                     }
-                    appendNonZeroOrderedCountsWithPercentiles(sb, "# non-empty slots =", "segments",
-                            statsForSegmentOrder.length,
+                    Count numSegmentsWithNonEmptySlots_count = new Count(
+                            "segments",
                             numNonEmptySlots -> {
                                 @Nullable OrdinarySegmentStats stats =
                                         statsForSegmentOrder[numNonEmptySlots];
                                 return stats == null ? 0 : (long) stats.getNumAggregatedSegments();
-                            },
+                            }
+                    );
+                    Count numFullSlotsInSegmentsWithNonEmptySlots_count = new Count(
+                            "full slots",
+                            numNonEmptySlots -> {
+                                @Nullable OrdinarySegmentStats stats =
+                                        statsForSegmentOrder[numNonEmptySlots];
+                                return stats == null ? 0 : stats.getNumAggregatedFullSlots();
+                            }
+                    );
+                    appendNonZeroOrderedCountsWithPercentiles(sb, "# non-empty slots =",
+                            statsForSegmentOrder.length,
+                            Arrays.asList(numSegmentsWithNonEmptySlots_count,
+                                    numFullSlotsInSegmentsWithNonEmptySlots_count),
                             numNonEmptySlots -> {});
                 });
         return sb.toString();
