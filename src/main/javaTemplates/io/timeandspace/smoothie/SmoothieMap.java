@@ -59,7 +59,6 @@ import java.util.function.ToLongFunction;
 
 import static io.timeandspace.smoothie.InflatedSegmentQueryContext.COMPUTE_IF_PRESENT_ENTRY_REMOVED;
 import static io.timeandspace.smoothie.InflatedSegmentQueryContext.Node;
-import static io.timeandspace.smoothie.IntMath.toUnsignedInt;
 import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE;
 import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.DELETED_SLOT_COUNT_UNIT;
 import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.GROUP_SLOTS;
@@ -3979,6 +3978,22 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         return removedSomeEntries;
     }
 
+    final void aggregateStats(SmoothieMapStats stats) {
+        stats.incrementAggregatedMaps();
+        int modCount = getModCountOpaque();
+        Object[] segmentsArray = getNonNullSegmentsArrayOrThrowIse();
+        int segmentArrayLength = segmentsArray.length;
+        int segmentsArrayOrder = order(segmentArrayLength);
+        Segment<K, V> segment;
+        for (int segmentIndex = 0; segmentIndex >= 0;
+             segmentIndex = nextSegmentIndex(
+                     segmentArrayLength, segmentsArrayOrder, segmentIndex, segment)) {
+            segment = segmentByIndexDuringBulkOperations(segmentsArray, segmentIndex);
+            stats.aggregateSegment(this, segment);
+        }
+        checkModCountOrThrowCme(modCount);
+    }
+
     //endregion
 
     //region Collection views: keySet(), values(), entrySet()
@@ -6034,6 +6049,30 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         //endregion
 
+        //region Segment's stats and debug bulk operations
+
+        void aggregateStats(SmoothieMap<K, V> map, OrdinarySegmentStats ordinarySegmentStats) {
+            ordinarySegmentStats.incrementAggregatedSegments();
+            // [Byte-by-byte hash table iteration]
+            for (int slotIndex = 0; slotIndex < HASH_TABLE_SLOTS; slotIndex++) {
+                int controlByte = readControlByte(this, (long) slotIndex);
+                if (controlByte == EMPTY_CONTROL) {
+                    continue;
+                }
+                if (controlByte == DELETED_CONTROL) {
+                    ordinarySegmentStats.aggregateDeletedSlot();
+                    continue;
+                }
+                // Slot is full
+                int data = readData(this, (long) slotIndex);
+                int allocIndex = allocIndex(data);
+                K key = readKey(this, allocIndex);
+                long hash = map.keyHashCode(key);
+                int slotIndexBase = slotIndex(hash);
+                ordinarySegmentStats.aggregateFullSlot(slotIndexBase, slotIndex);
+            }
+        }
+
         String debugToString() {
             DebugBitSetAndState bitSetAndState = new DebugBitSetAndState(this.bitSetAndState);
             StringBuilder sb = new StringBuilder();
@@ -6105,6 +6144,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                         Integer.toBinaryString(Byte.toUnsignedInt(restoredFullControlByte)), key);
             }
         }
+
+        //endregion
 
         static final long ALLOC_OFFSET;
         private static final long ALLOC_VALUE_OFFSET;
@@ -6559,6 +6600,21 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         @Override
         void forEach(BiConsumer<? super K, ? super V> action) {
             delegate.keySet().forEach(node -> action.accept(node.getKey(), node.getValue()));
+        }
+
+        @Override
+        void aggregateStats(SmoothieMap<K, V> map, OrdinarySegmentStats ordinarySegmentStats) {
+            throw new IllegalStateException("must not be called on an inflated segment");
+        }
+
+        @Override
+        String debugToString() {
+            return "InflatedSegment: " + delegate.toString();
+        }
+
+        @Override
+        @Nullable DebugHashTableSlot<K, V>[] debugHashTable(SmoothieMap<K, V> map) {
+            throw new IllegalStateException("must not be called on an inflated segment");
         }
     }
 

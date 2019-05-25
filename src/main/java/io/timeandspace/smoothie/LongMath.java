@@ -24,4 +24,13 @@ final class LongMath {
         }
         return Long.highestOneBit(x);
     }
+
+    /**
+     * Usually this would be too trivial of a function to deem extraction, but since there is a
+     * requirement in the project to make numeric conversions explicit, inlined code becomes a
+     * little too cumbersome.
+     */
+    static double percentOf(long x, long total) {
+        return (100.0 * (double) x) / ((double) total);
+    }
 }

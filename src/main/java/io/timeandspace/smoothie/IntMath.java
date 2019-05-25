@@ -36,9 +36,5 @@ final class IntMath {
         return x > 0 & (x & (x - 1)) == 0;
     }
 
-    static int toUnsignedInt(byte b) {
-        return ((int) b) & 0xFF;
-    }
-
     private IntMath() {}
 }

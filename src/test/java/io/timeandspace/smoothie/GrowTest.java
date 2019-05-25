@@ -28,9 +28,9 @@ import static org.junit.Assert.assertTrue;
 
 public class GrowTest {
 
-    SmoothieMap<Integer, Integer> map = SmoothieMap.<Integer, Integer>newBuilder().build();
-    List<Integer> keys = new ArrayList<>();
-    Random random = new Random(0);
+    private SmoothieMap<Integer, Integer> map = SmoothieMap.<Integer, Integer>newBuilder().build();
+    private List<Integer> keys = new ArrayList<>();
+    private Random random = new Random(0);
 
     @Before
     public void fillMap() {

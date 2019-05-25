@@ -151,9 +151,9 @@ publishing {
     publications {
         mavenJava(MavenPublication) {
             from components.java
-
+            artifactId = 'smoothie-map'
             pom {
-                name = "SmoothieMap 2"
+                name = 'SmoothieMap 2'
                 inceptionYear = '2018'
                 developers {
                     developer {
