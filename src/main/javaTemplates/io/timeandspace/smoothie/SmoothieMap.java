@@ -5300,11 +5300,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             return EMPTY_CONTROL - ((EMPTY_CONTROL - DELETED_CONTROL) * deleted);
         }
 
-        /**
-         * Logically, this value is equal to numberOfTrailingZeros(HASH_TABLE_SLOTS). Avoid
-         * specifying it as such to enable javac (and JIT) to fold this value as a compile-time
-         * constant.
-         */
+        /** = numberOfTrailingZeros({@link #HASH_TABLE_SLOTS}). */
+        @CompileTimeConstant
         static final int LOG_HASH_TABLE_SIZE = 6;
         static final int HASH_CONTROL_BITS = 7;
         private static final long HASH_CONTROL_BIT_MASK = (1 << HASH_CONTROL_BITS) - 1;
