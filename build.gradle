@@ -119,6 +119,7 @@ tasks.withType(io.timeandspace.jpsg.JpsgTask) {
     with 'Tracking hashCodeDistribution'
     with 'Flag doShrink'
     with 'Tracking segmentOrderStats'
+    with 'Disabled moveToMapWithShrunkArray'
 }
 
 import net.ltgt.gradle.errorprone.CheckSeverity

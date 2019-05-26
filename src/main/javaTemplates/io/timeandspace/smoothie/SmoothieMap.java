@@ -1203,9 +1203,12 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         long segmentArrayOffset = (hash & segmentLookupMask /* <- 1 */) >>
                 SEGMENT_ARRAY_OFFSET_HASH_SHIFT;
         @Nullable Object segmentsArray = this.segmentsArray; // <- 2
+        /* if Enabled moveToMapWithShrunkArray */
+        // [segmentsArray non-null checks]
         if (segmentsArray == null) {
             throwIseSegmentsArrayNull();
         }
+        /* endif */
         // Avoid normal array access: normal array access incurs
         // - an extra data dependency between reading the array reference and a reference to a
         //   specific Segment;
@@ -1317,9 +1320,12 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     private Object[] getNonNullSegmentsArrayOrThrowCme() {
         @Nullable Object[] segmentsArray =
                 (@Nullable Object[]) this.segmentsArray;
+        /* if Enabled moveToMapWithShrunkArray */
+        // [segmentsArray non-null checks]
         if (segmentsArray == null) {
             throwCmeSegmentsArrayNull();
         }
+        /* endif */
         return segmentsArray;
     }
 
@@ -1331,9 +1337,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     private Object[] getNonNullSegmentsArrayOrThrowIse() {
         @Nullable Object[] segmentsArray =
                 (@Nullable Object[]) this.segmentsArray;
+        /* if Enabled moveToMapWithShrunkArray */
+        // segmentsArray non-null checks: are needed only when moveToMapWithShrunkArray() operation
+        // is possible because there is no other way that segmentsArray can be observed to be null
+        // after SmoothieMap's construction.
         if (segmentsArray == null) {
             throwIseSegmentsArrayNull();
         }
+        /* endif */
         return segmentsArray;
     }
 
@@ -2359,7 +2370,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             // MAX_SEGMENT_ORDER_DIFFERENCE_FROM_AVERAGE if the SmoothieMap used to be larger and
             // has shrunk in size since). But it's not done because we don't want to disturb the
             // poor hash code distribution detection (see HashCodeDistribution), as well as
-            // moveToMapWithShrunkArray() functionality.
+            // the functionality of moveToMapWithShrunkArray().
             if (acceptableOrderAfterSplitting &&
                     (modCountIncrement =
                             tryEnsureSegmentsArrayCapacityForSplit(segmentOrder)) >= 0) {
@@ -3722,9 +3733,11 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         throw new UnsupportedOperationException("TODO");
     }
 
+    /* if Enabled moveToMapWithShrunkArray */
     private SmoothieMap<K, V> moveToMapWithShrunkArray() {
         throw new UnsupportedOperationException("TODO");
     }
+    /* endif */
 
     //endregion
 
