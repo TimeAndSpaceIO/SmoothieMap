@@ -11,6 +11,12 @@
       <option name="SUGGEST_NULLABLE_ANNOTATIONS" value="false" />
       <option name="DONT_REPORT_TRUE_ASSERT_STATEMENTS" value="true" />
     </inspection_tool>
+    <inspection_tool class="DeprecatedIsStillUsed" enabled="true" level="INFORMATION" enabled_by_default="true">
+      <scope name="Production" level="ERROR" enabled="true" />
+    </inspection_tool>
+    <inspection_tool class="Deprecation" enabled="true" level="INFORMATION" enabled_by_default="true">
+      <scope name="Production" level="ERROR" enabled="true" />
+    </inspection_tool>
     <inspection_tool class="Duplicates" enabled="true" level="WEAK WARNING" enabled_by_default="true">
       <Java>
         <minSize>50</minSize>

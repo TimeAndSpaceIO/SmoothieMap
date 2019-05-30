@@ -945,6 +945,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         addToSegmentCountWithOrder(segmentOrder, segments);
     }
 
+    /** @deprecated in order not to forget to remove calls from production code */
+    @Deprecated
     int[] debugSegmentCountsByOrder() {
         if (segmentCountsByOrder != null) {
             return (int[]) segmentCountsByOrder;
@@ -1219,11 +1221,15 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 ARRAY_OBJECT_BASE_OFFSET_AS_LONG + segmentArrayOffset);
     }
 
+    /** @deprecated in order not to forget to remove calls from production code */
+    @Deprecated
     final int debugSegmentsArrayLength() {
         //noinspection ConstantConditions: suppress nullability warnings during debug
         return ((Object[]) segmentsArray).length;
     }
 
+    /** @deprecated in order not to forget to remove calls from production code */
+    @Deprecated
     final Segment<K, V> debugSegmentByIndex(int segmentIndex) {
         //noinspection unchecked,ConstantConditions: suppress nullability warnings during debug
         return (Segment<K, V>) ((Object[]) segmentsArray)[segmentIndex];
@@ -2463,14 +2469,6 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         int siblingSegmentsOrder = priorSegmentOrder + 1;
 
-        Segment.@Nullable DebugHashTableSlot[] debugHashTableSlots =
-                ((Segment) fromSegment).debugHashTable(this);
-        int firstSiblingSegmentsIndex =
-                firstSegmentIndexByHashAndOrder(hash, priorSegmentOrder);
-        if (firstSiblingSegmentsIndex == 52680 && priorSegmentOrder == 16) {
-            int x = 0;
-        }
-
         // ### Create a new segment and split entries between fromSegment and the new segment.
         int intoSegmentAllocCapacity = getInitialSegmentAllocCapacity(siblingSegmentsOrder);
         // intoSegment's bitSetAndState is written and [Safe segment publication] is ensured inside
@@ -2488,8 +2486,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         // ### Publish intoSegment (the new segment) to segmentsArray.
         int intoSegmentIsLower = (int) (fromSegmentIsHigher >>>
                 siblingSegmentsQualificationBitIndex);
-//        int firstSiblingSegmentsIndex =
-//                firstSegmentIndexByHashAndOrder(hash, priorSegmentOrder);
+        int firstSiblingSegmentsIndex =
+                firstSegmentIndexByHashAndOrder(hash, priorSegmentOrder);
         int firstIntoSegmentIndex = chooseFirstSiblingSegmentIndex(
                 firstSiblingSegmentsIndex, siblingSegmentsOrder, intoSegmentIsLower);
         replaceInSegmentsArray(getNonNullSegmentsArrayOrThrowCme(), firstIntoSegmentIndex,
@@ -5023,7 +5021,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             setBitSetAndState(segment, newBitSetAndState);
         }
 
-        @SuppressWarnings("unused")
+        /** @deprecated in order not to forget to remove calls from production code */
+        @Deprecated
         final DebugBitSetAndState debugBitSetAndState() {
             return new DebugBitSetAndState(bitSetAndState);
         }
@@ -6087,6 +6086,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             }
         }
 
+        /** @deprecated in order not to forget to remove calls from production code */
+        @Deprecated
         String debugToString() {
             DebugBitSetAndState bitSetAndState = new DebugBitSetAndState(this.bitSetAndState);
             StringBuilder sb = new StringBuilder();
@@ -6100,6 +6101,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             return sb.toString();
         }
 
+        /** @deprecated in order not to forget to remove calls from production code */
+        @Deprecated
         @Nullable DebugHashTableSlot<K, V>[] debugHashTable(SmoothieMap<K, V> map) {
             @Nullable DebugHashTableSlot[] debugHashTableSlots =
                     new DebugHashTableSlot[HASH_TABLE_SLOTS + CLONED_CONTROL_SLOTS];
