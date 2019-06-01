@@ -44,9 +44,10 @@ import static io.timeandspace.smoothie.HashCodeDistribution.OUTLIER_SEGMENT__HAS
  * of the halves. (The "one in five" estimate is the inverse of the first probability in this table: {@link
  * HashCodeDistribution#OUTLIER_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS}.)
  * Accordingly, for 11% of splits the probability should be checked two times (for two different
- * degrees of skewness independently, see {@link HashCodeDistribution#accountOutlierSegmentSplit}),
- * three times for 6% of splits and four times for 3% of splits; this results in approximately
- * 4 probability checks for every 10 segment splits on average.
+ * skewness levels independently, see the loop in {@link
+ * HashCodeDistribution#accountOutlierSegmentSplit}), three times for 6% of splits and four times
+ * for 3% of splits; this results in approximately 4 probability checks for every 10 segment splits
+ * on average.
  *
  * The average occupancy of segments in a SmoothieMap always floats around 3/4 of the segment's max
  * capacity ({@link SmoothieMap.BitSetAndStateArea#SEGMENT_MAX_ALLOC_CAPACITY}), i. e. 32 entries.

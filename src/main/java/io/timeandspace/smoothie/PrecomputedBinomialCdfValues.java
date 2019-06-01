@@ -42,7 +42,9 @@ import static java.lang.Math.min;
  * CdfValuesPerSplits#allCdfValues}, resulting in total of three or even four main memory accesses:
  * the biggest {@code cdfValuesLengthForNumSplits} value (see {@link #inverseCumulativeProbability}
  * code) is 45, so the "embedded" array inside {@link CdfValuesPerSplits#allCdfValues} of 4-byte
- * float elements spans 3 cache lines.
+ * float elements spans 3 cache lines. (Note: all "L3" and "main memory" above are guesstimates of
+ * what should fit in L3 of a modern server-class CPU; might be very off, I didn't evaluate that -
+ * leventov.)
  *
  * How does that compare with {@link BinomialDistributionInverseCdfApproximation}'s 500 cycles
  * depends on the CPU frequency and the memory latency in CPU cycles. Two main memory accesses may
