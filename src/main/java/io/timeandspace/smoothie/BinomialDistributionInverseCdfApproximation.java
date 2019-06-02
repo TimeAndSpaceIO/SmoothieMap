@@ -20,7 +20,7 @@ import io.timeandspace.smoothie.Statistics.BinomialDistribution;
 import io.timeandspace.smoothie.Statistics.NormalDistribution;
 
 import static io.timeandspace.smoothie.PrecomputedBinomialCdfValues.MAX_SPLITS_WITH_PRECOMPUTED_CDF_VALUES;
-import static io.timeandspace.smoothie.HashCodeDistribution.OUTLIER_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS;
+import static io.timeandspace.smoothie.HashCodeDistribution.HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS;
 
 /**
  * Inverse CDF of binomial distribution ({@link BinomialDistribution#inverseCumulativeProbability})
@@ -40,12 +40,12 @@ import static io.timeandspace.smoothie.HashCodeDistribution.OUTLIER_SEGMENT__HAS
  * #inverseCumulativeProbability} might be called approximately 4 times for every 10 segment splits
  * on average (TODO run a test to check that empirically): about one in five segment splits is
  * skewed to the degree of having at least {@link
- * HashCodeDistribution#OUTLIER_SEGMENT__HASH_TABLE_HALF__MAX_KEYS__MIN_ACCOUNTED} (29) keys in one
+ * HashCodeDistribution#SKEWED_SEGMENT__HASH_TABLE_HALF__MAX_KEYS__MIN_ACCOUNTED} (29) keys in one
  * of the halves. (The "one in five" estimate is the inverse of the first probability in this table: {@link
- * HashCodeDistribution#OUTLIER_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS}.)
+ * HashCodeDistribution#HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS}.)
  * Accordingly, for 11% of splits the probability should be checked two times (for two different
  * skewness levels independently, see the loop in {@link
- * HashCodeDistribution#accountOutlierSegmentSplit}), three times for 6% of splits and four times
+ * HashCodeDistribution#doAccountSkewedSegmentSplit}), three times for 6% of splits and four times
  * for 3% of splits; this results in approximately 4 probability checks for every 10 segment splits
  * on average.
  *
@@ -58,7 +58,7 @@ import static io.timeandspace.smoothie.HashCodeDistribution.OUTLIER_SEGMENT__HAS
  * is about 500+ / 80 ~= 7 cycles per an insertion. Note again that this is the absolute worst case
  * of always having almost enough skewed segments to exceed the reporting threshold; if there are
  * less skewed segments, caching of lastComputedMaxNonReportedSkewedSplits (see {@link
- * HashCodeDistribution#outlierSegmentSplitStatsToCurrentAverageOrder}) allows to call {@link
+ * HashCodeDistribution#skewedSegment_splitStatsToCurrentAverageOrder}) allows to call {@link
  * #inverseCumulativeProbability} more rarely than one time per four probability checks.
  *
  * So if {@link BinomialDistribution#inverseCumulativeProbability} itself was used the overhead of
@@ -74,7 +74,7 @@ final class BinomialDistributionInverseCdfApproximation {
      * therefore should be reported.
      *
      * Approximates {@code new BinomialDistribution(numSplits,
-     *     OUTLIER_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS[probIndex])
+     *     HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS[probIndex])
      *         .inverseCumulativeProbability(
      *             poorHashCodeDistribution_badOccasion_minRequiredConfidence)}.
      *
@@ -86,7 +86,7 @@ final class BinomialDistributionInverseCdfApproximation {
      * BinomialDistributionInverseCdfApproximation} otherwise.
      *
      * @param probIndex index of probability value in {@link
-     *        HashCodeDistribution#OUTLIER_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS}.
+     *        HashCodeDistribution#HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS}.
      *        This is the probability of success for binomial distribution.
      * @param numSplits a number of segment split events in a {@link SmoothieMap} of some order at
      *        some stage of a SmoothieMap's life. See the comment for {@link
@@ -113,7 +113,7 @@ final class BinomialDistributionInverseCdfApproximation {
             // than MAX_SPLITS_WITH_PRECOMPUTED_CDF_VALUES (~1000).
             throw new AssertionError();
         }
-        double p = OUTLIER_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS[probIndex];
+        double p = HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS[probIndex];
         double mean = ((double) numSplits) * p;
         double stdDev = mean * (1.0 - p);
         double normalApproximation = NormalDistribution.inverseCumulativeProbability(
@@ -214,7 +214,7 @@ final class BinomialDistributionInverseCdfApproximation {
 
     /**
      * Each inner array corresponds to one probability of skewed segments (one of values from
-     * {@link HashCodeDistribution#OUTLIER_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS}),
+     * {@link HashCodeDistribution#HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS}),
      * "p" or "probabilityOfSuccess" in binomial distribution terms.
      *
      * Each inner array's value is a correction that should be applied to {@link

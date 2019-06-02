@@ -75,7 +75,7 @@ final class PrecomputedBinomialCdfValues {
      * {@link BinomialDistributionInverseCdfApproximation} otherwise.
      *
      * @param probIndex index of probability in {@link
-     *        HashCodeDistribution#OUTLIER_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS}.
+     *        HashCodeDistribution#HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS}.
      *        This is the probability of success for binomial distribution.
      * @param numSplits a number of segment split events in a {@link SmoothieMap} of some order at
      *        some stage of a SmoothieMap's life. See the comment for {@link
@@ -255,8 +255,8 @@ final class PrecomputedBinomialCdfValues {
 
     /**
      * Each inner array corresponds to one probability of skewed segments (one of values from {@link
-     * HashCodeDistribution#OUTLIER_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS
-     * }), "p" or "probabilityOfSuccess" in binomial distribution terms.
+     * HashCodeDistribution#HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS}), "p" or
+     * "probabilityOfSuccess" in binomial distribution terms.
      *
      * Each value in inner arrays corresponds to one "embedded" array inside {@link
      * CdfValuesPerSplits#allCdfValues}. The values are the numbers of skewed segments ("k", in
@@ -497,8 +497,8 @@ final class PrecomputedBinomialCdfValues {
     /**
      * Each {@link CdfValuesPerSplits} object in this array corresponds to one probability of skewed
      * segments (one of values from {@link
-     * HashCodeDistribution#OUTLIER_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS
-     * }), "p" or "probabilityOfSuccess" in binomial distribution terms.
+     * HashCodeDistribution#HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS}), "p" or
+     * "probabilityOfSuccess" in binomial distribution terms.
      *
      * Computed and printed in {@link ComputeBinomialCdfValues#computeBinomialCdfValues}.
      */

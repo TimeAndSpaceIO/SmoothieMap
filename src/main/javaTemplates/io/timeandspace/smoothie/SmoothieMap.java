@@ -2747,11 +2747,10 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                     // of segments at some order split with much more keys going to higher-index
                     // siblings than to lower-index ones). There is no doubling of probability like
                     // for HashCodeDistribution's
-                    // OUTLIER_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS
-                    // values because if the distribution is skewed towards fromSegment the
-                    // following branch is not taken. If initialFromSegmentSize <
-                    // SEGMENT_MAX_ALLOC_CAPACITY (48), in other words, if there are some deleted
-                    // control slots the probability is even lower.
+                    // HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS values because
+                    // if the distribution is skewed towards fromSegment the following branch is not
+                    // taken. If initialFromSegmentSize < SEGMENT_MAX_ALLOC_CAPACITY (48), in other
+                    // words, if there are some deleted control slots the probability is even lower.
                     //
                     // Therefore the following branch is very unlikely on each individual iteration.
                     //

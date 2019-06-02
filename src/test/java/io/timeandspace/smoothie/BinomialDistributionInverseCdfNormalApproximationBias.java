@@ -80,7 +80,7 @@ final class BinomialDistributionInverseCdfNormalApproximationBias {
 
     /**
      * A copy of {@link
-     * HashCodeDistribution#OUTLIER_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS}.
+     * HashCodeDistribution#HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS}.
      */
     @SuppressWarnings("FloatingPointLiteralPrecision")
     private static final double[] SKEW_PROBS =

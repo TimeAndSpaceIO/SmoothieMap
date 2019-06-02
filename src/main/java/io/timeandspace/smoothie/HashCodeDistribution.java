@@ -40,24 +40,25 @@ import static java.lang.Math.max;
  * track poor hash code distribution events.
  */
 class HashCodeDistribution<K, V> {
-    /** @see #OUTLIER_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS */
-    static final int OUTLIER_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__MAX_ACCOUNTED = 3;
-    static final int OUTLIER_SEGMENT__HASH_TABLE_HALF__MAX_KEYS__MIN_ACCOUNTED =
+    /** @see #HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS */
+    private static final int SKEWED_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__MAX_ACCOUNTED =
+            3;
+    static final int SKEWED_SEGMENT__HASH_TABLE_HALF__MAX_KEYS__MIN_ACCOUNTED =
             (HASH_TABLE_SLOTS / 2) -
-                    OUTLIER_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__MAX_ACCOUNTED;
+                    SKEWED_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__MAX_ACCOUNTED;
 
     /**
      * numSkewedSplits + lastComputedMaxNonReportedSkewedSplits. See {@link
-     * #outlierSegmentSplitStatsToCurrentAverageOrder}.
+     * #skewedSegment_splitStatsToCurrentAverageOrder}.
      */
-    private static final int OUTLIER_SEGMENT_SPLIT_STATS__STAT_SIZE = 2;
-    private static final int OUTLIER_SEGMENT_SPLIT_STATS_INT_ARRAY_LENGTH =
-            (OUTLIER_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__MAX_ACCOUNTED + 1) *
-                    OUTLIER_SEGMENT_SPLIT_STATS__STAT_SIZE;
+    private static final int SKEWED_SEGMENT__SPLIT_STAT_SIZE = 2;
+    private static final int SKEWED_SEGMENT__SPLIT_STATS__INT_ARRAY_LENGTH =
+            (SKEWED_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__MAX_ACCOUNTED + 1) *
+                    SKEWED_SEGMENT__SPLIT_STAT_SIZE;
 
     /**
      * The number of elements in this array corresponds to {@link
-     * #OUTLIER_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__MAX_ACCOUNTED} + 1.
+     * #SKEWED_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__MAX_ACCOUNTED} + 1.
      *
      * A value at index `i` is a cumulative distribution of the event that a segment split ({@link
      * SmoothieMap#split}) observes at least 29 + i keys that should have been fallen in either
@@ -65,14 +66,15 @@ class HashCodeDistribution<K, V> {
      * keys should have been fallen in the less populated half). It is called a "skewness level"
      * below in this class.
      *
-     * We don't track events of 28 or less keys falling in a hash table's half for three reasons:
+     * We don't account stats for events of 28 or less keys falling in a hash table's half for three
+     * reasons:
      *
      *  1) the probability of such events is too large (~0.31 for 28 keys), so
      *  HashCodeDistribution's methods would be called too often from {@link SmoothieMap#split},
      *  contributing more significantly to the average CPU cost of the latter.
      *
-     *  2) Both {@link #outlierSegmentSplitStatsToCurrentAverageOrder} and {@link
-     *  #outlierSegmentSplitStatsToNextAverageOrder} would need to hold a stat for one more
+     *  2) Both {@link #skewedSegment_splitStatsToCurrentAverageOrder} and {@link
+     *  #skewedSegment_splitStatsToNextAverageOrder} would need to hold a stat for one more
      *  skewness level, contributing to the footprint of SmoothieMaps.
      *
      *  3) On the other hand, 28 keys in a hash table's half (of 32 slots) means that there should
@@ -93,14 +95,15 @@ class HashCodeDistribution<K, V> {
      *  sense to try to spot and report such problems unless a SmoothieMap is used specifically
      *  to test the quality of hash code distribution (that is not a target use case).
      *
-     * Conversely, we don't track events of 33 or more keys falling in a hash table's half (better
-     * to say - should have fallen, because 33 keys can't all reside in their "origin" 32-slot half,
-     * at least one key will be shifted to another half) separately from the previous four
-     * cumulative buckets
-     * TODO try to understand if there any reason to not track 33 or more keys other than limiting
-     *  memory footprint of stats arrays (as in reason #2 for not tracking 28 or less keys).
-     *  Specifically, since no more than 32 keys can fit a single half anyway, don't 33 or more keys
-     *  add relatively less harm than 30->31, 31->32 keys? Check empirically?
+     * Conversely, we don't account stats for events of 33 or more keys falling in a hash table's
+     * half (better to say - should have fallen, because 33 keys can't all reside in their "origin"
+     * 32-slot half, at least one key will be shifted to another half) separately from the previous
+     * four buckets (they aggregate all splits of segments with levels of skewness higher than
+     * theirs, so they all include segments of 33+ keys in a half).
+     * TODO try to understand if there any reason to not account stats for 33 or more keys other
+     *  than limiting memory footprint of stats arrays (as in reason #2 for not accounting stats for
+     *  28 or less keys). Specifically, since no more than 32 keys can fit a single half anyway,
+     *  don't 33 or more keys add relatively less harm than 30->31, 31->32 keys? Check empirically?
      *
      * Adding up to SEGMENT_MAX_ALLOC_CAPACITY entries:
      * The whole statistical model of segment splitting is based on the assumption that we always
@@ -116,7 +119,7 @@ class HashCodeDistribution<K, V> {
      * 48 entries. See code in {@link #accountSegmentSplit}.
      */
     static final
-    double[] OUTLIER_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS =
+    double[] HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS =
             new double[] { // Below, splitsDistribution = BinomialDistribution[48, 0.5]
                     0.1934126528619373175388, // 2 * (1 - CDF[splitsDistribution, 28])
                     0.1114028910610187494967,  // 2 * (1 - CDF[splitsDistribution, 29])
@@ -124,8 +127,8 @@ class HashCodeDistribution<K, V> {
                     0.02930494672052930127392 }; // 2 * (1 - CDF[splitsDistribution, 31])
 
     static {
-        if (OUTLIER_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__MAX_ACCOUNTED + 1 !=
-                OUTLIER_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS
+        if (SKEWED_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__MAX_ACCOUNTED + 1 !=
+                HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS
                         .length) {
             throw new AssertionError();
         }
@@ -183,7 +186,7 @@ class HashCodeDistribution<K, V> {
      */
     int numSegmentSplitsToCurrentAverageOrder;
     /**
-     * An array with {@link #OUTLIER_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__MAX_ACCOUNTED}
+     * An array with {@link #SKEWED_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__MAX_ACCOUNTED}
      * "stats" (each corresponding to one skewness level), each stat is comprised of two "fields":
      *   [0] numSkewedSplits: 4-byte integer, the number of segment splits during which it was
      *       observed that at least 29 + statIndex keys have been fallen in either the lower or
@@ -195,9 +198,9 @@ class HashCodeDistribution<K, V> {
      *       lower-bounded at some point for some {@link #numSegmentSplitsToCurrentAverageOrder}
      *       since the last rotation of the stats.
      */
-    int @Nullable[] outlierSegmentSplitStatsToCurrentAverageOrder;
+    int @Nullable[] skewedSegment_splitStatsToCurrentAverageOrder;
     private int numSegmentSplitsToNextAverageOrder;
-    private int @Nullable[] outlierSegmentSplitStatsToNextAverageOrder;
+    private int @Nullable[] skewedSegment_splitStatsToNextAverageOrder;
 
     public HashCodeDistribution(float poorHashCodeDistrib_badOccasion_minReportingProb,
             Consumer<PoorHashCodeDistributionOccasion<K, V>> reportingAction) {
@@ -416,12 +419,12 @@ class HashCodeDistribution<K, V> {
     private void rotateStatsOneOrderForward() {
         numSegmentSplitsToCurrentAverageOrder = numSegmentSplitsToNextAverageOrder;
         numSegmentSplitsToNextAverageOrder = 0;
-        int @Nullable[] tmpStats = outlierSegmentSplitStatsToCurrentAverageOrder;
-        outlierSegmentSplitStatsToCurrentAverageOrder = outlierSegmentSplitStatsToNextAverageOrder;
+        int @Nullable[] tmpStats = skewedSegment_splitStatsToCurrentAverageOrder;
+        skewedSegment_splitStatsToCurrentAverageOrder = skewedSegment_splitStatsToNextAverageOrder;
         if (tmpStats != null) {
             Arrays.fill(tmpStats, 0);
         }
-        outlierSegmentSplitStatsToNextAverageOrder = tmpStats;
+        skewedSegment_splitStatsToNextAverageOrder = tmpStats;
     }
 
     /** Make "Current" new "Next", zero out "Current". */
@@ -429,12 +432,12 @@ class HashCodeDistribution<K, V> {
     private void rotateStatsOneOrderBackward() {
         numSegmentSplitsToNextAverageOrder = numSegmentSplitsToCurrentAverageOrder;
         numSegmentSplitsToCurrentAverageOrder = 0;
-        int @Nullable[] tmpStats = outlierSegmentSplitStatsToNextAverageOrder;
-        outlierSegmentSplitStatsToNextAverageOrder = outlierSegmentSplitStatsToCurrentAverageOrder;
+        int @Nullable[] tmpStats = skewedSegment_splitStatsToNextAverageOrder;
+        skewedSegment_splitStatsToNextAverageOrder = skewedSegment_splitStatsToCurrentAverageOrder;
         if (tmpStats != null) {
             Arrays.fill(tmpStats, 0);
         }
-        outlierSegmentSplitStatsToCurrentAverageOrder = tmpStats;
+        skewedSegment_splitStatsToCurrentAverageOrder = tmpStats;
     }
 
     /**
@@ -446,11 +449,11 @@ class HashCodeDistribution<K, V> {
     private void rotateStatsSeveralOrdersBackward() {
         numSegmentSplitsToCurrentAverageOrder = 0;
         numSegmentSplitsToNextAverageOrder = 0;
-        int @Nullable[] tmpStats = this.outlierSegmentSplitStatsToCurrentAverageOrder;
+        int @Nullable[] tmpStats = this.skewedSegment_splitStatsToCurrentAverageOrder;
         if (tmpStats != null) {
             Arrays.fill(tmpStats, 0);
         }
-        tmpStats = this.outlierSegmentSplitStatsToNextAverageOrder;
+        tmpStats = this.skewedSegment_splitStatsToNextAverageOrder;
         if (tmpStats != null) {
             Arrays.fill(tmpStats, 0);
         }
@@ -482,15 +485,17 @@ class HashCodeDistribution<K, V> {
         maxKeysForHalf +=
                 (SEGMENT_MAX_ALLOC_CAPACITY - totalNumKeysBeforeSplit + interleavedOne) >>> 1;
 
-        // ### Choose numSegmentSplitsToNewOrder and outlierSegmentSplitStats.
+        // ### Choose numSegmentSplitsToNewOrder and skewedSegment_splitStats.
         // Depending on priorSegmentOrder, determine whether the "current" or the "next"
-        // numSegmentSplits and outlierSegmentSplitStats should be used to account this split, or
-        // exit the method if the segment split is not a statistical outlier or is a split to the
-        // order which is not counted now (see the comment for
+        // numSegmentSplits and skewedSegment_splitStats should be used to account this split, or
+        // exit the method if the skewness level of the split is not accounted (see the comment for
+        // HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS expanding
+        // on this) or if this is a split to the order which is neither the current average segment
+        // order nor the next average segment order in the SmoothieMap (see the comment for
         // handleSplitToNeitherCurrentNorNextAverageOrder() for details).
         int lastComputedAverageSegmentOrder = (int) map.lastComputedAverageSegmentOrder;
         int numSegmentSplitsToNewOrder;
-        int @MonotonicNonNull [] outlierSegmentSplitStats;
+        int @MonotonicNonNull[] skewedSegment_splitStats;
         boolean splittingToCurrentAverageSegmentOrder =
                 priorSegmentOrder == lastComputedAverageSegmentOrder - 1;
         // TODO make this logic branchless by memory alignment, field offsets, and Unsafe.
@@ -498,21 +503,21 @@ class HashCodeDistribution<K, V> {
             numSegmentSplitsToNewOrder = numSegmentSplitsToCurrentAverageOrder + 1;
             this.numSegmentSplitsToCurrentAverageOrder = numSegmentSplitsToNewOrder;
             // [Positive likely branch]
-            if (maxKeysForHalf < OUTLIER_SEGMENT__HASH_TABLE_HALF__MAX_KEYS__MIN_ACCOUNTED) {
+            if (maxKeysForHalf < SKEWED_SEGMENT__HASH_TABLE_HALF__MAX_KEYS__MIN_ACCOUNTED) {
                 return;
             }
             // TODO report to IntelliJ if not fixed by
             //  https://youtrack.jetbrains.com/issue/IDEA-214972 in 2019.2
             //noinspection ConstantConditions
-            outlierSegmentSplitStats = outlierSegmentSplitStatsToCurrentAverageOrder;
-            if (outlierSegmentSplitStats == null) {
+            skewedSegment_splitStats = skewedSegment_splitStatsToCurrentAverageOrder;
+            if (skewedSegment_splitStats == null) {
                 // TODO allocate smaller array initially and grow as needed in
-                //  accountOutlierSegmentSplit()
-                outlierSegmentSplitStats =
-                        new int[OUTLIER_SEGMENT_SPLIT_STATS_INT_ARRAY_LENGTH];
-                outlierSegmentSplitStatsToCurrentAverageOrder = outlierSegmentSplitStats;
+                //  doAccountSkewedSegmentSplit()
+                skewedSegment_splitStats =
+                        new int[SKEWED_SEGMENT__SPLIT_STATS__INT_ARRAY_LENGTH];
+                skewedSegment_splitStatsToCurrentAverageOrder = skewedSegment_splitStats;
             }
-            // Fall-through to the accountOutlierSegmentSplit() call
+            // Fall-through to the doAccountSkewedSegmentSplit() call
         } else {
             boolean splittingToNextAverageSegmentOrder =
                     priorSegmentOrder == lastComputedAverageSegmentOrder;
@@ -520,21 +525,21 @@ class HashCodeDistribution<K, V> {
                 numSegmentSplitsToNewOrder = numSegmentSplitsToNextAverageOrder + 1;
                 this.numSegmentSplitsToNextAverageOrder = numSegmentSplitsToNewOrder;
                 // [Positive likely branch]
-                if (maxKeysForHalf < OUTLIER_SEGMENT__HASH_TABLE_HALF__MAX_KEYS__MIN_ACCOUNTED) {
+                if (maxKeysForHalf < SKEWED_SEGMENT__HASH_TABLE_HALF__MAX_KEYS__MIN_ACCOUNTED) {
                     return;
                 }
                 // TODO report to IntelliJ if not fixed by
                 //  https://youtrack.jetbrains.com/issue/IDEA-214972 in 2019.2
                 //noinspection ConstantConditions
-                outlierSegmentSplitStats = outlierSegmentSplitStatsToNextAverageOrder;
-                if (outlierSegmentSplitStats == null) {
+                skewedSegment_splitStats = skewedSegment_splitStatsToNextAverageOrder;
+                if (skewedSegment_splitStats == null) {
                     // TODO allocate smaller array initially and grow as needed in
-                    //  accountOutlierSegmentSplit()
-                    outlierSegmentSplitStats =
-                            new int[OUTLIER_SEGMENT_SPLIT_STATS_INT_ARRAY_LENGTH];
-                    outlierSegmentSplitStatsToNextAverageOrder = outlierSegmentSplitStats;
+                    //  doAccountSkewedSegmentSplit()
+                    skewedSegment_splitStats =
+                            new int[SKEWED_SEGMENT__SPLIT_STATS__INT_ARRAY_LENGTH];
+                    skewedSegment_splitStatsToNextAverageOrder = skewedSegment_splitStats;
                 }
-                // Fall-through to the accountOutlierSegmentSplit() call
+                // Fall-through to the doAccountSkewedSegmentSplit() call
             } else {
                 // See the comment for numSegmentSplitsToCurrentAverageOrder,
                 // [Some information is lost] section.
@@ -544,30 +549,31 @@ class HashCodeDistribution<K, V> {
             }
         }
 
-        accountOutlierSegmentSplit(numSegmentSplitsToNewOrder,
-                maxKeysForHalf, outlierSegmentSplitStats);
+        doAccountSkewedSegmentSplit(numSegmentSplitsToNewOrder,
+                maxKeysForHalf, skewedSegment_splitStats);
     }
 
     @AmortizedPerSegment
-    void accountOutlierSegmentSplit(int numSplits, int maxKeysForHalf, int[] outlierSplitStats) {
-        int statIndex = OUTLIER_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__MAX_ACCOUNTED -
+    void doAccountSkewedSegmentSplit(
+            int numSplits, int maxKeysForHalf, int[] skewedSegment_splitStats) {
+        int statIndex = SKEWED_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__MAX_ACCOUNTED -
                 max(0, (HASH_TABLE_SLOTS / 2) - maxKeysForHalf);
         // Iterate over stats for different skewness levels.
         for (; statIndex >= 0; statIndex--) {
-            int statOffset = statIndex * OUTLIER_SEGMENT_SPLIT_STATS__STAT_SIZE;
+            int statOffset = statIndex * SKEWED_SEGMENT__SPLIT_STAT_SIZE;
             // TODO use Unsafe to access the array for speed
-            int numSkewedSplits = outlierSplitStats[statOffset];
+            int numSkewedSplits = skewedSegment_splitStats[statOffset];
             numSkewedSplits += 1;
-            outlierSplitStats[statOffset] = numSkewedSplits;
+            skewedSegment_splitStats[statOffset] = numSkewedSplits;
 
-            // Check whether the number of outlier segment splits has become large enough for
-            // reporting (reportTooManySkewedSegmentSplits()) in a series of three checks of
-            // increasing cost:
+            // Check whether the number of splits of segments with at least the currently iterated
+            // level of skewness has become large enough for reporting
+            // (reportTooManySkewedSegmentSplits()) in a series of three checks of increasing cost:
             // 1) Compare with a bound computed previously (either on the step 2 or 3 below) for the
             // current skewness level: a single L1 access memory access and an integer comparison
             // with a likely branch.
-            // TODO read long word (int + int) from outlierSplitStats to avoid an extra read.
-            int lastComputedMaxNonReportedSkewedSplits = outlierSplitStats[statOffset + 1];
+            // TODO read long word (int + int) from skewedSegment_splitStats to avoid an extra read.
+            int lastComputedMaxNonReportedSkewedSplits = skewedSegment_splitStats[statOffset + 1];
             if (numSplits <= lastComputedMaxNonReportedSkewedSplits) { // [Positive likely branch]
                 continue; // Don't report, continue to account and check in the next stat
             }
@@ -583,7 +589,7 @@ class HashCodeDistribution<K, V> {
             int maxNonReportedSkewedSplitsLowerBound =
                     computeMaxNonReportedSkewedSplitsLowerBound(statIndex, numSplits);
             if (numSkewedSplits <= maxNonReportedSkewedSplitsLowerBound) {//[Positive likely branch]
-                outlierSplitStats[statOffset + 1] = maxNonReportedSkewedSplitsLowerBound;
+                skewedSegment_splitStats[statOffset + 1] = maxNonReportedSkewedSplitsLowerBound;
                 continue; // Don't report, continue to account and check in the next stat
             }
 
@@ -594,7 +600,7 @@ class HashCodeDistribution<K, V> {
                     numSplits, lastComputedMaxNonReportedSkewedSplits,
                     maxNonReportedSkewedSplitsLowerBound);
             if (numSkewedSplits <= maxNonReportedSkewedSplits) { // [Positive likely branch]
-                outlierSplitStats[statOffset + 1] = maxNonReportedSkewedSplits;
+                skewedSegment_splitStats[statOffset + 1] = maxNonReportedSkewedSplits;
                 continue; // Don't report, continue to account and check in the next stat
             }
 
@@ -609,7 +615,7 @@ class HashCodeDistribution<K, V> {
 
     @AmortizedPerSegment
     private static int computeMaxNonReportedSkewedSplitsLowerBound(int statIndex, int numSplits) {
-        double prob = OUTLIER_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS
+        double prob = HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS
                 [statIndex];
         return (int) (prob * (double) numSplits);
     }
@@ -617,9 +623,9 @@ class HashCodeDistribution<K, V> {
     /**
      * Passing lastComputedMaxNonReportedSkewedSplits and maxNonReportedSkewedSplitsLowerBound
      * separately into this method breaks the abstraction, but helps to reduce the bytecode size of
-     * the caller {@link #accountOutlierSegmentSplit} which calls this method relatively rarely. See
+     * the caller {@link #doAccountSkewedSegmentSplit} which calls this method relatively rarely. See
      * [Reducing bytecode size of a hot method]. (See the comment in {@link
-     * #accountOutlierSegmentSplit}, step 2 explaining why these are two different values).
+     * #doAccountSkewedSegmentSplit}, step 2 explaining why these are two different values).
      *
      * This operation may take either ~500 cycles (see the comment for {@link
      * BinomialDistributionInverseCdfApproximation}) or require up to 4 main memory accesses (see
@@ -642,7 +648,7 @@ class HashCodeDistribution<K, V> {
     }
 
     /**
-     * Extracted for [Reducing bytecode size of a hot method] {@link #accountOutlierSegmentSplit}.
+     * Extracted for [Reducing bytecode size of a hot method] {@link #doAccountSkewedSegmentSplit}.
      */
     @BarelyCalled
     private void reportTooManySkewedSegmentSplits() {
