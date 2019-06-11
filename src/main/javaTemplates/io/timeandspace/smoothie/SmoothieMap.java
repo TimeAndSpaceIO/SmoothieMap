@@ -5600,27 +5600,31 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         }
 
         /**
-         * Returns the updated nonFullSegment_bitSet (which is the allocation index mapping part of
-         * {@link Segment#bitSetAndState}).
+         * Returns the nonFullSegment_bitSetAndState with an updated bit set: allocations are moved
+         * around in this method, so the allocation index mapping might change. Also, sets
+         * allocCapacity encoded in nonFullSegment_bitSetAndState to fullSegment_allocCapacity.
+         *
+         * BitSetAndState's fields other than the bit set (see {@link
+         * BitSetAndStateArea#bitSetAndState}) of the nonFullSegment_bitSetAndState given into this
+         * method are not reliable and must not be used.
          *
          * This method must only be called in the context of {@link #split} because it may call to
          * {@link #compactEntriesDuringSplit} which should always be called in the context of {@link
          * #split}. See the comment for {@link #compactEntriesDuringSplit}.
          */
         @AmortizedPerSegment
-        static long swapHashTablesAndAllocAreasDuringSplit(
-                Object nonFullSegment, int nonFullSegment_allocCapacity,
-                long nonFullSegment_bitSet, Object fullSegment, int fullSegment_allocCapacity) {
+        static long swapHashTablesAndAllocAreasDuringSplit(Object nonFullSegment,
+                int nonFullSegment_allocCapacity, long nonFullSegment_bitSetAndState,
+                Object fullSegment, int fullSegment_allocCapacity) {
             // Compacting entries of nonFullSegment if needed to be able to swap allocation areas.
             // This must be done before swapping the hash tables, because
             // compactEntriesDuringSplit() updates some data slots of nonFullSegment.
             if (fullSegment_allocCapacity < nonFullSegment_allocCapacity) { // Likelihood - ???
-                nonFullSegment_bitSet = compactEntriesDuringSplit(nonFullSegment,
-                        nonFullSegment_allocCapacity, nonFullSegment_bitSet,
+                nonFullSegment_bitSetAndState = compactEntriesDuringSplit(nonFullSegment,
+                        nonFullSegment_allocCapacity, nonFullSegment_bitSetAndState,
                         fullSegment_allocCapacity);
             }
 
-            // [Guard in a non-HotPath method]
             if (fullSegment_allocCapacity > nonFullSegment_allocCapacity) { // Unlikely branch
                 // Cannot swap; should not happen
                 throw new AssertionError();
@@ -5647,7 +5651,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 U.putObject(fullSegment, valueOffset, v2);
             }
 
-            return nonFullSegment_bitSet;
+            return makeBitSetAndStateWithNewAllocCapacity(
+                    nonFullSegment_bitSetAndState, fullSegment_allocCapacity);
         }
 
         /**
@@ -5659,13 +5664,13 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
          * i. e. that the segment is in the process of split[fromSegment iteration] after calling
          * to {@link #covertAllDeletedToEmptyAndFullToDeletedControlSlots}.
          *
-         * @return an updated bitSet
+         * @return an updated bitSetAndState
          */
         @AmortizedPerSegment
         private static long compactEntriesDuringSplit(Object segment, int allocCapacity,
-                long bitSet, int fitInAllocCapacity) {
+                long bitSetAndState, int fitInAllocCapacity) {
             /* if Enabled extraChecks */assertNonNullSegment(segment);/* endif */
-            int segmentSize = segmentSize(bitSet);
+            int segmentSize = segmentSize(bitSetAndState);
             if (segmentSize > fitInAllocCapacity) {
                 throw new ConcurrentModificationException();
             }
@@ -5730,7 +5735,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                     }
 
                     // ### Moving the entry at allocIndex to a smaller index.
-                    int newAllocIndex = lowestFreeAllocIndex(bitSet);
+                    int newAllocIndex = lowestFreeAllocIndex(bitSetAndState);
                     // Transitively checks that newAllocIndex < allocCapacity as required by
                     // lowestFreeAllocIndex(), because it's ensured that fitInAllocCapacity is less
                     // than allocCapacity in a guard condition above.
@@ -5742,7 +5747,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                     }
                     // First calling setLowestAllocBit() and then clearAllocBit() leads to less
                     // data dependencies than if these methods were called in the reverse order.
-                    bitSet = clearAllocBit(setLowestAllocBit(bitSet), allocIndex);
+                    bitSetAndState = clearAllocBit(setLowestAllocBit(bitSetAndState), allocIndex);
 
                     Object key = readKey(segment, allocIndex);
                     Object value = readValue(segment, allocIndex);
@@ -5759,7 +5764,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                             changeAllocIndexInData(dataByte, newAllocIndex));
                 }
             }
-            return bitSet;
+            return bitSetAndState;
         }
 
         //endregion
