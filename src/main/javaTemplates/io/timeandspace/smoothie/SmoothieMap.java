@@ -2874,7 +2874,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 incrementSegmentOrderAndZeroDeletedSlotCount(fromSegment_bitSetAndState);
         setBitSetAndStateAfterBulkOperation(fromSegment, fromSegment_bitSetAndState);
 
-        // ### Write out intoSegment's bitSetAndState and publish it to segmentsArray.
+        // ### Write out intoSegment's bitSetAndState.
         long intoSegment_bitSetAndState = makeBitSetAndStateForPrivatelyPopulatedSegment(
                 intoSegmentAllocCapacity, newSegmentOrder,
                 intoSegmentAllocIndex);
