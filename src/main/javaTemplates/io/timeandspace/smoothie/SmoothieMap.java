@@ -2593,11 +2593,12 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         // equal to siblingSegmentsQualificationBit (1 << siblingSegmentsQualificationBitIndex)
         // rather than 1.
         long swappedSegmentsInsideLoopAndFromSegmentIsHigher = 0;
+        // If this bit in a hash of some key is "fromSegmentIsHigher", then it should stay in
+        // fromSegment rather than be split into intoSegment.
         long siblingSegmentsQualificationBit = 1L << siblingSegmentsQualificationBitIndex;
 
         // ### fromSegment iteration: restoring values in control slots, moving entries to
-        // intoSegment. If this bit in a hash of some key is "fromSegmentIsHigher", then it should
-        // stay in fromSegment rather than be split into intoSegment.
+        // ### intoSegment.
         //
         // Note: this loop is an extended version of
         // [Restoring values in control slots and optimizing the hash table] loop in dropDeletes(),
