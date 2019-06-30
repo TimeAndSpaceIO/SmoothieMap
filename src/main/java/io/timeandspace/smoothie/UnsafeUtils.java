@@ -52,12 +52,23 @@ final class UnsafeUtils {
     }
 
     static long minInstanceFieldOffset(Class<?> objectClass) {
+        // U::objectFieldOffset triggers forbidden-apis of Objects.requireNonNull() for some reason
+        //noinspection Convert2MethodRef
         return Stream
                 .of(objectClass.getDeclaredFields())
                 .filter(f -> !Modifier.isStatic(f.getModifiers()))
-                .mapToLong(U::objectFieldOffset)
+                .mapToLong((Field field) -> U.objectFieldOffset(field))
                 .min()
                 .getAsLong();
+    }
+
+    static long getFieldOffset(Class<?> objectClass, String fieldName) {
+        try {
+            Field field = objectClass.getDeclaredField(fieldName);
+            return U.objectFieldOffset(field);
+        } catch (NoSuchFieldException e) {
+            throw new AssertionError(e);
+        }
     }
 
     private UnsafeUtils() {

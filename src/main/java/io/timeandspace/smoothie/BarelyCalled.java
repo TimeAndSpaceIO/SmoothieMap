@@ -24,6 +24,8 @@ import java.lang.annotation.Target;
 /**
  * For methods that are called even more rarely than {@link AmortizedPerOrder}, typically in some
  * corner case or obscure situations.
+ *
+ * Performance of the annotated methods is not important.
  */
 @Target(ElementType.METHOD)
 @Retention(RetentionPolicy.SOURCE)

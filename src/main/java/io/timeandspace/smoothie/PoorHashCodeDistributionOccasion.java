@@ -25,7 +25,7 @@ import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.function.ToLongFunction;
 
-import static io.timeandspace.smoothie.Utils.assertNonNull;
+import static io.timeandspace.smoothie.Utils.verifyNonNull;
 
 /**
  * Beware of storing {@code PoorHashCodeDistributionOccasion} objects in a queue that might not
@@ -82,7 +82,7 @@ public final class PoorHashCodeDistributionOccasion<K, V> {
         if (segment == null) {
             return Optional.empty();
         }
-        assertNonNull(excludedKey);
+        verifyNonNull(excludedKey);
         Predicate<KeyValue<K, V>> filter = entry -> !map.keysEqual(excludedKey, entry.getKey());
         Iterable<KeyValue<K, V>> entries = () -> {
             Iterator<? extends KeyValue<K, V>> allEntries = segment.getEntries().iterator();

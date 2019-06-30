@@ -18,6 +18,17 @@ package io.timeandspace.smoothie;
 
 final class LongMath {
 
+    static long clearLowestSetBit(long bitMask) {
+        return bitMask & (bitMask - 1);
+    }
+
+    static long clearLowestNBits(long bitMask, int n) {
+        if (n <= 0 || n > 63) {
+            throw new IllegalArgumentException("n must be between 1 and 63, " + n + " given");
+        }
+        return bitMask & (-1L << n);
+    }
+
     static long floorPowerOfTwo(long x) {
         if (x <= 0) {
             throw new IllegalArgumentException("x must be positive, " + x + " given");

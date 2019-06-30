@@ -26,6 +26,7 @@ import java.lang.annotation.Target;
  * SmoothieMap.Segment#SEGMENT_MAX_ALLOC_CAPACITY} / 2 .. SEGMENT_MAX_ALLOC_CAPACITY (i. e. 24..48)
  * point queries to a SmoothieMap or entries during iteration/stream operations.
  *
+ * @see RarelyCalledAmortizedPerSegment
  * @see HotPath
  * @see ColdPath
  * @see AmortizedPerOrder

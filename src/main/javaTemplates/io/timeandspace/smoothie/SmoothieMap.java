@@ -21,21 +21,19 @@ import com.google.errorprone.annotations.DoNotCall;
 import io.timeandspace.collect.Equivalence;
 import io.timeandspace.collect.map.KeyValue;
 import io.timeandspace.collect.map.ObjObjMap;
+import io.timeandspace.smoothie.InterleavedSegments.FullCapacitySegment;
 import org.checkerframework.checker.index.qual.NonNegative;
 import org.checkerframework.checker.index.qual.Positive;
 import org.checkerframework.checker.nullness.qual.EnsuresNonNull;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 import org.checkerframework.checker.nullness.qual.Nullable;
 import org.checkerframework.common.value.qual.IntRange;
-import org.checkerframework.common.value.qual.IntVal;
 import org.jetbrains.annotations.Contract;
 
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.Serializable;
-import java.lang.reflect.Field;
-import java.nio.ByteOrder;
 import java.util.AbstractCollection;
 import java.util.AbstractMap;
 import java.util.AbstractSet;
@@ -49,6 +47,7 @@ import java.util.Iterator;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
@@ -57,91 +56,112 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.ToLongFunction;
 
+import static io.timeandspace.smoothie.BitSetAndState.BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE;
+import static io.timeandspace.smoothie.BitSetAndState.SEGMENT_ORDER_UNIT;
+import static io.timeandspace.smoothie.BitSetAndState.allocCapacity;
+import static io.timeandspace.smoothie.BitSetAndState.clearAllocBit;
+import static io.timeandspace.smoothie.BitSetAndState.clearBitSet;
+import static io.timeandspace.smoothie.BitSetAndState.extractBitSetForIteration;
+import static io.timeandspace.smoothie.BitSetAndState.freeAllocIndexClosestTo;
+import static io.timeandspace.smoothie.BitSetAndState.incrementSegmentOrder;
+/* if Interleaved segments Supported intermediateSegments */
+import static io.timeandspace.smoothie.BitSetAndState.isFullCapacity;
+/* endif */
+import static io.timeandspace.smoothie.BitSetAndState.isInflatedBitSetAndState;
+import static io.timeandspace.smoothie.BitSetAndState.lowestFreeAllocIndex;
+import static io.timeandspace.smoothie.BitSetAndState.makeBitSetAndStateForPrivatelyPopulatedContinuousSegment;
+import static io.timeandspace.smoothie.BitSetAndState.makeInflatedBitSetAndState;
+import static io.timeandspace.smoothie.BitSetAndState.makeNewBitSetAndState;
+import static io.timeandspace.smoothie.BitSetAndState.segmentOrder;
+import static io.timeandspace.smoothie.BitSetAndState.segmentSize;
+import static io.timeandspace.smoothie.BitSetAndState.setAllocBit;
+import static io.timeandspace.smoothie.BitSetAndState.setLowestAllocBit;
+// comment // [if-elif Continuous|Interleaved segments templating] /**/
+/* if Continuous segments */
+import static io.timeandspace.smoothie.ContinuousSegment_BitSetAndStateArea.getBitSetAndState;
+import static io.timeandspace.smoothie.ContinuousSegment_BitSetAndStateArea.replaceBitSetAndStateWithBulkOperationPlaceholderOrThrowCme;
+import static io.timeandspace.smoothie.ContinuousSegment_BitSetAndStateArea.setBitSetAndState;
+import static io.timeandspace.smoothie.ContinuousSegment_BitSetAndStateArea.setBitSetAndStateAfterBulkOperation;
+/* elif Interleaved segments //
+import static io.timeandspace.smoothie.InterleavedSegment_BitSetAndStateArea.getBitSetAndState;
+import static io.timeandspace.smoothie.InterleavedSegment_BitSetAndStateArea.replaceBitSetAndStateWithBulkOperationPlaceholderOrThrowCme;
+import static io.timeandspace.smoothie.InterleavedSegment_BitSetAndStateArea.setBitSetAndState;
+import static io.timeandspace.smoothie.InterleavedSegment_BitSetAndStateArea.setBitSetAndStateAfterBulkOperation;
+// endif */
+import static io.timeandspace.smoothie.HashTable.HASH_TABLE_GROUPS_MASK;
+import static io.timeandspace.smoothie.HashTable.matchFull;
+import static io.timeandspace.smoothie.HashTable.setSlotEmpty;
+/* if Continuous segments //
+import static io.timeandspace.smoothie.ContinuousSegments.allocateNewSegmentWithoutSettingBitSetAndSet;
+import static io.timeandspace.smoothie.ContinuousSegments.createNewSegment;
+import static io.timeandspace.smoothie.ContinuousSegments.grow;
+import static io.timeandspace.smoothie.ContinuousSegments.HashTableArea.readTagGroup;
+import static io.timeandspace.smoothie.ContinuousSegments.HashTableArea.readDataGroup;
+import static io.timeandspace.smoothie.ContinuousSegments.HashTableArea.writeDataGroup;
+import static io.timeandspace.smoothie.ContinuousSegments.HashTableArea.writeTagAndData;
+import static io.timeandspace.smoothie.ContinuousSegments.SegmentBase.allocOffset;
+// elif Interleaved segments */
+import static io.timeandspace.smoothie.InterleavedSegments.allocIndexBoundaryForLocalAllocation;
+import static io.timeandspace.smoothie.InterleavedSegments.allocOffset;
+import static io.timeandspace.smoothie.InterleavedSegments.allocateNewSegmentWithoutSettingBitSetAndSet;
+import static io.timeandspace.smoothie.InterleavedSegments.createNewSegment;
+import static io.timeandspace.smoothie.InterleavedSegments.grow;
+import static io.timeandspace.smoothie.InterleavedSegments.dataGroupFromTagGroupOffset;
+import static io.timeandspace.smoothie.InterleavedSegments.dataGroupOffset;
+import static io.timeandspace.smoothie.InterleavedSegments.tagGroupOffset;
+import static io.timeandspace.smoothie.InterleavedSegments.readDataGroupAtOffset;
+import static io.timeandspace.smoothie.InterleavedSegments.readTagGroupAtOffset;
+import static io.timeandspace.smoothie.InterleavedSegments.writeDataGroupAtOffset;
+import static io.timeandspace.smoothie.InterleavedSegments.writeTagAndData;
+/* endif */
+import static io.timeandspace.smoothie.HashTable.INFLATED_SEGMENT__MARKER_DATA_GROUP;
+import static io.timeandspace.smoothie.HashTable.matchEmpty;
+import static io.timeandspace.smoothie.HashTable.addGroupIndex;
+import static io.timeandspace.smoothie.HashTable.extractAllocIndex;
+import static io.timeandspace.smoothie.HashTable.firstAllocIndex;
+import static io.timeandspace.smoothie.HashTable.lowestMatchingSlotIndex;
+import static io.timeandspace.smoothie.HashTable.HASH_TABLE_GROUPS;
+import static io.timeandspace.smoothie.HashTable.HASH_TABLE_SLOTS;
+import static io.timeandspace.smoothie.HashTable.baseGroupIndex;
+import static io.timeandspace.smoothie.HashTable.makeData;
+import static io.timeandspace.smoothie.HashTable.match;
+import static io.timeandspace.smoothie.HashTable.shouldStopProbing;
 import static io.timeandspace.smoothie.InflatedSegmentQueryContext.COMPUTE_IF_PRESENT_ENTRY_REMOVED;
 import static io.timeandspace.smoothie.InflatedSegmentQueryContext.Node;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.DELETED_SLOT_COUNT_UNIT;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.GROUP_SLOTS;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.MAX_ALLOC_CAPACITY_POWER_OF_TWO_COMPONENT_SIZE;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.MAX_ALLOC_CAPACITY_POWER_OF_TWO_COMPONENT_SIZE_DIVISION_SHIFT;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.SEGMENT_MAX_ALLOC_CAPACITY;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.SEGMENT_ORDER_UNIT;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.allocCapacity;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.clearAllocBit;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.deletedSlotCount;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.extractBitSetForIteration;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.getBitSetAndState;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.incrementSegmentOrderAndZeroDeletedSlotCount;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.isInflatedBitSetAndState;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.lowestFreeAllocIndex;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.makeBitSetAndStateForPrivatelyPopulatedSegment;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.makeBitSetAndStateWithNewAllocCapacity;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.makeBitSetAndStateWithNewDeletedSlotCount;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.readControlsGroup;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.readData;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.replaceBitSetAndStateWithBulkOperationPlaceholderOrThrowCme;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.segmentOrder;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.segmentSize;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.setBitSetAndState;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.setBitSetAndStateAfterBulkOperation;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.setLowestAllocBit;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.updateDeletedSlotCountAndSetLowestAllocBit;
-import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.GROUP_BITS;
-import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.GROUP_SLOTS_DIVISION_SHIFT;
-import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.HASH_TABLE_SLOTS;
-import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.groupIndexesEqualModuloHashTableGroups;
-import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.readControlByte;
-import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.replaceData;
-import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.writeControlByte;
-import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.writeControlByteWithConditionalCloning;
-import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.writeData;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.DELETED_CONTROL;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.EMPTY_CONTROL;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.HASH_CONTROL_BITS;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.HASH_DATA_BITS;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.INFLATED_SEGMENT_MARKER_CONTROLS_GROUP;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.LOG_HASH_TABLE_SIZE;
+import static io.timeandspace.smoothie.LongMath.clearLowestNBits;
+import static io.timeandspace.smoothie.LongMath.clearLowestSetBit;
+import static io.timeandspace.smoothie.OutboundOverflowCounts.addOutboundOverflowCountsPerGroup;
+import static io.timeandspace.smoothie.OutboundOverflowCounts.computeOutboundOverflowCount_perGroupChanges;
+import static io.timeandspace.smoothie.OutboundOverflowCounts.decrementOutboundOverflowCountsPerGroup;
+import static io.timeandspace.smoothie.OutboundOverflowCounts.incrementOutboundOverflowCountsPerGroup;
+import static io.timeandspace.smoothie.OutboundOverflowCounts.outboundOverflowCount_groupForChange;
+import static io.timeandspace.smoothie.OutboundOverflowCounts.outboundOverflowCount_markGroupForChange;
+import static io.timeandspace.smoothie.OutboundOverflowCounts.subtractOutboundOverflowCountsPerGroupAndUpdateAllGroups;
+import static io.timeandspace.smoothie.Segments.valueOffsetFromAllocOffset;
+import static io.timeandspace.smoothie.SmoothieMap.Segment.HASH__BASE_GROUP_INDEX_BITS;
+import static io.timeandspace.smoothie.SmoothieMap.Segment.TAG_HASH_BITS;
 import static io.timeandspace.smoothie.SmoothieMap.Segment.MIN_LEFTOVER_ALLOC_CAPACITY_AFTER_SHRINKING;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.SEGMENT_MAX_NON_EMPTY_SLOTS;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.SEGMENT_MIN_DELETED_SLOTS_FOR_DROP_DELETES;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.addSlotIndex;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.allocIndex;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.branchlessDeletedOrEmpty;
 import static io.timeandspace.smoothie.SmoothieMap.Segment.checkAllocIndex;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.clearLowestSetBit;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.covertAllDeletedToEmptyAndFullToDeletedControlSlots;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.eraseKeyAndValue;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.extractMatchingEmpty;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.hashControlBits;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.isMatchingEmpty;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.lowestMatchIndex;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.lowestMatchIndexFromTrailingZeros;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.makeData;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.match;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.matchEmpty;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.matchEmptyOrDeleted;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.matchHashDataBits;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.readKey;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.readKeyChecked;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.readValue;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.readValueChecked;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.slotIndex;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.swapHashTablesAndAllocAreasDuringSplit;
+import static io.timeandspace.smoothie.SmoothieMap.Segment.eraseKeyAndValueAtOffset;
+import static io.timeandspace.smoothie.SmoothieMap.Segment.tagBits;
+import static io.timeandspace.smoothie.SmoothieMap.Segment.readKeyAtOffset;
+import static io.timeandspace.smoothie.SmoothieMap.Segment.readKeyCheckedAtIndex;
+import static io.timeandspace.smoothie.SmoothieMap.Segment.readValueAtOffset;
+import static io.timeandspace.smoothie.SmoothieMap.Segment.readValueCheckedAtIndex;
 import static io.timeandspace.smoothie.SmoothieMap.Segment.writeEntry;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.writeKey;
-import static io.timeandspace.smoothie.SmoothieMap.Segment.writeValue;
+import static io.timeandspace.smoothie.SmoothieMap.Segment.writeValueAtOffset;
 import static io.timeandspace.smoothie.UnsafeUtils.ARRAY_INT_BASE_OFFSET_AS_LONG;
 import static io.timeandspace.smoothie.UnsafeUtils.ARRAY_INT_INDEX_SCALE_AS_LONG;
 import static io.timeandspace.smoothie.UnsafeUtils.ARRAY_OBJECT_BASE_OFFSET_AS_LONG;
-import static io.timeandspace.smoothie.UnsafeUtils.ARRAY_OBJECT_INDEX_SCALE_AS_LONG;
 import static io.timeandspace.smoothie.UnsafeUtils.ARRAY_OBJECT_INDEX_SHIFT;
 import static io.timeandspace.smoothie.UnsafeUtils.U;
-import static io.timeandspace.smoothie.UnsafeUtils.minInstanceFieldOffset;
-import static io.timeandspace.smoothie.Utils.BYTE_SIZE_DIVISION_SHIFT;
-import static io.timeandspace.smoothie.Utils.assertEqual;
-import static io.timeandspace.smoothie.Utils.assertIsPowerOfTwo;
-import static io.timeandspace.smoothie.Utils.assertNonNull;
-import static io.timeandspace.smoothie.Utils.assertThat;
+import static io.timeandspace.smoothie.Utils.checkNonNull;
+import static io.timeandspace.smoothie.Utils.rethrowUnchecked;
+import static io.timeandspace.smoothie.Utils.verifyEqual;
+import static io.timeandspace.smoothie.Utils.verifyIsPowerOfTwo;
+import static io.timeandspace.smoothie.Utils.verifyNonNull;
+import static io.timeandspace.smoothie.Utils.verifyThat;
+import static java.lang.Integer.numberOfTrailingZeros;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
 import static sun.misc.Unsafe.ARRAY_OBJECT_INDEX_SCALE;
@@ -385,7 +405,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
      * Some ritual techniques are used after classes from {@link java.util} without analysis,
      * examples include:
      *  - assignment-with-use instead of separate assignment and first use
-     *  - inlined Utils.requireNonNull in {@link #compute} and similar methods
+     *  - inlined Utils.checkNonNull in {@link #compute} and similar methods
      *  - the specific layout of key(value) comparison, namely k == key || key != null && key.eq(k)
      *
      * ~~~
@@ -414,6 +434,36 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     static final int MAX_SEGMENTS_ARRAY_ORDER = 30;
     private static final int MAX_SEGMENTS_ARRAY_LENGTH = 1 << MAX_SEGMENTS_ARRAY_ORDER;
 
+    static final int SEGMENT_MAX_ALLOC_CAPACITY = 48;
+    /** {@link #SEGMENT_MAX_ALLOC_CAPACITY} = 48 = 16 * 3 */
+    static final int MAX_ALLOC_CAPACITY_POWER_OF_TWO_COMPONENT_SIZE = 16;
+    @CompileTimeConstant
+    static final int MAX_ALLOC_CAPACITY_POWER_OF_TWO_COMPONENT_SIZE_DIVISION_SHIFT = 4;
+
+    static {
+        verifyIsPowerOfTwo(MAX_ALLOC_CAPACITY_POWER_OF_TWO_COMPONENT_SIZE, "");
+        verifyEqual(MAX_ALLOC_CAPACITY_POWER_OF_TWO_COMPONENT_SIZE_DIVISION_SHIFT,
+                numberOfTrailingZeros(MAX_ALLOC_CAPACITY_POWER_OF_TWO_COMPONENT_SIZE));
+    }
+
+    /**
+     * Using 30 for {@link ContinuousSegments} because statistically it leads to lower expected
+     * SmoothieMap's memory footprint. Using 32 for {@link InterleavedSegments} because it's only
+     * very marginally worse than 30, but {@link InterleavedSegments.IntermediateCapacitySegment}
+     * can be fully symmetric with 4 allocation slots surrounding each hash table group. Also,
+     * the probability of calling {@link
+     * FullCapacitySegment#swapContentsDuringSplit} is lower
+     * (see [Swap segments] in {@link #split}) which is good because {@link
+     * FullCapacitySegment#swapContentsDuringSplit} is relatively
+     * more expensive than {@link
+     * ContinuousSegments.SegmentBase#swapContentsDuringSplit} and allocates.
+     *
+     * TODO recompute and provide here exact expected memory footprint of a SmoothieMap in case of
+     *  intermediate capacity = 30 and 32
+     */
+    static final int SEGMENT_INTERMEDIATE_ALLOC_CAPACITY =
+            /* if Continuous segments */30/* elif Interleaved segments //32// endif */;
+
     private static final long
             MAP_AVERAGE_SEGMENTS_SATURATION_SEGMENT_CAPACITY_POWER_OF_TWO_COMPONENTS =
             ((long) SEGMENT_MAX_ALLOC_CAPACITY / MAX_ALLOC_CAPACITY_POWER_OF_TWO_COMPONENT_SIZE) *
@@ -433,6 +483,9 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         // saturatedSize is needed for proper ceiling division by SEGMENT_MAX_ALLOC_CAPACITY.
         long saturatedSize = size + SEGMENT_MAX_ALLOC_CAPACITY - 1;
+        // TODO simplify and move MAX_ALLOC_CAPACITY_POWER_OF_TWO_COMPONENT_SIZE_DIVISION_SHIFT
+        //  inside the division, i. e.
+        //  `>>> (33 + MAX_ALLOC_CAPACITY_POWER_OF_TWO_COMPONENT_SIZE_DIVISION_SHIFT)`
         long segmentCapacityPowerOfTwoComponents = min(
                 // [Replacing division with shift]
                 saturatedSize >>> MAX_ALLOC_CAPACITY_POWER_OF_TWO_COMPONENT_SIZE_DIVISION_SHIFT,
@@ -446,6 +499,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         // i. e. assuming that
         // MAP_AVERAGE_SEGMENTS_SATURATION_SEGMENT_CAPACITY_POWER_OF_TWO_COMPONENTS = 3 * 2^30 =
         // 2^31 + 2^30.
+        //
+        // Similar replacement of division is done in InterleavedSegments' allocOffset methods.
         int averageSegments = (int) ((segmentCapacityPowerOfTwoComponents * 2863311531L) >>> 33);
         return Integer.SIZE - Integer.numberOfLeadingZeros(averageSegments - 1);
     }
@@ -453,7 +508,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     /**
      * The order of any segment must not become more than {@link #computeAverageSegmentOrder(long)}
      * plus this value, and more than {@link #segmentsArray}'s order. If a segment has the maximum
-     * allowed order and its size exceeds {@link Segment#SEGMENT_MAX_ALLOC_CAPACITY}, it is inflated
+     * allowed order and its size exceeds {@link #SEGMENT_MAX_ALLOC_CAPACITY}, it is inflated
      * instead of being split (see {@link #makeSpaceAndInsert}).
      *
      * This constant's value of 1 formalizes the "{@link #segmentsArray} may be doubled, but not
@@ -467,9 +522,6 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         // logically equivalent to `return averageSegmentOrder`.
         return averageSegmentOrder + MAX_SEGMENT_ORDER_DIFFERENCE_FROM_AVERAGE - 1;
     }
-
-    /** TODO refresh optimal value */
-    private static final int SEGMENT_INTERMEDIATE_ALLOC_CAPACITY = 30;
 
     private static class SegmentsArrayLengthAndNumSegments {
         final int segmentsArrayLength;
@@ -489,7 +541,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         if (minExpectedSize == SmoothieMapBuilder.UNKNOWN_SIZE) {
             return new SegmentsArrayLengthAndNumSegments(1, 1);
         }
-        assertThat(minExpectedSize >= 0);
+        verifyThat(minExpectedSize >= 0);
         if (minExpectedSize <= SEGMENT_MAX_ALLOC_CAPACITY) {
             return new SegmentsArrayLengthAndNumSegments(1, 1);
         }
@@ -582,20 +634,19 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     }
 
     private static int order(int numSegments) {
-        assertIsPowerOfTwo(numSegments, "num segments");
-        return Integer.numberOfTrailingZeros(numSegments);
+        verifyIsPowerOfTwo(numSegments, "num segments");
+        return numberOfTrailingZeros(numSegments);
     }
 
     /**
      * The number of the lowest bit in hash codes that is used (along with all the higher bits) to
      * locate a segment (in {@link #segmentsArray}) for a key (see {@link #segmentByHash}).
      *
-     * The lowest {@link Segment#HASH_CONTROL_BITS} + {@link Segment#HASH_DATA_BITS} bits are stored
-     * in hash tables of the segments, the following {@link Segment#LOG_HASH_TABLE_SIZE} bits are
-     * used to locate the first lookup slot in hash tables of the segments.
+     * The lowest {@link Segment#HASH__BASE_GROUP_INDEX_BITS} bits are used to locate the
+     * first lookup group within a segment, the following {@link Segment#TAG_HASH_BITS} bits are
+     * stored in the tag groups.
      */
-    static final int SEGMENT_LOOKUP_HASH_SHIFT =
-            LOG_HASH_TABLE_SIZE + HASH_CONTROL_BITS + HASH_DATA_BITS;
+    static final int SEGMENT_LOOKUP_HASH_SHIFT = HASH__BASE_GROUP_INDEX_BITS + TAG_HASH_BITS;
 
     /**
      * The number of bytes to shift (masked) hash to the right to obtain the offset in {@link
@@ -612,12 +663,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     private static final long MOD_COUNT_FIELD_OFFSET;
 
     static {
-        try {
-            Field modCountField = SmoothieMap.class.getDeclaredField("modCount");
-            MOD_COUNT_FIELD_OFFSET = U.objectFieldOffset(modCountField);
-        } catch (NoSuchFieldException e) {
-            throw new AssertionError(e);
-        }
+        MOD_COUNT_FIELD_OFFSET = UnsafeUtils.getFieldOffset(SmoothieMap.class, "modCount");
     }
 
     protected static final long LONG_PHI_MAGIC = -7046029254386353131L;
@@ -1079,7 +1125,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         int segmentsOrder = order(numCreatedSegments);
         int segmentAllocCapacity = getInitialSegmentAllocCapacity(segmentsOrder);
         for (int i = 0; i < numCreatedSegments; i++) {
-            segmentsArray[i] = Segment.createNewSegment(segmentAllocCapacity, segmentsOrder);
+            segmentsArray[i] = createNewSegment(segmentAllocCapacity, segmentsOrder);
         }
         duplicateSegments(segmentsArray, numCreatedSegments);
         this.segmentsArray = segmentsArray;
@@ -1090,7 +1136,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     }
 
     private void updateSegmentLookupMask(int segmentsArrayLength) {
-        assertIsPowerOfTwo(segmentsArrayLength, "segments array length");
+        verifyIsPowerOfTwo(segmentsArrayLength, "segments array length");
         segmentLookupMask = ((long) segmentsArrayLength - 1) << SEGMENT_LOOKUP_HASH_SHIFT;
     }
 
@@ -1195,16 +1241,27 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     }
 
     @HotPath
+    private long segmentLookupBits(long hash) {
+        return hash & segmentLookupMask;
+    }
+
+    /** TODO update Javadoc links to this method and remove it because it's not used in real code */
+    @HotPath
     final Object segmentByHash(long hash) {
-        // It's critical that the segmentsArray field is read (<- 2) after segmentLookupMask (<- 1)
-        // to provide a happens-before edge (segmentLookupMask is volatile) with the code in
-        // growSegmentsArray() and thus guarantee impossibility of an illegal (and crash- and memory
-        // corruption-prone, because of Unsafe) out of bounds access to an array if some thread
-        // accesses a SmoothieMap concurrently with another thread growing it in
-        // growSegmentsArray().
-        long segmentArrayOffset = (hash & segmentLookupMask /* <- 1 */) >>
-                SEGMENT_ARRAY_OFFSET_HASH_SHIFT;
-        @Nullable Object segmentsArray = this.segmentsArray; // <- 2
+        // Reading segmentLookupMask before segmentsArray: it's critical here that segmentLookupMask
+        // field is read (in segmentLookupBits()) before segmentsArray field (in
+        // segmentBySegmentLookupBits()). This order provides a happens-before edge
+        // (segmentLookupMask is volatile) with the code in growSegmentsArray() and thus guarantees
+        // impossibility of an illegal (and crash- and memory corruption-prone because of Unsafe)
+        // out of bounds access to an array if some thread accesses a SmoothieMap concurrently with
+        // another thread growing it in growSegmentsArray().
+        return segmentBySegmentLookupBits(segmentLookupBits(hash));
+    }
+
+    @HotPath
+    private Object segmentBySegmentLookupBits(long hash_segmentLookupBits) {
+        long segmentArrayOffset = hash_segmentLookupBits >> SEGMENT_ARRAY_OFFSET_HASH_SHIFT;
+        @Nullable Object segmentsArray = this.segmentsArray;
         /* if Enabled moveToMapWithShrunkArray */
         // [segmentsArray non-null checks]
         if (segmentsArray == null) {
@@ -1220,6 +1277,22 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         return U.getObject(segmentsArray,
                 ARRAY_OBJECT_BASE_OFFSET_AS_LONG + segmentArrayOffset);
     }
+
+    /* if Interleaved segments Supported intermediateSegments */
+    @HotPath
+    private int isFullCapacitySegment(long hash_segmentLookupBits, Object segment) {
+        // TODO implement a bit set that allows to avoid accessing segment object's header on the
+        //  hot path of point accesses.
+        return segment instanceof FullCapacitySegment ? 1 : 0;
+    }
+
+    @AmortizedPerSegment
+    private int isFullCapacitySegmentByIndex(int segmentIndex, Object segment) {
+        // TODO implement a bit set that allows to avoid accessing segment object's header on the
+        //  hot path of point accesses.
+        return segment instanceof FullCapacitySegment ? 1 : 0;
+    }
+    /* endif */
 
     /** @deprecated in order not to forget to remove calls from production code */
     @Deprecated
@@ -1256,7 +1329,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         return ((int) (hash >>> SEGMENT_LOOKUP_HASH_SHIFT)) & ((1 << segmentOrder) - 1);
     }
 
-    static int firstSegmentIndexByIndexAndOrder(@NonNegative int segmentIndex,
+    private static int firstSegmentIndexByIndexAndOrder(@NonNegative int segmentIndex,
             @IntRange(from = 0, to = MAX_SEGMENTS_ARRAY_ORDER) int segmentOrder) {
         return segmentIndex & ((1 << segmentOrder) - 1);
     }
@@ -1475,149 +1548,312 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
     @Override
     public final boolean containsKey(Object key) {
+        // TODO specialize to avoid access into value's memory: see [Protecting null comparisons].
         return getInternalKey(key) != null;
     }
 
     @Override
     public final boolean containsEntry(Object key, Object value) {
-        Utils.requireNonNull(value);
+        checkNonNull(value);
         @Nullable V internalVal = get(key);
-        if (internalVal == null) {
-            return false;
-        }
         //noinspection ObjectEquality: identity comparision is intended
         boolean valuesIdentical = internalVal == value;
-        return valuesIdentical || valuesEqual(value, internalVal);
+        // Avoiding `internalVal != null` check before valuesIdentical check for the same reason as
+        // [Protecting null comparisons].
+        return valuesIdentical || (internalVal != null && valuesEqual(value, internalVal));
     }
 
     @Override
     public final V getOrDefault(Object key, V defaultValue) {
         @Nullable V internalVal = get(key);
+        // TODO specialize or implement get as getOrDefault(null) to avoid access into value's
+        //  memory: see [Protecting null comparisons].
         return internalVal != null ? internalVal : defaultValue;
     }
 
     @CanIgnoreReturnValue
     @Override
     public final @Nullable V remove(Object key) {
-        Utils.requireNonNull(key);
+        checkNonNull(key);
+
         long hash = keyHashCode(key);
-        Object segment = segmentByHash(hash);
-        return replace(segment, key, hash, null, null);
+        long hash_segmentLookupBits = segmentLookupBits(hash);
+        Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
+        /* if Interleaved segments Supported intermediateSegments */
+        int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+        /* endif */
+
+        return removeImpl(segment,
+                /* if Interleaved segments Supported intermediateSegments */isFullCapacitySegment,
+                /* endif */
+                key, hash, null);
     }
 
     @Override
     public final boolean remove(Object key, Object value) {
-        Utils.requireNonNull(key);
-        Utils.requireNonNull(value);
+        checkNonNull(key);
+        checkNonNull(value);
+
         long hash = keyHashCode(key);
-        Object segment = segmentByHash(hash);
-        return replace(segment, key, hash, value, null) != null;
+        long hash_segmentLookupBits = segmentLookupBits(hash);
+        Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
+        /* if Interleaved segments Supported intermediateSegments */
+        int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+        /* endif */
+
+        // TODO `== value` may be better than `!= null` (if the method also returns the
+        //  corresponding object) for the same reason as [Protecting null comparisons]. Or, the
+        //  method should be specialized.
+        return removeImpl(segment,
+                /* if Interleaved segments Supported intermediateSegments */isFullCapacitySegment,
+                /* endif */
+                key, hash, value) != null;
     }
 
     @Override
     public final V replace(K key, V value) {
-        Utils.requireNonNull(key);
-        Utils.requireNonNull(value);
+        checkNonNull(key);
+        checkNonNull(value);
+
         long hash = keyHashCode(key);
-        Object segment = segmentByHash(hash);
-        return replace(segment, key, hash, null, value);
+        long hash_segmentLookupBits = segmentLookupBits(hash);
+        Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
+        /* if Interleaved segments Supported intermediateSegments */
+        int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+        /* endif */
+
+        return replaceImpl(segment,
+                /* if Interleaved segments Supported intermediateSegments */isFullCapacitySegment,
+                /* endif */
+                key, hash, null, value);
     }
 
     @Override
     public final boolean replace(K key, V oldValue, V newValue) {
-        Utils.requireNonNull(key);
-        Utils.requireNonNull(oldValue);
-        Utils.requireNonNull(newValue);
+        checkNonNull(key);
+        checkNonNull(oldValue);
+        checkNonNull(newValue);
+
         long hash = keyHashCode(key);
-        Object segment = segmentByHash(hash);
-        return replace(segment, key, hash, oldValue, newValue) != null;
+        long hash_segmentLookupBits = segmentLookupBits(hash);
+        Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
+        /* if Interleaved segments Supported intermediateSegments */
+        int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+        /* endif */
+
+        // TODO `== oldValue` may be better than `!= null` (if the method also returns the
+        //  corresponding object) for the same reason as [Protecting null comparisons]. Or, the
+        //  method should be specialized.
+        return replaceImpl(segment,
+                /* if Interleaved segments Supported intermediateSegments */isFullCapacitySegment,
+                /* endif */
+                key, hash, oldValue, newValue) != null;
     }
 
     @CanIgnoreReturnValue
     @Override
     public final @Nullable V put(K key, V value) {
-        Utils.requireNonNull(key);
-        Utils.requireNonNull(value);
+        checkNonNull(key);
+        checkNonNull(value);
+
         long hash = keyHashCode(key);
-        Object segment = segmentByHash(hash);
-        return put(segment, key, hash, value, false);
+        long hash_segmentLookupBits = segmentLookupBits(hash);
+        Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
+        /* if Interleaved segments Supported intermediateSegments */
+        int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+        /* endif */
+
+        return putImpl(segment,
+                /* if Interleaved segments Supported intermediateSegments */isFullCapacitySegment,
+                /* endif */
+                key, hash, value, false /* onlyIfAbsent */);
     }
 
     @Override
     public final @Nullable V putIfAbsent(K key, V value) {
-        Utils.requireNonNull(key);
-        Utils.requireNonNull(value);
+        checkNonNull(key);
+        checkNonNull(value);
+
         long hash = keyHashCode(key);
-        Object segment = segmentByHash(hash);
-        return put(segment, key, hash, value, true);
+        return internalPutIfAbsent(key, hash, value);
+    }
+
+    @HotPath
+    private @Nullable V internalPutIfAbsent(K key, long hash, V value) {
+        final long hash_segmentLookupBits = segmentLookupBits(hash);
+        final Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
+        /* if Interleaved segments Supported intermediateSegments */
+        final int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+        /* endif */
+
+        return putImpl(segment,
+                /* if Interleaved segments Supported intermediateSegments */isFullCapacitySegment,
+                /* endif */
+                key, hash, value, true /* onlyIfAbsent */);
     }
 
     //endregion
 
     //region Implementations of point access methods
 
-    private static int findFirstEmptySlotForHash(Object segment, long hash) {
-        return findFirstEmptySlotForSlotIndexBase(segment, slotIndex(hash));
-    }
-
-    private static int findFirstEmptySlotForSlotIndexBase(Object segment, int slotIndexBase) {
-        int groupFirstSlotIndex = slotIndexBase;
-        // TODO Unbounded search loop: check whether it's better to make this loop bounded and
-        //  avoiding a safepoint poll in exchange
-        for (int slotIndexStep = 0; ;) {
-            long controlsGroup = readControlsGroup(segment, (long) groupFirstSlotIndex);
-            long emptyBitMask = matchEmpty(controlsGroup);
-            if (emptyBitMask != 0) { // [Positive likely branch]
-                return lowestMatchIndex(groupFirstSlotIndex, emptyBitMask);
-            }
-            slotIndexStep += GROUP_SLOTS; // [Quadratic probing]
-            groupFirstSlotIndex = addSlotIndex(groupFirstSlotIndex, slotIndexStep);
-        }
-    }
-
     @Override
     public final @Nullable V get(Object key) {
-        Utils.requireNonNull(key);
-        long hash = keyHashCode(key);
-        Object segment = segmentByHash(hash);
-        int groupFirstSlotIndex = slotIndex(hash);
-        long hashControlBits = hashControlBits(hash);
-        for (int slotIndexStep = 0; ;) {
-            long controlsGroup = readControlsGroup(segment, (long) groupFirstSlotIndex);
-            for (long bitMask = match(controlsGroup, hashControlBits);
+        checkNonNull(key);
+
+        final long hash = keyHashCode(key);
+        final long hash_segmentLookupBits = segmentLookupBits(hash);
+        final Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
+        /* if Interleaved segments Supported intermediateSegments */
+        final int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+        /* endif */
+
+        final long baseGroupIndex = baseGroupIndex(hash);
+        final long hashTagBits = tagBits(hash);
+        for (long groupIndex = baseGroupIndex, groupIndexStep = 0; ;) {
+            long tagGroupOffset = tagGroupOffset(groupIndex
+                    /* if Interleaved segments Supported intermediateSegments */
+                    , (long) isFullCapacitySegment/* endif */);
+            long tagGroup = readTagGroupAtOffset(segment, tagGroupOffset);
+            long dataGroupOffset = dataGroupFromTagGroupOffset(tagGroupOffset);
+            long dataGroup = readDataGroupAtOffset(segment, dataGroupOffset);
+            // bitMask loop:
+            // TODO compare with int-indexed loop with bitCount(bitMask) limit
+            for (long bitMask = match(tagGroup, hashTagBits, dataGroup);
                  bitMask != 0L;
                  bitMask = clearLowestSetBit(bitMask)) {
-                int matchSlotIndex = lowestMatchIndex(groupFirstSlotIndex, bitMask);
-                // TODO check whether it's better to read a data word in advance and extract the
-                //  byte upon matching, similar to what is done in a loop in split()
-                int data = readData(segment, (long) matchSlotIndex);
-                // TODO check: is it really worthwhile to store and check these bits?
-                if (matchHashDataBits(data, hash)) {
-                    int allocIndex = allocIndex(data);
-                    K internalKey = readKey(segment, allocIndex);
-                    //noinspection ObjectEquality: identity comparision is intended
-                    boolean keysIdentical = internalKey == key;
-                    if (keysIdentical || keysEqual(key, internalKey)) {
-                        return readValue(segment, allocIndex);
-                    }
+                long allocOffset = allocOffset(firstAllocIndex(dataGroup, bitMask)
+                        /* if Interleaved segments Supported intermediateSegments */
+                        , (long) isFullCapacitySegment/* endif */);
+                K internalKey = readKeyAtOffset(segment, allocOffset);
+                //noinspection ObjectEquality: identity comparision is intended
+                boolean keysIdentical = internalKey == key;
+                if (keysIdentical || keysEqual(key, internalKey)) {
+                    return readValueAtOffset(segment, allocOffset);
                 }
             }
-            if (matchEmpty(controlsGroup) != 0) {
+            // Likelihood of this branch depends on SmoothieMap's use case.
+            // TODO provide separate getLikelyPresent() and getLikelyAbsent() methods
+            if (shouldStopProbing(dataGroup)) {
                 return null;
             }
             // InflatedSegment checking after unsuccessful key search: the key search above was
             // destined to be unsuccessful in an inflated segment, but we don't check whether the
             // segment is inflated or not in the beginning to declutter the hot path as much as
             // possible. This is enabled by the fact that InflatedSegment inherits Segment and thus
-            // has a hash table area, see the Javadoc for InflatedSegment for details.
-            if (controlsGroup != INFLATED_SEGMENT_MARKER_CONTROLS_GROUP) {//[Positive likely branch]
+            // has a hash table. See also the Javadoc for InflatedSegment.
+            if (dataGroup != INFLATED_SEGMENT__MARKER_DATA_GROUP) { // [Positive likely branch]
                 // Quadratic probing:
-                // TODO try simple linear probing, also allows to relax the condition in
-                //  removeAtSlot()
-                slotIndexStep += GROUP_SLOTS;
-                groupFirstSlotIndex = addSlotIndex(groupFirstSlotIndex, slotIndexStep);
+                // The alternative to quadratic probing is double hashing: we can extract two bits
+                // out of the key's hash and use (these_two_bits << 1) + 1 as the step in the
+                // probing chain, like it is done in F14: https://github.com/facebook/folly/blob/
+                // e988905d/folly/container/detail/F14Table.h#L1337-L1345.
+                // Advantages of double hashing:
+                //  - Less clustering (TODO evaluate)
+                //  - No additional operations with the step on each probing loop iteration (like
+                //  the following `groupIndexStep += 1` with quadratic probing).
+                // Disadvantages:
+                //  - A relatively expensive computation of the step value. This computation is
+                //  likely to not be needed at all because the probing will likely finish at the
+                //  first group. CPU probably won't be able to smear this computation in its
+                //  pipeline during the first iteration because of the high register pressure the
+                //  computed step value is pushed to the stack. There are two ways to avoid making
+                //  this expensive computation on the first iteration of the probing loop:
+                //   1) Unroll the first iteration of the probing loop. But it would increase the
+                //   size and the complexity of the methods (both in computational terms, i. e.
+                //   icache trashing, quality of compilation into machine code by JVM, branch
+                //   predictability) considerably. This doesn't seem like a good deal.
+                //   2) Recompute the step from hash value on each iteration of the probing loop.
+                //   This approach is potentially viable since the chance that the probing chain
+                //   will be longer than two groups (when the repetitive step computations will
+                //   start to make the difference) is very low. TODO evaluate this approach
+                //  - A simplified, no-action approach to handling missing opportunities of shifting
+                //  back unnecessarily overflown entries during split() is not possible with double
+                //  hashing because that approach relies on the quadratic probing scheme: see
+                //  [fromSegment iteration].
+                //
+                // The maximum load factor in SmoothieMap is lower than in F14
+                // (SEGMENT_MAX_ALLOC_CAPACITY / HASH_TABLE_SLOTS = 0.75 vs. 12/14 ~= 0.86). Also,
+                // thanks to the "smoothness" of SmoothieMap there are no sizes when the whole map
+                // is highly populated (but rather only a proportion of segments). These factors
+                // are in favor of quadratic probing, although it's still not a clear win and proper
+                // benchmarking and precise evaluation should be done. TODO compare the approaches.
+                //
+                // Double hashing can also allow measuring outbound overflow counts corresponding to
+                // steps 1 and 3 counts and 5 and 7 in two 4-bit registers instead of measuring the
+                // total outbound overflow count for a group in a single 8-bit register (see
+                // ContinuousSegment_BitSetAndStateArea.outboundOverflowCountsPerGroup) which would
+                // allow more granular breaking from the probing loop. TODO work out this idea
+                groupIndexStep += 1;
+                groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                // Break from the loop when visited all groups in the hash table: this may happen
+                // when every group in the hash table has outbound overflow count greater than 1,
+                // yet many of the groups are empty enough (after removals from the segment) so that
+                // the total number of them is less than SEGMENT_MAX_ALLOC_CAPACITY. This may
+                // eventually happen in a segment after a period of entry insertions and removals
+                // since no kind of "shift deletion" is performed upon removals. See also
+                // https://github.com/facebook/folly/blob/e988905d/
+                // folly/container/detail/F14Table.h#L1399-L1402.
+                // TODO remove this condition in a specialized version of a Map that doesn't support
+                //  removes
+                if (groupIndex == baseGroupIndex) { // Unlikely branch
+                    return null;
+                }
             } else {
                 return getInflated(segment, key, hash);
+            }
+        }
+    }
+
+    final int countCollisionKeyComparisons(Object segment, Object key, long hash) {
+        verifyNonNull(segment);
+        verifyNonNull(key);
+
+        final long hash_segmentLookupBits = segmentLookupBits(hash);
+        /* if Interleaved segments Supported intermediateSegments */
+        final int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+        /* endif */
+
+        int numCollisionKeyComparisons = 0;
+
+        final long baseGroupIndex = baseGroupIndex(hash);
+        final long hashTagBits = tagBits(hash);
+        for (long groupIndex = baseGroupIndex, groupIndexStep = 0; ;) {
+            long tagGroupOffset = tagGroupOffset(groupIndex
+                    /* if Interleaved segments Supported intermediateSegments */
+                    , (long) isFullCapacitySegment/* endif */);
+            long tagGroup = readTagGroupAtOffset(segment, tagGroupOffset);
+            long dataGroupOffset = dataGroupFromTagGroupOffset(tagGroupOffset);
+            long dataGroup = readDataGroupAtOffset(segment, dataGroupOffset);
+            // bitMask loop:
+            // TODO compare with int-indexed loop with bitCount(bitMask) limit
+            for (long bitMask = match(tagGroup, hashTagBits, dataGroup);
+                 bitMask != 0L;
+                 bitMask = clearLowestSetBit(bitMask)) {
+                long allocOffset = allocOffset(firstAllocIndex(dataGroup, bitMask)
+                        /* if Interleaved segments Supported intermediateSegments */
+                        , (long) isFullCapacitySegment/* endif */);
+                K internalKey = readKeyAtOffset(segment, allocOffset);
+                //noinspection ObjectEquality: identity comparision is intended
+                boolean keysIdentical = internalKey == key;
+                if (keysIdentical || keysEqual(key, internalKey)) {
+                    return numCollisionKeyComparisons;
+                } else {
+                    numCollisionKeyComparisons++;
+                }
+            }
+            if (shouldStopProbing(dataGroup)) {
+                throw new IllegalStateException("Expected the key to be in the map");
+            }
+            // [InflatedSegment checking after unsuccessful key search]
+            if (dataGroup != INFLATED_SEGMENT__MARKER_DATA_GROUP) { // [Positive likely branch]
+                groupIndexStep += 1; // [Quadratic probing]
+                groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                // [Break from the loop when visited all groups in the hash table]
+                if (groupIndex == baseGroupIndex) {
+                    throw new IllegalStateException("Expected the key to be in the map");
+                }
+            } else {
+                throw new IllegalStateException("Expected an ordinary segment");
             }
         }
     }
@@ -1636,35 +1872,49 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
     @Override
     public final @Nullable K getInternalKey(Object key) {
-        Utils.requireNonNull(key);
-        long hash = keyHashCode(key);
-        Object segment = segmentByHash(hash);
-        int groupFirstSlotIndex = slotIndex(hash);
-        long hashControlBits = hashControlBits(hash);
-        for (int slotIndexStep = 0; ;) {
-            long controlsGroup = readControlsGroup(segment, (long) groupFirstSlotIndex);
-            for (long bitMask = match(controlsGroup, hashControlBits);
+        checkNonNull(key);
+
+        final long hash = keyHashCode(key);
+        final long hash_segmentLookupBits = segmentLookupBits(hash);
+        final Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
+        /* if Interleaved segments Supported intermediateSegments */
+        final int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+        /* endif */
+
+        final long baseGroupIndex = baseGroupIndex(hash);
+        final long hashTagBits = tagBits(hash);
+        for (long groupIndex = baseGroupIndex, groupIndexStep = 0; ;) {
+            long tagGroupOffset = tagGroupOffset(groupIndex
+                    /* if Interleaved segments Supported intermediateSegments */
+                    , (long) isFullCapacitySegment/* endif */);
+            long tagGroup = readTagGroupAtOffset(segment, tagGroupOffset);
+            long dataGroupOffset = dataGroupFromTagGroupOffset(tagGroupOffset);
+            long dataGroup = readDataGroupAtOffset(segment, dataGroupOffset);
+            for (long bitMask = match(tagGroup, hashTagBits, dataGroup);
                  bitMask != 0L;
                  bitMask = clearLowestSetBit(bitMask)) {
-                int matchSlotIndex = lowestMatchIndex(groupFirstSlotIndex, bitMask);
-                int data = readData(segment, (long) matchSlotIndex);
-                if (matchHashDataBits(data, hash)) {
-                    int allocIndex = allocIndex(data);
-                    K internalKey = readKey(segment, allocIndex);
-                    //noinspection ObjectEquality: identity comparision is intended
-                    boolean keysIdentical = internalKey == key;
-                    if (keysIdentical || keysEqual(key, internalKey)) {
-                        return internalKey;
-                    }
+                long allocOffset = allocOffset(firstAllocIndex(dataGroup, bitMask)
+                        /* if Interleaved segments Supported intermediateSegments */
+                        , (long) isFullCapacitySegment/* endif */);
+                K internalKey = readKeyAtOffset(segment, allocOffset);
+                //noinspection ObjectEquality: identity comparision is intended
+                boolean keysIdentical = internalKey == key;
+                if (keysIdentical || keysEqual(key, internalKey)) {
+                    return internalKey;
                 }
             }
-            if (matchEmpty(controlsGroup) != 0) {
+            // Likelihood of this branch depends on SmoothieMap's use case.
+            if (shouldStopProbing(dataGroup)) {
                 return null;
             }
             // [InflatedSegment checking after unsuccessful key search]
-            if (controlsGroup != INFLATED_SEGMENT_MARKER_CONTROLS_GROUP) {//[Positive likely branch]
-                slotIndexStep += GROUP_SLOTS; // [Quadratic probing]
-                groupFirstSlotIndex = addSlotIndex(groupFirstSlotIndex, slotIndexStep);
+            if (dataGroup != INFLATED_SEGMENT__MARKER_DATA_GROUP) { // [Positive likely branch]
+                groupIndexStep += 1; // [Quadratic probing]
+                groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                // [Break from the loop when visited all groups in the hash table]
+                if (groupIndex == baseGroupIndex) { // Unlikely branch
+                    return null;
+                }
             } else {
                 return getInternalKeyInflated(segment, key, hash);
             }
@@ -1680,44 +1930,83 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
     @Override
     public final @Nullable V computeIfPresent(
-            K key, BiFunction<? super K, ? super V, ? extends V> remappingFunction) {
-        Utils.requireNonNull(key);
-        Utils.requireNonNull(remappingFunction);
-        long hash = keyHashCode(key);
-        Object segment = segmentByHash(hash);
-        int groupFirstSlotIndex = slotIndex(hash);
-        long hashControlBits = hashControlBits(hash);
-        for (int slotIndexStep = 0; ;) {
-            long controlsGroup = readControlsGroup(segment, (long) groupFirstSlotIndex);
-            for (long bitMask = match(controlsGroup, hashControlBits);
+            K key, BiFunction<? super K, ? super V, ? extends @Nullable V> remappingFunction) {
+        checkNonNull(key);
+        checkNonNull(remappingFunction);
+
+        final long hash = keyHashCode(key);
+        final long hash_segmentLookupBits = segmentLookupBits(hash);
+        final Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
+        /* if Interleaved segments Supported intermediateSegments */
+        final int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+        /* endif */
+
+        final long baseGroupIndex = baseGroupIndex(hash);
+        final long hashTagBits = tagBits(hash);
+        for (long groupIndex = baseGroupIndex, groupIndexStep = 0; ;) {
+            long tagGroupOffset = tagGroupOffset(groupIndex
+                    /* if Interleaved segments Supported intermediateSegments */
+                    , (long) isFullCapacitySegment/* endif */);
+            long tagGroup = readTagGroupAtOffset(segment, tagGroupOffset);
+            long dataGroupOffset = dataGroupFromTagGroupOffset(tagGroupOffset);
+            long dataGroup = readDataGroupAtOffset(segment, dataGroupOffset);
+            for (long bitMask = match(tagGroup, hashTagBits, dataGroup);
                  bitMask != 0L;
                  bitMask = clearLowestSetBit(bitMask)) {
-                int matchSlotIndex = lowestMatchIndex(groupFirstSlotIndex, bitMask);
-                int data = readData(segment, (long) matchSlotIndex);
-                if (matchHashDataBits(data, hash)) {
-                    int allocIndex = allocIndex(data);
-                    K internalKey = readKey(segment, allocIndex);
-                    //noinspection ObjectEquality: identity comparision is intended
-                    boolean keysIdentical = internalKey == key;
-                    if (keysIdentical || keysEqual(key, internalKey)) {
-                        V internalVal = readValue(segment, allocIndex);
-                        V newValue = remappingFunction.apply(key, internalVal);
-                        if (newValue != null) {
-                            writeValue(segment, allocIndex, internalVal);
-                        } else {
-                            removeAtSlot(hash, segment, matchSlotIndex, allocIndex);
-                        }
-                        return newValue;
+                // Inlined lowestMatchingSlotIndex: computing the number of trailing zeros directly
+                // and then calling lowestMatchingSlotIndexFromTrailingZeros() is inlined
+                // lowestMatchingSlotIndex(). It's inlined because the trailingZeros value is also
+                // needed for extractAllocIndex().
+                int trailingZeros = Long.numberOfTrailingZeros(bitMask);
+                long allocIndex = extractAllocIndex(dataGroup, trailingZeros);
+                long allocOffset = allocOffset(allocIndex
+                        /* if Interleaved segments Supported intermediateSegments */
+                        , (long) isFullCapacitySegment/* endif */);
+                K internalKey = readKeyAtOffset(segment, allocOffset);
+                //noinspection ObjectEquality: identity comparision is intended
+                boolean keysIdentical = internalKey == key;
+                if (keysIdentical || keysEqual(key, internalKey)) {
+                    V internalVal = readValueAtOffset(segment, allocOffset);
+                    @Nullable V newValue = remappingFunction.apply(key, internalVal);
+                    if (newValue != null) {
+                        writeValueAtOffset(segment, allocOffset, internalVal);
+                    } else {
+                        // Computing outboundOverflowCount_perGroupDecrements in the end: not
+                        // computing outboundOverflowCount_perGroupDecrements along with the key
+                        // search loop as in remove() because it's considered generally unlikely
+                        // that remappingFunction returns null, so avoiding premature computations
+                        // which can turn out to be unnecessary. Since the majority of key search
+                        // loops are expected to to have just one iteration, the main cost
+                        // contribution of the remove()'s approach is establishing an extra variable
+                        // outside of the loop which likely leads to a stack push because of very
+                        // high register pressure in the method.
+                        // TODO provide separate computeIfPresentLikelyRemove() method
+                        long outboundOverflowCount_perGroupDecrements =
+                                computeOutboundOverflowCount_perGroupChanges(
+                                        baseGroupIndex, groupIndex);
+                        // [Reusing local variable]
+                        dataGroup = setSlotEmpty(dataGroup, trailingZeros);
+                        removeAtSlot(hash, segment,
+                                /* if Interleaved segments Supported intermediateSegments */
+                                isFullCapacitySegment,/* endif */
+                                outboundOverflowCount_perGroupDecrements, dataGroupOffset,
+                                dataGroup, allocIndex, allocOffset);
                     }
+                    return newValue;
                 }
             }
-            if (matchEmpty(controlsGroup) != 0) {
+            // Likelihood of this branch depends on SmoothieMap's use case.
+            if (shouldStopProbing(dataGroup)) {
                 return null;
             }
             // [InflatedSegment checking after unsuccessful key search]
-            if (controlsGroup != INFLATED_SEGMENT_MARKER_CONTROLS_GROUP) {//[Positive likely branch]
-                slotIndexStep += GROUP_SLOTS; // [Quadratic probing]
-                groupFirstSlotIndex = addSlotIndex(groupFirstSlotIndex, slotIndexStep);
+            if (dataGroup != INFLATED_SEGMENT__MARKER_DATA_GROUP) { // [Positive likely branch]
+                groupIndexStep += 1; // [Quadratic probing]
+                groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                // [Break from the loop when visited all groups in the hash table]
+                if (groupIndex == baseGroupIndex) { // Unlikely branch
+                    return null;
+                }
             } else {
                 return computeIfPresentInflated(segment, key, hash, remappingFunction);
             }
@@ -1726,7 +2015,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
     /** [Shallow xxxInflated() methods] */
     private @Nullable V computeIfPresentInflated(Object segment,
-            K key, long hash, BiFunction<? super K, ? super V, ? extends V> remappingFunction) {
+            K key, long hash,
+            BiFunction<? super K, ? super V, ? extends @Nullable V> remappingFunction) {
         @SuppressWarnings("unchecked")
         InflatedSegment<K, V> inflatedSegment = (InflatedSegment<K, V>) segment;
         return inflatedSegment.computeIfPresent(this, key, hash, remappingFunction);
@@ -1734,60 +2024,231 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
     /**
      * The common implementation for
-     *  {@link #remove(Object)}: matchValue == null, replacementValue == null
-     *  {@link #remove(Object, Object)}: matchValue != null, replacementValue == null
-     *  {@link #replace(Object, Object)}: matchValue == null, replacementValue != null
-     *  {@link #replace(Object, Object, Object)}: matchValue != null, replacementValue != null
+     *  {@link #remove(Object)}: matchValue == null
+     *  {@link #remove(Object, Object)}: matchValue != null
      *
-     * @return a value removed or replaced in the map, or null if no change was made. If matchValue
-     * is null, the returned value is the internal value removed or replaced in the map. If
-     * matchValue is non-null, the returned value could be the internal value _or_ the matchValue
-     * itself.
+     * @param matchValue if non-null the entry's value should be equal to matchValue for removal.
+     * @return a value removed in the map, or null if no change was made. If matchValue is null the
+     * returned value is the internal value removed in the map. If matchValue is non-null the
+     * returned value could be either the internal value _or_ the matchValue itself.
      */
-    private @Nullable V replace(Object segment, Object key, long hash, @Nullable Object matchValue,
-            @Nullable V replacementValue) {
-        int groupFirstSlotIndex = slotIndex(hash);
-        long hashControlBits = hashControlBits(hash);
-        for (int slotIndexStep = 0; ;) {
-            long controlsGroup = readControlsGroup(segment, (long) groupFirstSlotIndex);
-            for (long bitMask = match(controlsGroup, hashControlBits);
+    private @Nullable V removeImpl(Object segment,
+            /* if Interleaved segments Supported intermediateSegments */int isFullCapacitySegment,
+            /* endif */
+            Object key, long hash, @Nullable Object matchValue) {
+        final long baseGroupIndex = baseGroupIndex(hash);
+        final long hashTagBits = tagBits(hash);
+        // Compare with precomputed outboundOverflowCount_perGroupChanges approach:
+        // [Precomputed outboundOverflowCount_perGroupChanges] might turn out to be more effective
+        // so that [Computing outboundOverflowCount_perGroupDecrements in the end] should be used
+        // instead of computing outboundOverflowCount_perGroupDecrements along with the key search
+        // loop. TODO compare the approaches
+        long outboundOverflowCount_perGroupDecrements = 0;
+        for (long groupIndex = baseGroupIndex, groupIndexStep = 0; ;) {
+            long tagGroupOffset = tagGroupOffset(groupIndex
+                    /* if Interleaved segments Supported intermediateSegments */
+                    , (long) isFullCapacitySegment/* endif */);
+            long tagGroup = readTagGroupAtOffset(segment, tagGroupOffset);
+            long dataGroupOffset = dataGroupFromTagGroupOffset(tagGroupOffset);
+            long dataGroup = readDataGroupAtOffset(segment, dataGroupOffset);
+            for (long bitMask = match(tagGroup, hashTagBits, dataGroup);
                  bitMask != 0L;
                  bitMask = clearLowestSetBit(bitMask)) {
-                int matchSlotIndex = lowestMatchIndex(groupFirstSlotIndex, bitMask);
-                int data = readData(segment, (long) matchSlotIndex);
-                if (matchHashDataBits(data, hash)) {
-                    int allocIndex = allocIndex(data);
-                    K internalKey = readKey(segment, allocIndex);
+                // [Inlined lowestMatchingSlotIndex]
+                int trailingZeros = Long.numberOfTrailingZeros(bitMask);
+                long allocIndex = extractAllocIndex(dataGroup, trailingZeros);
+                long allocOffset = allocOffset(allocIndex
+                        /* if Interleaved segments Supported intermediateSegments */
+                        , (long) isFullCapacitySegment/* endif */);
+                K internalKey = readKeyAtOffset(segment, allocOffset);
+                //noinspection ObjectEquality: identity comparision is intended
+                boolean keysIdentical = internalKey == key;
+                if (keysIdentical || keysEqual(key, internalKey)) {
+                    V internalVal = readValueAtOffset(segment, allocOffset);
                     //noinspection ObjectEquality: identity comparision is intended
-                    boolean keysIdentical = internalKey == key;
-                    if (keysIdentical || keysEqual(key, internalKey)) {
-                        V internalVal = readValue(segment, allocIndex);
-                        //noinspection ObjectEquality: identity comparision is intended
-                        boolean valuesIdentical = internalVal == matchValue;
-                        if (matchValue == null || valuesIdentical ||
-                                valuesEqual(matchValue, internalVal)) {
-
-                            if (replacementValue == null) {
-                                removeAtSlot(hash, segment, matchSlotIndex, allocIndex);
-                            } else {
-                                writeValue(segment, allocIndex, replacementValue);
-                            }
-                            return internalVal;
-                        } else {
-                            return null;
-                        }
+                    boolean valuesIdentical = internalVal == matchValue;
+                    // Avoiding `matchValue == null` check before valuesIdentical check for the same
+                    // reason as [Protecting null comparisons].
+                    if (valuesIdentical || matchValue == null ||
+                            valuesEqual(matchValue, internalVal)) {
+                        // [Reusing local variable]
+                        dataGroup = setSlotEmpty(dataGroup, trailingZeros);
+                        removeAtSlot(hash, segment,
+                                /* if Interleaved segments Supported intermediateSegments */
+                                isFullCapacitySegment,/* endif */
+                                outboundOverflowCount_perGroupDecrements, dataGroupOffset,
+                                dataGroup, allocIndex, allocOffset);
+                        return internalVal;
+                    } else {
+                        return null;
                     }
                 }
             }
-            if (matchEmpty(controlsGroup) != 0) {
+            // Likelihood of this branch depends on SmoothieMap's use case.
+            if (shouldStopProbing(dataGroup)) {
                 return null;
             }
             // [InflatedSegment checking after unsuccessful key search]
-            if (controlsGroup != INFLATED_SEGMENT_MARKER_CONTROLS_GROUP) {//[Positive likely branch]
-                slotIndexStep += GROUP_SLOTS; // [Quadratic probing]
-                groupFirstSlotIndex = addSlotIndex(groupFirstSlotIndex, slotIndexStep);
+            if (dataGroup != INFLATED_SEGMENT__MARKER_DATA_GROUP) { // [Positive likely branch]
+                outboundOverflowCount_perGroupDecrements = outboundOverflowCount_markGroupForChange(
+                        outboundOverflowCount_perGroupDecrements, groupIndex);
+                groupIndexStep += 1; // [Quadratic probing]
+                groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                // [Break from the loop when visited all groups in the hash table]
+                if (groupIndex == baseGroupIndex) { // Unlikely branch
+                    return null;
+                }
             } else {
-                return replaceInflated(segment, key, hash, matchValue, replacementValue);
+                return removeOrReplaceInflated(segment, key, hash, matchValue, null);
+            }
+        }
+    }
+
+    /**
+     * The difference of this method from {@link #removeImpl} is that we know that the entry
+     * corresponding to the given hash value must be present in the segment's hash table, otherwise
+     * there should be some concurrent modification.
+     *
+     * @param allocIndexToRemove the alloc index of the entry being removed; should be matched
+     *        instead of key and matchValue as in {@link #removeImpl}.
+     */
+    @SuppressWarnings("unused") // will be used in removing iterators which are not implemented yet
+    private void removeDuringIterationFromOrdinarySegment(Object segment,
+            /* if Interleaved segments Supported intermediateSegments */int isFullCapacitySegment,
+            /* endif */
+            long hash, long allocIndexToRemove) {
+        final long baseGroupIndex = baseGroupIndex(hash);
+        final long hashTagBits = tagBits(hash);
+        // TODO [Compare with precomputed outboundOverflowCount_perGroupChanges approach]
+        long outboundOverflowCount_perGroupDecrements = 0;
+        for (long groupIndex = baseGroupIndex, groupIndexStep = 0; ;) {
+            long tagGroupOffset = tagGroupOffset(groupIndex
+                    /* if Interleaved segments Supported intermediateSegments */
+                    , (long) isFullCapacitySegment/* endif */);
+            long tagGroup = readTagGroupAtOffset(segment, tagGroupOffset);
+            long dataGroupOffset = dataGroupFromTagGroupOffset(tagGroupOffset);
+            long dataGroup = readDataGroupAtOffset(segment, dataGroupOffset);
+            for (long bitMask = match(tagGroup, hashTagBits, dataGroup);
+                 bitMask != 0L;
+                 bitMask = clearLowestSetBit(bitMask)) {
+                // [Inlined lowestMatchingSlotIndex]
+                int trailingZeros = Long.numberOfTrailingZeros(bitMask);
+                long allocIndex = extractAllocIndex(dataGroup, trailingZeros);
+                if (allocIndex == allocIndexToRemove) {
+                    dataGroup = setSlotEmpty(dataGroup, trailingZeros); // [Reusing local variable]
+                    // An alternative to reading bitSetAndState here is reading it in advance,
+                    // outside of the loop to avoid a data dependency stall before the call to
+                    // removeAtSlotNoShrink(): the loop doesn't have any normal outcome other than
+                    // removing an entry, so this read of bitSetAndState must be always useful.
+                    // However, because of high register pressure the value is likely to be
+                    // immediately pushed to stack and then has to be read from the stack. And the
+                    // cache line containing segment's bitSetAndState should likely be already in L1
+                    // anyway because bitSetAndState is read in the beginning of an iteration over
+                    // a segment.
+                    long bitSetAndState = getBitSetAndState(segment);
+                    /* if Enabled extraChecks */
+                    verifyThat(!isInflatedBitSetAndState(bitSetAndState));
+                    /* endif */
+                    long allocOffset = allocOffset(allocIndex
+                            /* if Interleaved segments Supported intermediateSegments */
+                            , (long) isFullCapacitySegment/* endif */);
+                    // It's possible to implement shrinking during iteration, but it would be
+                    // more complex than shrinking during ordinary removeAtSlot(), involving a
+                    // procedure similar to compactEntriesDuringSegmentSwap().
+                    // TODO implement shrinking during iteration
+                    bitSetAndState = removeAtSlotNoShrink(bitSetAndState, segment,
+                            /* if Interleaved segments Supported intermediateSegments */
+                            isFullCapacitySegment,/* endif */
+                            outboundOverflowCount_perGroupDecrements, dataGroupOffset, dataGroup,
+                            allocIndex, allocOffset);
+                    setBitSetAndState(segment, bitSetAndState);
+                    return;
+                }
+            }
+            if (shouldStopProbing(dataGroup)) {
+                break; // to throwing ConcurrentModificationException
+            }
+            /* if Enabled extraChecks */
+            verifyThat(dataGroup != INFLATED_SEGMENT__MARKER_DATA_GROUP);
+            /* endif */
+            outboundOverflowCount_perGroupDecrements = outboundOverflowCount_markGroupForChange(
+                    outboundOverflowCount_perGroupDecrements, groupIndex);
+            groupIndexStep += 1; // [Quadratic probing]
+            groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+            if (groupIndex == baseGroupIndex) {
+                break; // to throwing ConcurrentModificationException
+            }
+        }
+        // There is no hash table entry pointing to allocIndexToRemove with the same hash tag bits
+        // as for the provided hash. It means some concurrent modification should be happening to
+        // the segment.
+        throw new ConcurrentModificationException();
+    }
+
+    /**
+     * The common implementation for
+     *  {@link #replace(Object, Object)}: matchValue == null
+     *  {@link #replace(Object, Object, Object)}: matchValue != null
+     *
+     * @param matchValue if non-null the entry's value should be equal to matchValue for
+     *        replacement.
+     * @return a value replaced in the map, or null if no change was made. If matchValue is null the
+     * returned value is the internal value replaced in the map. If matchValue is non-null the
+     * returned value could be either the internal value _or_ the matchValue itself.
+     */
+    private @Nullable V replaceImpl(Object segment,
+            /* if Interleaved segments Supported intermediateSegments */int isFullCapacitySegment,
+            /* endif */
+            Object key, long hash, @Nullable Object matchValue,
+            V replacementValue) {
+        final long baseGroupIndex = baseGroupIndex(hash);
+        final long hashTagBits = tagBits(hash);
+        for (long groupIndex = baseGroupIndex, groupIndexStep = 0; ;) {
+            long tagGroupOffset = tagGroupOffset(groupIndex
+                    /* if Interleaved segments Supported intermediateSegments */
+                    , (long) isFullCapacitySegment/* endif */);
+            long tagGroup = readTagGroupAtOffset(segment, tagGroupOffset);
+            long dataGroupOffset = dataGroupFromTagGroupOffset(tagGroupOffset);
+            long dataGroup = readDataGroupAtOffset(segment, dataGroupOffset);
+            for (long bitMask = match(tagGroup, hashTagBits, dataGroup);
+                 bitMask != 0L;
+                 bitMask = clearLowestSetBit(bitMask)) {
+                long allocIndex = firstAllocIndex(dataGroup, bitMask);
+                long allocOffset = allocOffset(allocIndex
+                        /* if Interleaved segments Supported intermediateSegments */
+                        , (long) isFullCapacitySegment/* endif */);
+                K internalKey = readKeyAtOffset(segment, allocOffset);
+                //noinspection ObjectEquality: identity comparision is intended
+                boolean keysIdentical = internalKey == key;
+                if (keysIdentical || keysEqual(key, internalKey)) {
+                    V internalVal = readValueAtOffset(segment, allocOffset);
+                    //noinspection ObjectEquality: identity comparision is intended
+                    boolean valuesIdentical = internalVal == matchValue;
+                    // Avoiding `matchValue == null` check before valuesIdentical check for the same
+                    // reason as [Protecting null comparisons].
+                    if (valuesIdentical || matchValue == null ||
+                            valuesEqual(matchValue, internalVal)) {
+                        writeValueAtOffset(segment, allocOffset, replacementValue);
+                        return internalVal;
+                    } else {
+                        return null;
+                    }
+                }
+            }
+            // Likelihood of this branch depends on SmoothieMap's use case.
+            if (shouldStopProbing(dataGroup)) {
+                return null;
+            }
+            // [InflatedSegment checking after unsuccessful key search]
+            if (dataGroup != INFLATED_SEGMENT__MARKER_DATA_GROUP) { // [Positive likely branch]
+                groupIndexStep += 1; // [Quadratic probing]
+                groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                // [Break from the loop when visited all groups in the hash table]
+                if (groupIndex == baseGroupIndex) { // Unlikely branch
+                    return null;
+                }
+            } else {
+                return removeOrReplaceInflated(segment, key, hash, matchValue, replacementValue);
             }
         }
     }
@@ -1795,162 +2256,164 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     /**
      * [Shallow xxxInflated() methods]
      *
+     * If the given replacementValue is null the method removes an entry from the inflated segment,
+     * otherwise replaces the value corresponding to the key.
+     *
+     * @param matchValue if non-null the entry's value should be equal to matchValue for removal or
+     *        replacement.
      * @return a value removed or replaced in the map, or null if no change was made. If matchValue
      * is null, the returned value is the internal value removed or replaced in the map. If
      * matchValue is non-null, the returned value could be the internal value _or_ the matchValue
      * itself.
      */
     @SuppressWarnings("unchecked")
-    private @Nullable V replaceInflated(Object segment, Object key, long hash,
+    private @Nullable V removeOrReplaceInflated(Object segment, Object key, long hash,
             @Nullable Object matchValue, @Nullable V replacementValue) {
         InflatedSegment<K, V> inflatedSegment = (InflatedSegment<K, V>) segment;
-        return inflatedSegment.replace(this, (K) key, hash, (V) matchValue, replacementValue);
+        return inflatedSegment.removeOrReplace(
+                this, (K) key, hash, (V) matchValue, replacementValue);
     }
 
-    @SuppressWarnings("unused") // will be used in removing iterators which are not implemented yet
-    private void removeDuringIterationFromOrdinarySegment(Object segment,
-            long hash, int allocIndexToRemove) {
-        // Reading bitSetAndState in advance, outside of the loop where it's solely used to avoid a
-        // data dependency stall before the call to removeAtSlotNoShrink(): the loop doesn't have
-        // any normal outcome other than removing an entry, so this read of bitSetAndState must be
-        // always useful.
-        long bitSetAndState = getBitSetAndState(segment);
-        /* if Enabled extraChecks */
-        assertThat(!isInflatedBitSetAndState(bitSetAndState));
-        /* endif */
-        int groupFirstSlotIndex = slotIndex(hash);
-        long hashControlBits = hashControlBits(hash);
-        for (int slotIndexStep = 0; ;) {
-            long controlsGroup = readControlsGroup(segment, (long) groupFirstSlotIndex);
-            for (long bitMask = match(controlsGroup, hashControlBits);
-                 bitMask != 0L;
-                 bitMask = clearLowestSetBit(bitMask)) {
-                int matchSlotIndex = lowestMatchIndex(groupFirstSlotIndex, bitMask);
-                int data = readData(segment, (long) matchSlotIndex);
-                if (matchHashDataBits(data, hash)) {
-                    int allocIndex = allocIndex(data);
-                    if (allocIndex == allocIndexToRemove) {
-                        // It's possible to implement shrinking during iteration, but it would be
-                        // more complex than shrinking during ordinary removeAtSlot(), involving a
-                        // procedure similar to compactEntriesDuringSplit().
-                        // TODO implement shrinking during iteration
-                        bitSetAndState = removeAtSlotNoShrink(
-                                bitSetAndState, segment, matchSlotIndex, allocIndex);
-                        setBitSetAndState(segment, bitSetAndState);
-                        return;
-                    }
-                }
-            }
-            if (matchEmpty(controlsGroup) != 0) {
-                // There is no entry at allocIndexToRemove with the same hash control bits as for
-                // the provided hash, so, perhaps, it has been removed concurrently.
-                throw new ConcurrentModificationException();
-            }
-            slotIndexStep += GROUP_SLOTS; // [Quadratic probing]
-            groupFirstSlotIndex = addSlotIndex(groupFirstSlotIndex, slotIndexStep);
-        }
-    }
-
-    private @Nullable V put(Object segment, K key, long hash, V value, boolean onlyIfAbsent) {
-        int initialGroupFirstSlotIndex = slotIndex(hash);
-        int groupFirstSlotIndex = initialGroupFirstSlotIndex;
-        long hashControlBits = hashControlBits(hash);
-        for (int slotIndexStep = 0; ;) {
-            long controlsGroup = readControlsGroup(segment, (long) groupFirstSlotIndex);
-            for (long bitMask = match(controlsGroup, hashControlBits); ;) {
-                // Positive likely branch: the following condition is in a separate if block rather
-                // than the loop condition (as in all other operations: find(), compute(), etc.) in
-                // order to make it positive and so it's more likely that JIT compiles the code with
-                // an assumption that this branch is taken (i. e. that bitMask is 0), that is what
-                // we really expect during Map.put() or putIfAbsent().
-                // TODO check bytecode output of javac
-                // TODO check if this even makes sense
-                // TODO check a different approach, with a distinguished check and then do-while
-                if (bitMask == 0) {
-                    break;
-                }
-                int matchSlotIndex = lowestMatchIndex(groupFirstSlotIndex, bitMask);
-                int data = readData(segment, (long) matchSlotIndex);
-                if (matchHashDataBits(data, hash)) {
-                    int allocIndex = allocIndex(data);
-                    K internalKey = readKey(segment, allocIndex);
-                    //noinspection ObjectEquality: identity comparision is intended
-                    boolean keysIdentical = internalKey == key;
-                    if (keysIdentical || keysEqual(key, internalKey)) {
-                        V internalVal = readValue(segment, allocIndex);
-                        if (!onlyIfAbsent) {
-                            writeValue(segment, allocIndex, value);
-                        }
-                        return internalVal;
-                    }
-                }
-                bitMask = clearLowestSetBit(bitMask);
-            }
-            long emptyBitMask = matchEmpty(controlsGroup);
-            if (emptyBitMask != 0) {
-                long bitSetAndState = getBitSetAndState(segment);
-                int deletedSlotCount = deletedSlotCount(bitSetAndState);
-                int insertionSlotIndex;
-                // boolean as int: enables branchless operations in insert(). 0 = false, 1 = true
-                int replacingEmptySlot;
-                // Zero deleted slots fast path: an always-taken branch if entries are never removed
-                // from the SmoothieMap.
-                if (deletedSlotCount == 0) {
-                    insertionSlotIndex = lowestMatchIndex(groupFirstSlotIndex, emptyBitMask);
-                    replacingEmptySlot = 1;
-                } else if (slotIndexStep == 0) {
-                    long emptyOrDeletedBitMask = matchEmptyOrDeleted(controlsGroup);
-                    // Inlined lowestMatchIndex: computing the number of trailing zeros directly
-                    // and then dividing by Byte.SIZE is inlined lowestMatchIndex(). It's inlined
-                    // because the trailingZeros value is also needed for extractMatchingEmpty().
-                    int trailingZeros = Long.numberOfTrailingZeros(emptyOrDeletedBitMask);
-                    insertionSlotIndex =
-                            lowestMatchIndexFromTrailingZeros(groupFirstSlotIndex, trailingZeros);
-                    replacingEmptySlot = extractMatchingEmpty(controlsGroup, trailingZeros);
-                } else {
-                    // Deleted slot search heuristic:
-                    // TODO instead of making a full-blown search, we can just save and check the
-                    //  initial controls group, and if it contains no deleted controls, use the
-                    //  same code as in `slotIndexStep == 0` branch above. This is very unlikely
-                    //  that the probe chain is longer than 2 control groups, where the simplified
-                    //  approach can be any worse because it might miss the opportunity to insert
-                    //  the entry into a deleted slot in one of the middle (neither first nor last)
-                    //  control groups in the probe chain
-
-                    // Reusing local variables: it is better here to reuse existing local variables
-                    // than introducing new variables, because of the risk of using a wrong
-                    // variable. The old variables are not needed at this point because the outer
-                    // `if` block ends with `return` unconditionally.
-                    groupFirstSlotIndex = initialGroupFirstSlotIndex;
-                    slotIndexStep = 0;
-                    while (true) {
-                        // Reusing another local variable.
-                        controlsGroup = readControlsGroup(segment, (long) groupFirstSlotIndex);
-                        long emptyOrDeletedBitMask = matchEmptyOrDeleted(controlsGroup);
-                        if (emptyOrDeletedBitMask != 0) {
-                            // [Inlined lowestMatchIndex]
-                            int trailingZeros = Long.numberOfTrailingZeros(emptyOrDeletedBitMask);
-                            insertionSlotIndex = lowestMatchIndexFromTrailingZeros(
-                                    groupFirstSlotIndex, trailingZeros);
-                            replacingEmptySlot = extractMatchingEmpty(controlsGroup, trailingZeros);
+    @HotPath
+    private @Nullable V putImpl(Object segment,
+            /* if Interleaved segments Supported intermediateSegments */int isFullCapacitySegment,
+            /* endif */
+            K key, long hash, V value, boolean onlyIfAbsent) {
+        final long baseGroupIndex = baseGroupIndex(hash);
+        final long hashTagBits = tagBits(hash);
+        long groupIndex = baseGroupIndex;
+        long dataGroup;
+        long emptyBitMask;
+        // TODO [Compare with precomputed outboundOverflowCount_perGroupChanges approach]
+        long outboundOverflowCount_perGroupIncrements;
+        toInsertNewEntry:
+        {
+            long groupIndexStep = 0;
+            toFindEmptySlot:
+            {
+                keySearch:
+                while (true) {
+                    long tagGroupOffset = tagGroupOffset(groupIndex
+                            /* if Interleaved segments Supported intermediateSegments */
+                            , (long) isFullCapacitySegment/* endif */);
+                    long tagGroup = readTagGroupAtOffset(segment, tagGroupOffset);
+                    long dataGroupOffset = dataGroupFromTagGroupOffset(tagGroupOffset);
+                    dataGroup = readDataGroupAtOffset(segment, dataGroupOffset);
+                    for (long bitMask = match(tagGroup, hashTagBits, dataGroup); ; ) {
+                        // Positive likely branch: the following condition is in a separate if block
+                        // rather than the loop condition (as in all other operations: find(),
+                        // compute(), etc.) in order to make it positive and so it's more likely
+                        // that JIT compiles the code with an assumption that this branch is taken
+                        // (i. e. that bitMask is 0), that is what we really expect during Map.put()
+                        // or putIfAbsent().
+                        // TODO check bytecode output of javac
+                        // TODO check if this even makes sense
+                        // TODO check a different approach, with an unrolled check and then a
+                        //  do-while
+                        if (bitMask == 0) {
                             break;
                         }
-                        slotIndexStep += GROUP_SLOTS; // [Quadratic probing]
-                        groupFirstSlotIndex = addSlotIndex(groupFirstSlotIndex, slotIndexStep);
+                        long allocOffset = allocOffset(firstAllocIndex(dataGroup, bitMask)
+                                /* if Interleaved segments Supported intermediateSegments */
+                                , (long) isFullCapacitySegment/* endif */);
+                        K internalKey = readKeyAtOffset(segment, allocOffset);
+                        //noinspection ObjectEquality: identity comparision is intended
+                        boolean keysIdentical = internalKey == key;
+                        if (keysIdentical || keysEqual(key, internalKey)) {
+                            V internalVal = readValueAtOffset(segment, allocOffset);
+                            if (!onlyIfAbsent) {
+                                writeValueAtOffset(segment, allocOffset, value);
+                            }
+                            return internalVal;
+                        }
+                        bitMask = clearLowestSetBit(bitMask);
                     }
+                    // Likelihood of this branch depends on SmoothieMap's use case.
+                    if (shouldStopProbing(dataGroup)) {
+                        // Fast-path empty slot search: this is a fast-path condition to avoid
+                        // re-reading the dataGroup (even though from L1) in [Find empty slot] loop.
+                        // This is a likely branch because during puts the hash table is expected to
+                        // be only half-full on average:
+                        // SEGMENT_MAX_ALLOC_CAPACITY / 2 / HASH_TABLE_SLOTS = 37.5% full.
+                        if (groupIndexStep == 0) { // [Positive likely branch]
+                            emptyBitMask = matchEmpty(dataGroup);
+                            if (emptyBitMask != 0) { // [Positive likely branch]
+                                outboundOverflowCount_perGroupIncrements = 0;
+                                break toInsertNewEntry;
+                            } else {
+                                outboundOverflowCount_perGroupIncrements =
+                                        outboundOverflowCount_groupForChange(groupIndex);
+                                // The first iteration of [Quadratic probing] inlined
+                                groupIndexStep = 1;
+                                groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                                break toFindEmptySlot;
+                            }
+                        } else {
+                            break keySearch; // to [Reset groupIndex]
+                        }
+                    }
+                    // [InflatedSegment checking after unsuccessful key search]
+                    // [Positive likely branch]
+                    if (dataGroup != INFLATED_SEGMENT__MARKER_DATA_GROUP) {
+                        groupIndexStep += 1; // [Quadratic probing]
+                        groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                        // [Break from the loop when visited all groups in the hash table]
+                        if (groupIndex == baseGroupIndex) { // Unlikely branch
+                            break keySearch; // to [Reset groupIndex]
+                        }
+                    } else {
+                        return putInflated(segment, key, hash, value, onlyIfAbsent);
+                    }
+                } // end of keySearch loop
+                // Reset groupIndex:
+                groupIndexStep = 0;
+                outboundOverflowCount_perGroupIncrements = 0;
+                groupIndex = baseGroupIndex;
+                // Fall-through to [Find empty slot]
+            } // end of toFindEmptySlot block
+            // Find empty slot: an alternative to finding an empty slot for insertion in a separate
+            // loop is merge this loop with the above loop, but that would increase the number of
+            // local variables greatly (variables like emptySlotFound, emptySlotGroupIndex,
+            // insertionSlotIndexWithinGroup would be needed) that is critical because the register
+            // pressure is already very high. TODO compare the approaches
+            //
+            // The decision to keep this loop separate from the [keySearch] loop partially
+            // undermines the idea behind separate outboundOverflowCounts: see the comment for
+            // ContinuousSegment_BitSetAndStateArea.outboundOverflowCountsPerGroup. However, in a
+            // specialization of put() and similar methods for the case when removes cannot happen
+            // from a SmoothieMap the outboundOverflowCount_perGroupIncrements logic can be merged
+            // into the key search loop, similarly to how this is done in with
+            // outboundOverflowCount_perGroupDecrements in methods such as remove().
+            // TODO implement this specialization
+            //noinspection InfiniteLoopStatement: https://youtrack.jetbrains.com/issue/IDEA-207495
+            while (true) {
+                long dataGroupOffset = dataGroupOffset(groupIndex
+                        /* if Interleaved segments Supported intermediateSegments */
+                        , (long) isFullCapacitySegment/* endif */);
+                dataGroup = readDataGroupAtOffset(segment, dataGroupOffset);
+                emptyBitMask = matchEmpty(dataGroup);
+                if (emptyBitMask != 0) { // [Positive likely branch]
+                    break toInsertNewEntry; // to [Insert new entry]
                 }
-                insert(segment, key, hash, value, insertionSlotIndex, bitSetAndState,
-                        deletedSlotCount, replacingEmptySlot);
-                return null;
+                outboundOverflowCount_perGroupIncrements =
+                        outboundOverflowCount_markGroupForChange(
+                                outboundOverflowCount_perGroupIncrements, groupIndex);
+                groupIndexStep += 1; // [Quadratic probing]
+                groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                // No break condition in a loop searching for an empty slot: unlike for key search
+                // loops (see [Break from the loop when visited all groups in the hash table]) it's
+                // not possible to visit all groups in a segment and to not find an empty slot
+                // because SEGMENT_MAX_ALLOC_CAPACITY is less than HASH_TABLE_SLOTS.
             }
-            // [InflatedSegment checking after unsuccessful key search]
-            if (controlsGroup != INFLATED_SEGMENT_MARKER_CONTROLS_GROUP) {//[Positive likely branch]
-                slotIndexStep += GROUP_SLOTS; // [Quadratic probing]
-                groupFirstSlotIndex = addSlotIndex(groupFirstSlotIndex, slotIndexStep);
-            } else {
-                return putInflated(segment, key, hash, value, onlyIfAbsent);
-            }
-        }
+        } // end of toInsertNewEntry block
+        // Insert new entry:
+        int insertionSlotIndexWithinGroup = lowestMatchingSlotIndex(emptyBitMask);
+        insert(segment,
+                /* if Interleaved segments Supported intermediateSegments */isFullCapacitySegment,
+                /* endif */
+                outboundOverflowCount_perGroupIncrements, key, hash, value, groupIndex, dataGroup,
+                insertionSlotIndexWithinGroup);
+        return null;
     }
 
     /** [Shallow xxxInflated() methods] */
@@ -1963,285 +2426,433 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
     @Override
     public final @Nullable V computeIfAbsent(
-            K key, Function<? super K, ? extends V> mappingFunction) {
-        Utils.requireNonNull(key);
-        Utils.requireNonNull(mappingFunction);
-        long hash = keyHashCode(key);
-        Object segment = segmentByHash(hash);
-        int initialGroupFirstSlotIndex = slotIndex(hash);
-        int groupFirstSlotIndex = initialGroupFirstSlotIndex;
-        long hashControlBits = hashControlBits(hash);
-        for (int slotIndexStep = 0; ;) {
-            long controlsGroup = readControlsGroup(segment, (long) groupFirstSlotIndex);
-            for (long bitMask = match(controlsGroup, hashControlBits);
-                 bitMask != 0L;
-                 bitMask = clearLowestSetBit(bitMask)) {
-                int matchSlotIndex = lowestMatchIndex(groupFirstSlotIndex, bitMask);
-                int data = readData(segment, (long) matchSlotIndex);
-                if (matchHashDataBits(data, hash)) {
-                    int allocIndex = allocIndex(data);
-                    K internalKey = readKey(segment, allocIndex);
-                    //noinspection ObjectEquality: identity comparision is intended
-                    boolean keysIdentical = internalKey == key;
-                    if (keysIdentical || keysEqual(key, internalKey)) {
-                        return readValue(segment, allocIndex);
-                    }
-                }
-                bitMask = clearLowestSetBit(bitMask);
-            }
-            long emptyBitMask = matchEmpty(controlsGroup);
-            if (emptyBitMask != 0) {
-                V value = mappingFunction.apply(key);
-                if (value != null) {
-                    long bitSetAndState = getBitSetAndState(segment);
-                    int deletedSlotCount = deletedSlotCount(bitSetAndState);
-                    int insertionSlotIndex;
-                    int replacingEmptySlot; // [boolean as int]
-                    if (deletedSlotCount == 0) { // [Zero deleted slots fast path]
-                        insertionSlotIndex = lowestMatchIndex(groupFirstSlotIndex, emptyBitMask);
-                        replacingEmptySlot = 1;
-                    } else if (slotIndexStep == 0) {
-                        long emptyOrDeletedBitMask = matchEmptyOrDeleted(controlsGroup);
-                        // [Inlined lowestMatchIndex]
-                        int trailingZeros = Long.numberOfTrailingZeros(emptyOrDeletedBitMask);
-                        insertionSlotIndex = lowestMatchIndexFromTrailingZeros(
-                                groupFirstSlotIndex, trailingZeros);
-                        replacingEmptySlot = extractMatchingEmpty(controlsGroup, trailingZeros);
-                    } else {
-                        // TODO [Deleted slot search heuristic]
-                        // [Reusing local variables]
-                        groupFirstSlotIndex = initialGroupFirstSlotIndex;
-                        slotIndexStep = 0;
-                        while (true) {
-                            // Reusing another local variable.
-                            controlsGroup = readControlsGroup(segment, (long) groupFirstSlotIndex);
-                            long emptyOrDeletedBitMask = matchEmptyOrDeleted(controlsGroup);
-                            if (emptyOrDeletedBitMask != 0) {
-                                // [Inlined lowestMatchIndex]
-                                int trailingZeros =
-                                        Long.numberOfTrailingZeros(emptyOrDeletedBitMask);
-                                insertionSlotIndex = lowestMatchIndexFromTrailingZeros(
-                                        groupFirstSlotIndex, trailingZeros);
-                                replacingEmptySlot =
-                                        extractMatchingEmpty(controlsGroup, trailingZeros);
-                                break;
-                            }
-                            slotIndexStep += GROUP_SLOTS; // [Quadratic probing]
-                            groupFirstSlotIndex = addSlotIndex(groupFirstSlotIndex, slotIndexStep);
+            K key, Function<? super K, ? extends @Nullable V> mappingFunction) {
+        checkNonNull(key);
+        checkNonNull(mappingFunction);
+
+        final long hash = keyHashCode(key);
+        final long hash_segmentLookupBits = segmentLookupBits(hash);
+        final Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
+        /* if Interleaved segments Supported intermediateSegments */
+        final int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+        /* endif */
+
+        final long baseGroupIndex = baseGroupIndex(hash);
+        final long hashTagBits = tagBits(hash);
+        @Nullable V value;
+        long groupIndex = baseGroupIndex;
+        long dataGroup;
+        long emptyBitMask;
+        // TODO [Compare with precomputed outboundOverflowCount_perGroupChanges approach]
+        long outboundOverflowCount_perGroupIncrements;
+        toInsertNewEntry:
+        {
+            long groupIndexStep = 0;
+            toFindEmptySlot:
+            {
+                keySearch:
+                while (true) {
+                    long tagGroupOffset = tagGroupOffset(groupIndex
+                            /* if Interleaved segments Supported intermediateSegments */
+                            , (long) isFullCapacitySegment/* endif */);
+                    long tagGroup = readTagGroupAtOffset(segment, tagGroupOffset);
+                    long dataGroupOffset = dataGroupFromTagGroupOffset(tagGroupOffset);
+                    dataGroup = readDataGroupAtOffset(segment, dataGroupOffset);
+                    for (long bitMask = match(tagGroup, hashTagBits, dataGroup);
+                         bitMask != 0L;
+                         bitMask = clearLowestSetBit(bitMask)) {
+                        long allocOffset = allocOffset(firstAllocIndex(dataGroup, bitMask)
+                                /* if Interleaved segments Supported intermediateSegments */
+                                , (long) isFullCapacitySegment/* endif */);
+                        K internalKey = readKeyAtOffset(segment, allocOffset);
+                        //noinspection ObjectEquality: identity comparision is intended
+                        boolean keysIdentical = internalKey == key;
+                        if (keysIdentical || keysEqual(key, internalKey)) {
+                            return readValueAtOffset(segment, allocOffset);
                         }
                     }
-                    insert(segment, key, hash, value, insertionSlotIndex,
-                            bitSetAndState, deletedSlotCount, replacingEmptySlot);
+                    // Likelihood of this branch depends on SmoothieMap's use case.
+                    if (shouldStopProbing(dataGroup)) {
+                        value = mappingFunction.apply(key);
+                        if (value != null) { // [Positive likely branch]
+                            // [Fast-path empty slot search]
+                            if (groupIndexStep == 0) { // [Positive likely branch]
+                                emptyBitMask = matchEmpty(dataGroup);
+                                if (emptyBitMask != 0) { // [Positive likely branch]
+                                    outboundOverflowCount_perGroupIncrements = 0;
+                                    break toInsertNewEntry;
+                                } else {
+                                    outboundOverflowCount_perGroupIncrements =
+                                            outboundOverflowCount_groupForChange(groupIndex);
+                                    // The first iteration of [Quadratic probing] inlined
+                                    groupIndexStep = 1;
+                                    groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                                    break toFindEmptySlot;
+                                }
+                            } else {
+                                break keySearch; // to [Reset groupIndex]
+                            }
+                        } else {
+                            return null; // mappingFunction returned null, not recording any value.
+                        }
+                    }
+                    // [InflatedSegment checking after unsuccessful key search]
+                    // [Positive likely branch]
+                    if (dataGroup != INFLATED_SEGMENT__MARKER_DATA_GROUP) {
+                        groupIndexStep += 1; // [Quadratic probing]
+                        groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                        // [Break from the loop when visited all groups in the hash table]
+                        if (groupIndex == baseGroupIndex) { // Unlikely branch
+                            value = mappingFunction.apply(key);
+                            if (value != null) {
+                                break keySearch; // to [Reset groupIndex]
+                            } else {
+                                // mappingFunction returned null, not recording any value.
+                                return null;
+                            }
+                        }
+                    } else {
+                        return computeIfAbsentInflated(segment, key, hash, mappingFunction);
+                    }
+                } // end of keySearch loop
+                // Reset groupIndex:
+                groupIndexStep = 0;
+                outboundOverflowCount_perGroupIncrements = 0;
+                groupIndex = baseGroupIndex;
+                // Fall-through to [Find empty slot]
+            } // end of toFindEmptySlot block
+            // [Find empty slot]
+            //noinspection InfiniteLoopStatement: https://youtrack.jetbrains.com/issue/IDEA-207495
+            while (true) {
+                long dataGroupOffset = dataGroupOffset(groupIndex
+                        /* if Interleaved segments Supported intermediateSegments */
+                        , (long) isFullCapacitySegment/* endif */);
+                dataGroup = readDataGroupAtOffset(segment, dataGroupOffset);
+                emptyBitMask = matchEmpty(dataGroup);
+                if (emptyBitMask != 0) { // [Positive likely branch]
+                    break toInsertNewEntry; // to [Insert new entry]
                 }
-                return value;
+                outboundOverflowCount_perGroupIncrements =
+                        outboundOverflowCount_markGroupForChange(
+                                outboundOverflowCount_perGroupIncrements, groupIndex);
+                groupIndexStep += 1; // [Quadratic probing]
+                groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                // [No break condition in a loop searching for an empty slot]
             }
-            // [InflatedSegment checking after unsuccessful key search]
-            if (controlsGroup != INFLATED_SEGMENT_MARKER_CONTROLS_GROUP) {//[Positive likely branch]
-                slotIndexStep += GROUP_SLOTS; // [Quadratic probing]
-                groupFirstSlotIndex = addSlotIndex(groupFirstSlotIndex, slotIndexStep);
-            } else {
-                return computeIfAbsentInflated(segment, key, hash, mappingFunction);
-            }
-        }
+        } // end of toInsertNewEntry block
+        // Insert new entry:
+        int insertionSlotIndexWithinGroup = lowestMatchingSlotIndex(emptyBitMask);
+        insert(segment,
+                /* if Interleaved segments Supported intermediateSegments */isFullCapacitySegment,
+                /* endif */
+                outboundOverflowCount_perGroupIncrements, key, hash, value, groupIndex, dataGroup,
+                insertionSlotIndexWithinGroup);
+        return value;
     }
 
     /** [Shallow xxxInflated() methods] */
     private @Nullable V computeIfAbsentInflated(Object segment,
-            K key, long hash, Function<? super K, ? extends V> mappingFunction) {
+            K key, long hash, Function<? super K, ? extends @Nullable V> mappingFunction) {
         @SuppressWarnings("unchecked")
         InflatedSegment<K, V> inflatedSegment = (InflatedSegment<K, V>) segment;
         return inflatedSegment.computeIfAbsent(this, key, hash, mappingFunction);
     }
 
     @Override
-    public final @Nullable V compute(
-            K key, BiFunction<? super K, ? super V, ? extends V> remappingFunction) {
-        Utils.requireNonNull(key);
-        Utils.requireNonNull(remappingFunction);
-        long hash = keyHashCode(key);
-        Object segment = segmentByHash(hash);
-        int initialGroupFirstSlotIndex = slotIndex(hash);
-        int groupFirstSlotIndex = initialGroupFirstSlotIndex;
-        long hashControlBits = hashControlBits(hash);
-        for (int slotIndexStep = 0; ;) {
-            long controlsGroup = readControlsGroup(segment, (long) groupFirstSlotIndex);
-            for (long bitMask = match(controlsGroup, hashControlBits);
-                 bitMask != 0L;
-                 bitMask = clearLowestSetBit(bitMask)) {
-                int matchSlotIndex = lowestMatchIndex(groupFirstSlotIndex, bitMask);
-                int data = readData(segment, (long) matchSlotIndex);
-                if (matchHashDataBits(data, hash)) {
-                    int allocIndex = allocIndex(data);
-                    K internalKey = readKey(segment, allocIndex);
-                    //noinspection ObjectEquality: identity comparision is intended
-                    boolean keysIdentical = internalKey == key;
-                    if (keysIdentical || keysEqual(key, internalKey)) {
-                        V oldValue = readValue(segment, allocIndex);
-                        V newValue = remappingFunction.apply(key, oldValue);
-                        if (newValue != null) {
-                            writeValue(segment, allocIndex, newValue);
-                        } else {
-                            removeAtSlot(hash, segment, matchSlotIndex, allocIndex);
-                        }
-                        return newValue;
-                    }
-                }
-                bitMask = clearLowestSetBit(bitMask);
-            }
-            long emptyBitMask = matchEmpty(controlsGroup);
-            if (emptyBitMask != 0) {
-                V value = remappingFunction.apply(key, null);
-                if (value != null) {
-                    long bitSetAndState = getBitSetAndState(segment);
-                    int deletedSlotCount = deletedSlotCount(bitSetAndState);
-                    int insertionSlotIndex;
-                    int replacingEmptySlot; // [boolean as int]
-                    if (deletedSlotCount == 0) { // [Zero deleted slots fast path]
-                        insertionSlotIndex = lowestMatchIndex(groupFirstSlotIndex, emptyBitMask);
-                        replacingEmptySlot = 1;
-                    } else if (slotIndexStep == 0) {
-                        long emptyOrDeletedBitMask = matchEmptyOrDeleted(controlsGroup);
-                        // [Inlined lowestMatchIndex]
-                        int trailingZeros = Long.numberOfTrailingZeros(emptyOrDeletedBitMask);
-                        insertionSlotIndex = lowestMatchIndexFromTrailingZeros(
-                                groupFirstSlotIndex, trailingZeros);
-                        replacingEmptySlot = extractMatchingEmpty(controlsGroup, trailingZeros);
-                    } else {
-                        // TODO [Deleted slot search heuristic]
-                        // [Reusing local variables]
-                        groupFirstSlotIndex = initialGroupFirstSlotIndex;
-                        slotIndexStep = 0;
-                        while (true) {
-                            // Reusing another local variable.
-                            controlsGroup = readControlsGroup(segment, (long) groupFirstSlotIndex);
-                            long emptyOrDeletedBitMask = matchEmptyOrDeleted(controlsGroup);
-                            if (emptyOrDeletedBitMask != 0) {
-                                // [Inlined lowestMatchIndex]
-                                int trailingZeros =
-                                        Long.numberOfTrailingZeros(emptyOrDeletedBitMask);
-                                insertionSlotIndex = lowestMatchIndexFromTrailingZeros(
-                                        groupFirstSlotIndex, trailingZeros);
-                                replacingEmptySlot =
-                                        extractMatchingEmpty(controlsGroup, trailingZeros);
-                                break;
+    public final @Nullable V compute(K key,
+            BiFunction<? super K, ? super @Nullable V, ? extends @Nullable V> remappingFunction) {
+        checkNonNull(key);
+        checkNonNull(remappingFunction);
+
+        final long hash = keyHashCode(key);
+        final long hash_segmentLookupBits = segmentLookupBits(hash);
+        final Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
+        /* if Interleaved segments Supported intermediateSegments */
+        final int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+        /* endif */
+
+        final long baseGroupIndex = baseGroupIndex(hash);
+        final long hashTagBits = tagBits(hash);
+        @Nullable V newValue;
+        long groupIndex = baseGroupIndex;
+        long dataGroup;
+        long emptyBitMask;
+        // TODO [Compare with precomputed outboundOverflowCount_perGroupChanges approach]
+        long outboundOverflowCount_perGroupIncrements;
+        toInsertNewEntry:
+        {
+            long groupIndexStep = 0;
+            toFindEmptySlot:
+            {
+                keySearch:
+                while (true) {
+                    long tagGroupOffset = tagGroupOffset(groupIndex
+                            /* if Interleaved segments Supported intermediateSegments */
+                            , (long) isFullCapacitySegment/* endif */);
+                    long tagGroup = readTagGroupAtOffset(segment, tagGroupOffset);
+                    long dataGroupOffset = dataGroupFromTagGroupOffset(tagGroupOffset);
+                    dataGroup = readDataGroupAtOffset(segment, dataGroupOffset);
+                    for (long bitMask = match(tagGroup, hashTagBits, dataGroup);
+                         bitMask != 0L;
+                         bitMask = clearLowestSetBit(bitMask)) {
+                        // [Inlined lowestMatchingSlotIndex]
+                        int trailingZeros = Long.numberOfTrailingZeros(bitMask);
+                        long allocIndex = extractAllocIndex(dataGroup, trailingZeros);
+                        long allocOffset = allocOffset(allocIndex
+                                /* if Interleaved segments Supported intermediateSegments */
+                                , (long) isFullCapacitySegment/* endif */);
+                        K internalKey = readKeyAtOffset(segment, allocOffset);
+                        //noinspection ObjectEquality: identity comparision is intended
+                        boolean keysIdentical = internalKey == key;
+                        if (keysIdentical || keysEqual(key, internalKey)) {
+                            V oldValue = readValueAtOffset(segment, allocOffset);
+                            newValue = remappingFunction.apply(key, oldValue);
+                            if (newValue != null) {
+                                writeValueAtOffset(segment, allocOffset, newValue);
+                            } else {
+                                // [Computing outboundOverflowCount_perGroupDecrements in the end]
+                                // TODO provide separate computeLikelyRemove() method
+                                long outboundOverflowCount_perGroupDecrements =
+                                        computeOutboundOverflowCount_perGroupChanges(
+                                                baseGroupIndex, groupIndex);
+                                // [Reusing local variable]
+                                dataGroup = setSlotEmpty(dataGroup, trailingZeros);
+                                removeAtSlot(hash, segment,
+                                        /* if Interleaved segments Supported intermediateSegments */
+                                        isFullCapacitySegment,/* endif */
+                                        outboundOverflowCount_perGroupDecrements, dataGroupOffset,
+                                        dataGroup, allocIndex, allocOffset);
                             }
-                            slotIndexStep += GROUP_SLOTS; // [Quadratic probing]
-                            groupFirstSlotIndex = addSlotIndex(groupFirstSlotIndex, slotIndexStep);
+                            return newValue;
                         }
                     }
-                    insert(segment, key, hash, value, insertionSlotIndex,
-                            bitSetAndState, deletedSlotCount, replacingEmptySlot);
+                    // Likelihood of this branch depends on SmoothieMap's use case.
+                    if (shouldStopProbing(dataGroup)) {
+                        newValue = remappingFunction.apply(key, null);
+                        if (newValue != null) { // [Positive likely branch]
+                            // [Fast-path empty slot search]
+                            if (groupIndexStep == 0) { // [Positive likely branch]
+                                emptyBitMask = matchEmpty(dataGroup);
+                                if (emptyBitMask != 0) { // [Positive likely branch]
+                                    outboundOverflowCount_perGroupIncrements = 0;
+                                    break toInsertNewEntry;
+                                } else {
+                                    outboundOverflowCount_perGroupIncrements =
+                                            outboundOverflowCount_groupForChange(groupIndex);
+                                    // The first iteration of [Quadratic probing] inlined
+                                    groupIndexStep = 1;
+                                    groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                                    break toFindEmptySlot;
+                                }
+                            } else {
+                                break keySearch; // to [Reset groupIndex]
+                            }
+                        } else {
+                            // remappingFunction returned null, not recording any value.
+                            return null;
+                        }
+                    }
+                    // [InflatedSegment checking after unsuccessful key search]
+                    // [Positive likely branch]
+                    if (dataGroup != INFLATED_SEGMENT__MARKER_DATA_GROUP) {
+                        groupIndexStep += 1; // [Quadratic probing]
+                        groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                        // [Break from the loop when visited all groups in the hash table]
+                        if (groupIndex == baseGroupIndex) { // Unlikely branch
+                            newValue = remappingFunction.apply(key, null);
+                            if (newValue != null) {
+                                break keySearch; // to [Reset groupIndex]
+                            } else {
+                                // remappingFunction returned null, not recording any value.
+                                return null;
+                            }
+                        }
+                    } else {
+                        return computeInflated(segment, key, hash, remappingFunction);
+                    }
+                } // end of keySearch loop
+                // Reset groupIndex:
+                groupIndexStep = 0;
+                outboundOverflowCount_perGroupIncrements = 0;
+                groupIndex = baseGroupIndex;
+                // Fall-through to [Find empty slot]
+            } // end of toFindEmptySlot block
+            // [Find empty slot]
+            //noinspection InfiniteLoopStatement: https://youtrack.jetbrains.com/issue/IDEA-207495
+            while (true) {
+                long dataGroupOffset = dataGroupOffset(groupIndex
+                        /* if Interleaved segments Supported intermediateSegments */
+                        , (long) isFullCapacitySegment/* endif */);
+                dataGroup = readDataGroupAtOffset(segment, dataGroupOffset);
+                emptyBitMask = matchEmpty(dataGroup);
+                if (emptyBitMask != 0) { // [Positive likely branch]
+                    break toInsertNewEntry; // to [Insert new entry]
                 }
-                return value;
+                outboundOverflowCount_perGroupIncrements =
+                        outboundOverflowCount_markGroupForChange(
+                                outboundOverflowCount_perGroupIncrements, groupIndex);
+                groupIndexStep += 1; // [Quadratic probing]
+                groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                // [No break condition in a loop searching for an empty slot]
             }
-            // [InflatedSegment checking after unsuccessful key search]
-            if (controlsGroup != INFLATED_SEGMENT_MARKER_CONTROLS_GROUP) {//[Positive likely branch]
-                slotIndexStep += GROUP_SLOTS; // [Quadratic probing]
-                groupFirstSlotIndex = addSlotIndex(groupFirstSlotIndex, slotIndexStep);
-            } else {
-                return computeInflated(segment, key, hash, remappingFunction);
-            }
-        }
+        } // end of toInsertNewEntry block
+        // Insert new entry:
+        int insertionSlotIndexWithinGroup = lowestMatchingSlotIndex(emptyBitMask);
+        insert(segment,
+                /* if Interleaved segments Supported intermediateSegments */isFullCapacitySegment,
+                /* endif */
+                outboundOverflowCount_perGroupIncrements, key, hash, newValue, groupIndex,
+                dataGroup, insertionSlotIndexWithinGroup);
+        return newValue;
     }
 
     /** [Shallow xxxInflated() methods] */
-    private @Nullable V computeInflated(Object segment,
-            K key, long hash, BiFunction<? super K, ? super V, ? extends V> remappingFunction) {
+    private @Nullable V computeInflated(Object segment, K key, long hash,
+            BiFunction<? super K, ? super @Nullable V, ? extends @Nullable V> remappingFunction) {
         @SuppressWarnings("unchecked")
         InflatedSegment<K, V> inflatedSegment = (InflatedSegment<K, V>) segment;
         return inflatedSegment.compute(this, key, hash, remappingFunction);
     }
 
     @Override
-    public final @Nullable V merge(
-            K key, V value, BiFunction<? super V, ? super V, ? extends V> remappingFunction) {
-        Utils.requireNonNull(key);
-        Utils.requireNonNull(value);
-        Utils.requireNonNull(remappingFunction);
-        long hash = keyHashCode(key);
-        Object segment = segmentByHash(hash);
-        int initialGroupFirstSlotIndex = slotIndex(hash);
-        int groupFirstSlotIndex = initialGroupFirstSlotIndex;
-        long hashControlBits = hashControlBits(hash);
-        for (int slotIndexStep = 0; ;) {
-            long controlsGroup = readControlsGroup(segment, (long) groupFirstSlotIndex);
-            for (long bitMask = match(controlsGroup, hashControlBits);
-                 bitMask != 0L;
-                 bitMask = clearLowestSetBit(bitMask)) {
-                int matchSlotIndex = lowestMatchIndex(groupFirstSlotIndex, bitMask);
-                int data = readData(segment, (long) matchSlotIndex);
-                if (matchHashDataBits(data, hash)) {
-                    int allocIndex = allocIndex(data);
-                    K internalKey = readKey(segment, allocIndex);
-                    //noinspection ObjectEquality: identity comparision is intended
-                    boolean keysIdentical = internalKey == key;
-                    if (keysIdentical || keysEqual(key, internalKey)) {
-                        V internalVal = readValue(segment, allocIndex);
-                        V newValue = remappingFunction.apply(internalVal, value);
-                        if (newValue != null) {
-                            writeValue(segment, allocIndex, newValue);
+    public final @Nullable V merge(K key, V value,
+            BiFunction<? super V, ? super V, ? extends @Nullable V> remappingFunction) {
+        checkNonNull(key);
+        checkNonNull(value);
+        checkNonNull(remappingFunction);
+
+        final long hash = keyHashCode(key);
+        final long hash_segmentLookupBits = segmentLookupBits(hash);
+        final Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
+        /* if Interleaved segments Supported intermediateSegments */
+        final int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+        /* endif */
+
+        final long baseGroupIndex = baseGroupIndex(hash);
+        final long hashTagBits = tagBits(hash);
+        long groupIndex = baseGroupIndex;
+        long dataGroup;
+        long emptyBitMask;
+        // TODO [Compare with precomputed outboundOverflowCount_perGroupChanges approach]
+        long outboundOverflowCount_perGroupIncrements;
+        toInsertNewEntry:
+        {
+            long groupIndexStep = 0;
+            toFindEmptySlot:
+            {
+                keySearch:
+                while (true) {
+                    long tagGroupOffset = tagGroupOffset(groupIndex
+                            /* if Interleaved segments Supported intermediateSegments */
+                            , (long) isFullCapacitySegment/* endif */);
+                    long tagGroup = readTagGroupAtOffset(segment, tagGroupOffset);
+                    long dataGroupOffset = dataGroupFromTagGroupOffset(tagGroupOffset);
+                    dataGroup = readDataGroupAtOffset(segment, dataGroupOffset);
+                    for (long bitMask = match(tagGroup, hashTagBits, dataGroup);
+                         bitMask != 0L;
+                         bitMask = clearLowestSetBit(bitMask)) {
+                        // [Inlined lowestMatchingSlotIndex]
+                        int trailingZeros = Long.numberOfTrailingZeros(bitMask);
+                        long allocIndex = extractAllocIndex(dataGroup, trailingZeros);
+                        long allocOffset = allocOffset(allocIndex
+                                /* if Interleaved segments Supported intermediateSegments */
+                                , (long) isFullCapacitySegment/* endif */);
+                        K internalKey = readKeyAtOffset(segment, allocOffset);
+                        //noinspection ObjectEquality: identity comparision is intended
+                        boolean keysIdentical = internalKey == key;
+                        if (keysIdentical || keysEqual(key, internalKey)) {
+                            V internalVal = readValueAtOffset(segment, allocOffset);
+                            @Nullable V newValue = remappingFunction.apply(internalVal, value);
+                            if (newValue != null) {
+                                writeValueAtOffset(segment, allocOffset, newValue);
+                            } else {
+                                // [Computing outboundOverflowCount_perGroupDecrements in the end]
+                                // TODO provide separate mergeLikelyRemove() method
+                                long outboundOverflowCount_perGroupDecrements =
+                                        computeOutboundOverflowCount_perGroupChanges(
+                                                baseGroupIndex, groupIndex);
+                                // [Reusing local variable]
+                                dataGroup = setSlotEmpty(dataGroup, trailingZeros);
+                                removeAtSlot(hash, segment,
+                                        /* if Interleaved segments Supported intermediateSegments */
+                                        isFullCapacitySegment,/* endif */
+                                        outboundOverflowCount_perGroupDecrements, dataGroupOffset,
+                                        dataGroup, allocIndex, allocOffset);
+                            }
+                            return newValue;
+                        }
+                    }
+                    // Likelihood of this branch depends on SmoothieMap's use case.
+                    if (shouldStopProbing(dataGroup)) {
+                        // [Fast-path empty slot search]
+                        if (groupIndexStep == 0) { // [Positive likely branch]
+                            emptyBitMask = matchEmpty(dataGroup);
+                            if (emptyBitMask != 0) { // [Positive likely branch]
+                                outboundOverflowCount_perGroupIncrements = 0;
+                                break toInsertNewEntry;
+                            } else {
+                                outboundOverflowCount_perGroupIncrements =
+                                        outboundOverflowCount_groupForChange(groupIndex);
+                                // The first iteration of [Quadratic probing] inlined
+                                groupIndexStep = 1;
+                                groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                                break toFindEmptySlot;
+                            }
                         } else {
-                            removeAtSlot(hash, segment, matchSlotIndex, allocIndex);
+                            break keySearch; // to [Reset groupIndex]
                         }
-                        return newValue;
                     }
-                }
-                bitMask = clearLowestSetBit(bitMask);
-            }
-            long emptyBitMask = matchEmpty(controlsGroup);
-            if (emptyBitMask != 0) {
-                long bitSetAndState = getBitSetAndState(segment);
-                int deletedSlotCount = deletedSlotCount(bitSetAndState);
-                int insertionSlotIndex;
-                int replacingEmptySlot; // [boolean as int]
-                if (deletedSlotCount == 0) { // [Zero deleted slots fast path]
-                    insertionSlotIndex = lowestMatchIndex(groupFirstSlotIndex, emptyBitMask);
-                    replacingEmptySlot = 1;
-                } else if (slotIndexStep == 0) {
-                    long emptyOrDeletedBitMask = matchEmptyOrDeleted(controlsGroup);
-                    // [Inlined lowestMatchIndex]
-                    int trailingZeros = Long.numberOfTrailingZeros(emptyOrDeletedBitMask);
-                    insertionSlotIndex =
-                            lowestMatchIndexFromTrailingZeros(groupFirstSlotIndex, trailingZeros);
-                    replacingEmptySlot = extractMatchingEmpty(controlsGroup, trailingZeros);
-                } else {
-                    // TODO [Deleted slot search heuristic]
-                    // [Reusing local variables]
-                    groupFirstSlotIndex = initialGroupFirstSlotIndex;
-                    slotIndexStep = 0;
-                    while (true) {
-                        // Reusing another local variable.
-                        controlsGroup = readControlsGroup(segment, (long) groupFirstSlotIndex);
-                        long emptyOrDeletedBitMask = matchEmptyOrDeleted(controlsGroup);
-                        if (emptyOrDeletedBitMask != 0) {
-                            // [Inlined lowestMatchIndex]
-                            int trailingZeros = Long.numberOfTrailingZeros(emptyOrDeletedBitMask);
-                            insertionSlotIndex = lowestMatchIndexFromTrailingZeros(
-                                    groupFirstSlotIndex, trailingZeros);
-                            replacingEmptySlot = extractMatchingEmpty(controlsGroup, trailingZeros);
-                            break;
+                    // [InflatedSegment checking after unsuccessful key search]
+                    // [Positive likely branch]
+                    if (dataGroup != INFLATED_SEGMENT__MARKER_DATA_GROUP) {
+                        groupIndexStep += 1; // [Quadratic probing]
+                        groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                        // [Break from the loop when visited all groups in the hash table]
+                        if (groupIndex == baseGroupIndex) { // Unlikely branch
+                            break keySearch; // to [Reset groupIndex]
                         }
-                        slotIndexStep += GROUP_SLOTS; // [Quadratic probing]
-                        groupFirstSlotIndex = addSlotIndex(groupFirstSlotIndex, slotIndexStep);
+                    } else {
+                        return mergeInflated(segment, key, hash, value, remappingFunction);
                     }
+                } // end of keySearch loop
+                // Reset groupIndex:
+                groupIndexStep = 0;
+                outboundOverflowCount_perGroupIncrements = 0;
+                groupIndex = baseGroupIndex;
+                // Fall-through to [Find empty slot]
+            } // end of toFindEmptySlot block
+            // [Find empty slot]
+            //noinspection InfiniteLoopStatement: https://youtrack.jetbrains.com/issue/IDEA-207495
+            while (true) {
+                long dataGroupOffset = dataGroupOffset(groupIndex
+                        /* if Interleaved segments Supported intermediateSegments */
+                        , (long) isFullCapacitySegment/* endif */);
+                dataGroup = readDataGroupAtOffset(segment, dataGroupOffset);
+                emptyBitMask = matchEmpty(dataGroup);
+                if (emptyBitMask != 0) { // [Positive likely branch]
+                    break toInsertNewEntry; // to [Insert new entry]
                 }
-                insert(segment, key, hash, value, insertionSlotIndex,
-                        bitSetAndState, deletedSlotCount, replacingEmptySlot);
-                return value;
+                outboundOverflowCount_perGroupIncrements =
+                        outboundOverflowCount_markGroupForChange(
+                                outboundOverflowCount_perGroupIncrements, groupIndex);
+                groupIndexStep += 1; // [Quadratic probing]
+                groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                // [No break condition in a loop searching for an empty slot]
             }
-            // [InflatedSegment checking after unsuccessful key search]
-            if (controlsGroup != INFLATED_SEGMENT_MARKER_CONTROLS_GROUP) {//[Positive likely branch]
-                slotIndexStep += GROUP_SLOTS; // [Quadratic probing]
-                groupFirstSlotIndex = addSlotIndex(groupFirstSlotIndex, slotIndexStep);
-            } else {
-                return mergeInflated(segment, key, hash, value, remappingFunction);
-            }
-        }
+        } // end of toInsertNewEntry block
+        // Insert new entry:
+        int insertionSlotIndexWithinGroup = lowestMatchingSlotIndex(emptyBitMask);
+        insert(segment,
+                /* if Interleaved segments Supported intermediateSegments */isFullCapacitySegment,
+                /* endif */
+                outboundOverflowCount_perGroupIncrements, key, hash, value, groupIndex, dataGroup,
+                insertionSlotIndexWithinGroup);
+        return value;
     }
 
     /** [Shallow xxxInflated() methods] */
     private @Nullable V mergeInflated(Object segment, K key, long hash, V value,
-            BiFunction<? super V, ? super V, ? extends V> remappingFunction) {
+            BiFunction<? super V, ? super V, ? extends @Nullable V> remappingFunction) {
         @SuppressWarnings("unchecked")
         InflatedSegment<K, V> inflatedSegment = (InflatedSegment<K, V>) segment;
         return inflatedSegment.merge(this, key, hash, value, remappingFunction);
@@ -2251,160 +2862,148 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
     //region insert() and the family of makeSpaceAndInsert() methods called from it
 
-    /**
-     * @param replacingEmptySlot must be 1 if the slot being filled had {@link
-     * Segment#EMPTY_CONTROL} value before, 0 if {@link Segment#DELETED_CONTROL}.
-     *
-     * @apiNote deletedSlotCount can be re-extracted inside this method from bitSetAndState instead
-     * of being passed. TODO compare the approaches
-     */
     @HotPath
-    private void insert(Object segment, K key, long hash, V value, int insertionSlotIndex,
-            long bitSetAndState, int deletedSlotCount, int replacingEmptySlot) {
+    private void insert(Object segment,
+            /* if Interleaved segments Supported intermediateSegments */int isFullCapacitySegment,
+            /* endif */
+            long outboundOverflowCounts_perGroupIncrements, K key, long hash, V value,
+            long groupIndex, long dataGroup, int insertionSlotIndexWithinGroup) {
+        long bitSetAndState = getBitSetAndState(segment);
+        /* if Continuous segments */
         int allocIndex = lowestFreeAllocIndex(bitSetAndState);
+        // elif Interleaved segments */
+        int allocIndex = freeAllocIndexClosestTo(bitSetAndState,
+                allocIndexBoundaryForLocalAllocation((int) groupIndex
+                /* if Supported intermediateSegments */, isFullCapacitySegment/* endif */));
+        /* endif */
         int allocCapacity = allocCapacity(bitSetAndState);
-        // The first part `deletedSlotCount == 0` of the following condition is merely a short
-        // circuit, the second part
-        // `segmentSize(bitSetAndState) + deletedSlotCount + replacingEmptySlot <=
-        //         SEGMENT_MAX_NON_EMPTY_SLOTS` alone is definitive.
-        // TODO check whether having the first part really improves the performance
-        // If SEGMENT_MAX_NON_EMPTY_SLOTS is made equal to SEGMENT_MAX_ALLOC_CAPACITY (which is
-        // quite possible, for tuning and experimentation), this first short-circuit would make
-        // the variable enoughNonEmptySlots to not hold true *always if and only if* there are
-        // enough non-empty slots, but only in cases enabled by additional conditions:
-        // `allocIndex < allocCapacity` in this method and
-        // `allocCapacity == SEGMENT_INTERMEDIATE_ALLOC_CAPACITY` in makeSpaceAndInsert().
-        boolean enoughNonEmptySlots = deletedSlotCount == 0 ||
-                segmentSize(bitSetAndState) + deletedSlotCount + replacingEmptySlot <=
-                        SEGMENT_MAX_NON_EMPTY_SLOTS;
         if (allocIndex < allocCapacity) { // [Positive likely branch]
-            if (enoughNonEmptySlots) { // [Positive likely branch]
-                doInsert(segment, key, hash, value, insertionSlotIndex, bitSetAndState,
-                        replacingEmptySlot, allocIndex);
-                return;
-            }
+            doInsert(segment,
+                    /* if Interleaved segments Supported intermediateSegments */
+                    isFullCapacitySegment,/* endif */
+                    outboundOverflowCounts_perGroupIncrements, key, hash, value,
+                    groupIndex, dataGroup, insertionSlotIndexWithinGroup, bitSetAndState,
+                    allocIndex);
+        } else {
+            makeSpaceAndInsert(allocCapacity, segment, outboundOverflowCounts_perGroupIncrements,
+                    key, hash, value, groupIndex, dataGroup, insertionSlotIndexWithinGroup,
+                    bitSetAndState);
         }
-        makeSpaceAndInsert(allocCapacity, segment, key, hash, value, insertionSlotIndex, allocIndex,
-                bitSetAndState, deletedSlotCount, replacingEmptySlot, enoughNonEmptySlots);
     }
 
-    private void doInsert(Object segment, K key, long hash, V value, int insertionSlotIndex,
-            long bitSetAndState, int replacingEmptySlot, int allocIndex) {
-        bitSetAndState = updateDeletedSlotCountAndSetLowestAllocBit(
-                bitSetAndState, replacingEmptySlot);
-        setBitSetAndState(segment, bitSetAndState);
-        writeEntry(segment, key, hash, value, insertionSlotIndex, allocIndex);
+    @HotPath
+    private void doInsert(Object segment,
+            /* if Interleaved segments Supported intermediateSegments */int isFullCapacitySegment,
+            /* endif */
+            long outboundOverflowCounts_perGroupIncrements,
+            K key, long hash, V value, long groupIndex, long dataGroup,
+            int insertionSlotIndexWithinGroup, long bitSetAndState, int allocIndex) {
         size++;
         modCount++;
+
+        if (outboundOverflowCounts_perGroupIncrements != 0) { // Unlikely branch
+            incrementOutboundOverflowCountsPerGroup(segment,
+                    /* if Interleaved segments Supported intermediateSegments */
+                    isFullCapacitySegment,/* endif */
+                    outboundOverflowCounts_perGroupIncrements);
+        }
+
+        /* if Continuous segments //
+        // This assumes that allocIndex passed into this method was obtained via
+        // lowestFreeAllocIndex() called on the same bitSetAndState.
+        // setLowestAllocBit() incurs less operations than setting an alloc bit by allocIndex.
+        bitSetAndState = setLowestAllocBit(bitSetAndState);
+        // elif Interleaved segments */
+        bitSetAndState = setAllocBit(bitSetAndState, allocIndex);
+        /* endif */
+        setBitSetAndState(segment, bitSetAndState);
+
+        // The tag can also be passed down from the methods calling insert() (like put()) but
+        // it's chosen not to do so because of the high register pressure in those methods.
+        // Compare with a similar tradeoff in makeSpaceAndInsert(): see @apiNote to that method.
+        // TODO compare the approaches
+        byte tag = (byte) tagBits(hash);
+        writeEntry(segment,
+                /* if Interleaved segments Supported intermediateSegments */
+                (long) isFullCapacitySegment,/* endif */
+                key, tag, value, groupIndex, dataGroup, insertionSlotIndexWithinGroup, allocIndex);
     }
 
     /**
-     * Makes space for an extra entry by means of either {@link
-     * #growCapacityAndDropDeletesIfNeededAndInsert}, {@link #splitAndInsert}, {@link
-     * #inflateAndInsert} or {@link #dropDeletesAndInsert}.
+     * Makes space for an extra entry by means of either {@link #growCapacityAndInsert}, {@link
+     * #splitAndInsert}, or {@link #inflateAndInsert}.
      *
      * @apiNote
-     * Some of the parameters of this method can be recomputed inside it, that would reduce the
-     * bytecode size of {@link #insert} (that is good: see [Reducing bytecode size of a hot method])
-     * and might be even cheaper than putting variables that are in registers onto stack and then
-     * popping them from the stack (that happens when so many arguments are passed to the method).
-     * Namely, allocCapacity and deletedSlotCount can be re-extracted from bitSetAndState, and
-     * enoughNonEmptySlots can be recomputed in a similar manner as it is computed in {@link
-     * #insert}. This is the same tradeoff as in {@link #insert} itself, where deletedSlotCount
-     * argument can be re-extracted inside the method, see the comment for that method.
+     * allocCapacity could have been re-extracted from bitSetAndState instead of passing it as a
+     * parameter to this method that would reduce the bytecode size of {@link #insert} (that is
+     * good: see [Reducing bytecode size of a hot method]) and might be even cheaper than putting
+     * variables that are in registers onto stack and then popping them from the stack (that happens
+     * when so many arguments are passed to the method). Similarly,
+     * outboundOverflowCounts_perGroupIncrements could be computed within this method from
+     * groupIndex and {@link HashTable#baseGroupIndex}(hash) if
+     * [Precomputed outboundOverflowCount_perGroupChanges] is implemented.
+     *
+     * Compare with a similar tradeoff in {@link #doInsert} itself where `tag` can be passed into
+     * the method instead of recomputing it inside the method.
      * TODO compare the approaches
      */
     @AmortizedPerSegment
-    final void makeSpaceAndInsert(int allocCapacity, Object segment, K key, long hash, V value,
-            int insertionSlotIndex, int allocIndex, long bitSetAndState, int deletedSlotCount,
-            int replacingEmptySlot, boolean enoughNonEmptySlots) {
+    final void makeSpaceAndInsert(int allocCapacity, Object segment,
+            long outboundOverflowCounts_perGroupIncrements, K key, long hash, V value,
+            long groupIndex, long dataGroup, int insertionSlotIndexWithinGroup,
+            long bitSetAndState) {
         if (bitSetAndState == BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE) {
             throw new ConcurrentModificationException();
         }
 
-        // ### First route: check if the segment is intermediate-sized and should be grown to full
-        // ### size.
+        // ### First route: check if the segment is intermediate-capacity and should be grown to
+        // ### full size.
         // This branch could more naturally be placed in insert() (and then allocCapacity shouldn't
         // be passed into makeSpaceAndInsert()) but there is an objective to make bytecode size of
         // insert() as small as possible, see [Reducing bytecode size of a hot method]. TODO compare
-        boolean segmentIsShortOfAllocSpace = allocIndex >= allocCapacity;
-        // TODO check whether & instead of && helps
-        if (segmentIsShortOfAllocSpace & allocCapacity == SEGMENT_INTERMEDIATE_ALLOC_CAPACITY) {
-            // Dropping deleted slots from a non-full-capacity segment: it's theoretically possible
-            // that a segment hits SEGMENT_INTERMEDIATE_ALLOC_CAPACITY and
-            // SEGMENT_MAX_NON_EMPTY_SLOTS thresholds at the same time (theoretically it's enabled
-            // by the fact that SEGMENT_INTERMEDIATE_ALLOC_CAPACITY (30) > GROUP_SLOTS (8), that
-            // allows to slowly fill the hash table with deleted slots, see the condition for
-            // writing DELETED_CONTROL into a slot in removeAtSlot()). However, that requires a very
-            // specialized, likely manually crafted sequence of insertions and deletions into a
-            // segment. But still, growing the alloc capacity and cleaning up deleted slots are
-            // independent actions in concept. Because of that, enoughNonEmptySlots should be passed
-            // into growCapacityAndDropDeletesIfNeededAndInsert(), where we drop deletes if
-            // enoughNonEmptySlots is false as well as growing the capacity of the segment.
-            growCapacityAndDropDeletesIfNeededAndInsert(segment, key, hash, value,
-                    insertionSlotIndex, bitSetAndState, replacingEmptySlot, enoughNonEmptySlots);
+        if (allocCapacity == SEGMENT_INTERMEDIATE_ALLOC_CAPACITY) {
+            growCapacityAndInsert(segment, outboundOverflowCounts_perGroupIncrements, key, hash,
+                    value, groupIndex, dataGroup, insertionSlotIndexWithinGroup, bitSetAndState);
             return;
         }
 
-        int newDeletedSlotCount = deletedSlotCount - 1 + replacingEmptySlot;
-
-        // Need to read modCount here rather than inside methods splitAndInsert(),
-        // inflateAndInsert(), and dropDeletesAndInsert() so that it is done before calling to
+        // Need to read modCount here rather than inside methods splitAndInsert() and
+        // inflateAndInsert() so that it is done before calling to
         // tryEnsureSegmentsArrayCapacityForSplit() that may update the modCount field (and is a
         // bulky method that needs to be surrounded with modCount read and check).
         int modCount = getModCountOpaque();
 
-        // ### Second route: consider splitting or inflation.
-        // If the previous route is not taken and growCapacityAndDropDeletesIfNeededAndInsert() is
-        // not called, but the alloc capacity is SEGMENT_INTERMEDIATE_ALLOC_CAPACITY, the deleted
-        // slot count should be at least SEGMENT_MAX_NON_EMPTY_SLOTS -
-        // SEGMENT_INTERMEDIATE_ALLOC_CAPACITY (= 20) > SEGMENT_MIN_DELETED_SLOTS_FOR_DROP_DELETES
-        // (= 5), so the following branch won't be taken either. It means that a segment with the
-        // intermediate alloc capacity can't be split or inflated without growing or dropping
-        // deleted slots first.
-        if (newDeletedSlotCount < SEGMENT_MIN_DELETED_SLOTS_FOR_DROP_DELETES) {
-            int segmentOrder = segmentOrder(bitSetAndState);
-            // InflatedSegment.shouldBeSplit() refers to and depends on the following call to
-            // computeAverageSegmentOrder().
-            int averageSegmentOrder = computeAverageSegmentOrder(size);
-            boolean acceptableOrderAfterSplitting =
-                    segmentOrder < averageSegmentOrder + MAX_SEGMENT_ORDER_DIFFERENCE_FROM_AVERAGE;
-            int modCountIncrement;
-            // In principle, we can still split to-become-outlier segments or segments that are
-            // already outliers as long as their order is less than segmentsArray's order (which
-            // might happen to be greater than averageSegmentOrder +
-            // MAX_SEGMENT_ORDER_DIFFERENCE_FROM_AVERAGE if the SmoothieMap used to be larger and
-            // has shrunk in size since). But it's not done because we don't want to disturb the
-            // poor hash code distribution detection (see HashCodeDistribution), as well as
-            // the functionality of moveToMapWithShrunkArray().
-            if (acceptableOrderAfterSplitting &&
-                    (modCountIncrement =
-                            tryEnsureSegmentsArrayCapacityForSplit(segmentOrder)) >= 0) {
-                modCount += modCountIncrement;
-                splitAndInsert(modCount, segment, key, hash, value, bitSetAndState, segmentOrder);
-                return;
-            } else {
-                // If a segment should otherwise be inflated, try to get around with
-                // dropDeletesAndInsert() even if there are less deleted slots than
-                // SEGMENT_MIN_DELETED_SLOTS_FOR_DROP_DELETES as long as the segment is not short
-                // of alloc space.
-                if (segmentIsShortOfAllocSpace) {
-                    inflateAndInsert(
-                            modCount, segmentOrder, segment, bitSetAndState, key, hash, value);
-                    return;
-                }
-                // Intentional fall-through to dropDeletesAndInsert()
-            }
+        // ### Second route: split or inflate the segment.
+        int segmentOrder = segmentOrder(bitSetAndState);
+        // InflatedSegment.shouldBeSplit() refers to and depends on the following call to
+        // computeAverageSegmentOrder().
+        int averageSegmentOrder = computeAverageSegmentOrder(size);
+        boolean acceptableOrderAfterSplitting =
+                segmentOrder < averageSegmentOrder + MAX_SEGMENT_ORDER_DIFFERENCE_FROM_AVERAGE;
+        int modCountAddition;
+        // In principle, we can still split to-become-outlier segments or segments that are
+        // already outliers as long as their order is less than segmentsArray's order (which
+        // might happen to be greater than averageSegmentOrder +
+        // MAX_SEGMENT_ORDER_DIFFERENCE_FROM_AVERAGE if the SmoothieMap used to be larger and
+        // has shrunk in size since). But it's not done because we don't want to disturb the
+        // poor hash code distribution detection (see HashCodeDistribution), as well as
+        // the functionality of moveToMapWithShrunkArray().
+        if (acceptableOrderAfterSplitting &&
+                (modCountAddition =
+                        tryEnsureSegmentsArrayCapacityForSplit(segmentOrder)) >= 0) {
+            modCount += modCountAddition;
+            splitAndInsert(modCount, segment, key, hash, value, bitSetAndState, segmentOrder);
+        } else {
+            inflateAndInsert(modCount, segmentOrder, segment, bitSetAndState, key, hash, value);
         }
-
-        // ### Third route: drop deletes.
-        dropDeletesAndInsert(modCount, segment, bitSetAndState, key, hash, value, allocIndex);
     }
 
     @AmortizedPerSegment
-    private void growCapacityAndDropDeletesIfNeededAndInsert(Object oldSegment, K key, long hash,
-            V value, int insertionSlotIndex, long bitSetAndState, int replacingEmptySlot,
-            boolean enoughNonEmptySlots) {
+    private void growCapacityAndInsert(Object oldSegment,
+            long outboundOverflowCounts_perGroupIncrements, K key, long hash, V value,
+            long groupIndex, long dataGroup, int insertionSlotIndexWithinGroup,
+            long bitSetAndState) {
+        // TODO fix for interleaved segments
         int modCount = getModCountOpaque();
 
         // The old segment's bitSetAndState is never reset back to an operational value after this
@@ -2412,14 +3011,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         setBitSetAndState(oldSegment, BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE);
 
         // ### Create a new segment.
+        //noinspection UnnecessaryLocalVariable
         int oldAllocCapacity = SEGMENT_INTERMEDIATE_ALLOC_CAPACITY;
+        //noinspection UnnecessaryLocalVariable
         int newAllocCapacity = SEGMENT_MAX_ALLOC_CAPACITY;
-        Segment<K, V> newSegment = Segment.allocateSegment(newAllocCapacity);
-        newSegment.copyHashTableFrom(oldSegment);
-        newSegment.copyAllocAreaFrom(oldSegment, oldAllocCapacity);
-        bitSetAndState = makeBitSetAndStateWithNewAllocCapacity(bitSetAndState, newAllocCapacity);
-        newSegment.bitSetAndState = bitSetAndState;
-        U.storeFence(); // [Safe segment publication]
+        Segment<?, ?> newSegment = grow(oldSegment, bitSetAndState, newAllocCapacity);
+        // Reusing local variable: it's better to reuse an existing local variable than to introduce
+        // a new variable because of a risk of using a wrong variable in the code below.
+        bitSetAndState = getBitSetAndState(newSegment);
 
         // ### Replace references from oldSegment to newSegment in segmentsArray.
         int segmentOrder = segmentOrder(bitSetAndState);
@@ -2428,29 +3027,30 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 getNonNullSegmentsArrayOrThrowCme(), firstSegmentIndex, segmentOrder, newSegment);
         modCount++; // Matches the modCount field increment performed in replaceInSegmentsArray().
 
-        // ### Drop deleted slots if needed and insert the new entry.
-        // In a segment with alloc capacity smaller than SEGMENT_MAX_ALLOC_CAPACITY that was full
-        // the next free alloc index could only be equal to the old alloc capacity.
+        // ### Insert the new entry.
+        /* if Continuous segments */
+        // When we grow a continuous segment with alloc capacity smaller than
+        // SEGMENT_MAX_ALLOC_CAPACITY that was full the next free alloc index can only be equal to
+        // the old alloc capacity. See also [allocIndex = segmentSize optimization].
         //noinspection UnnecessaryLocalVariable
         int allocIndex = oldAllocCapacity;
-        if (enoughNonEmptySlots) { // [Positive likely branch]
-            doInsert(newSegment, key, hash, value, insertionSlotIndex, bitSetAndState,
-                    replacingEmptySlot, allocIndex);
-            modCount++; // Matches the modCount field increment performed in doInsert().
+        /* elif Interleaved segments */
+        int allocIndex = freeAllocIndexClosestTo(bitSetAndState,
+                FullCapacitySegment.allocIndexBoundaryForLocalAllocation((int) groupIndex));
+        /* endif */
+        /* if Interleaved segments Supported intermediateSegments */
+        int newSegment_isFullCapacity = 1;
+        /* endif */
+        // No point in specializing doInsert() for full-capacity segments because we are in an
+        // AmortizedPerSegment method.
+        doInsert(newSegment,
+                /* if Interleaved segments Supported intermediateSegments */
+                newSegment_isFullCapacity,/* endif */
+                outboundOverflowCounts_perGroupIncrements, key, hash, value,
+                groupIndex, dataGroup, insertionSlotIndexWithinGroup, bitSetAndState, allocIndex);
+        modCount++; // Matches the modCount field increment performed in doInsert().
 
-            checkModCountOrThrowCme(modCount);
-        } else {
-            // Since the alloc capacity is just increased and SEGMENT_MAX_ALLOC_CAPACITY -
-            // SEGMENT_INTERMEDIATE_ALLOC_CAPACITY (= 18) >
-            // SEGMENT_MIN_DELETED_SLOTS_FOR_DROP_DELETES (= 5) it's not possible that
-            // splitAndInsert() should be called here instead of dropDeletesAndInsert(). And it
-            // wouldn't make sense because then splitAndInsert() should have been called instead of
-            // growCapacityAndDropDeletesIfNeededAndInsert() in the first place.
-            dropDeletesAndInsert(
-                    modCount, newSegment, bitSetAndState, key, hash, value, allocIndex);
-            // modCount is checked inside dropDeletesAndInsert(), so it doesn't need to be checked
-            // again here.
-        }
+        checkModCountOrThrowCme(modCount);
     }
 
     @AmortizedPerSegment
@@ -2474,14 +3074,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         // intoSegment's bitSetAndState is written and [Safe segment publication] is ensured inside
         // split(), closer to the end of the method.
         Segment<K, V> intoSegment =
-                Segment.allocateNewSegmentAndSetEmptyControls(intoSegmentAllocCapacity);
+                allocateNewSegmentWithoutSettingBitSetAndSet(intoSegmentAllocCapacity);
         int siblingSegmentsQualificationBitIndex =
                 SEGMENT_LOOKUP_HASH_SHIFT + siblingSegmentsOrder - 1;
 
         long fromSegmentIsHigher = split(fromSegment,
                 fromSegment_bitSetAndState, intoSegment, intoSegmentAllocCapacity,
                 siblingSegmentsOrder, siblingSegmentsQualificationBitIndex);
-        // storeFence() is called inside split() to make publishing of intoSegment safe.
+        // storeFence() is called inside split() to make the publishing of intoSegment safe.
 
         // ### Publish intoSegment (the new segment) to segmentsArray.
         int intoSegmentIsLower = (int) (fromSegmentIsHigher >>>
@@ -2499,26 +3099,32 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         subtractFromSegmentCountWithOrder(priorSegmentOrder, 1);
         /* endif */
 
-        // Unlike all other similar methods which may be called from makeSpaceAndInsert(), namely
-        // growCapacityAndDropDeletesIfNeededAndInsert(), inflateAndInsert(), and
-        // dropDeletesAndInsert() we check the modCount here before the "insert" part of the method
-        // because the insertion might cause fromSegment or intoSegment to be inflated or split
-        // itself if during the splitting all or almost all entries went to one of the segments.
-        // There is no cheap way to detect if that have happened to additionally increment the local
-        // copy of modCount. (Compare with the similar problem in splitInflated().) After all, the
-        // main point is making a modCount check after bulky operations: split() and
-        // replaceInSegmentsArray() which are called above. Including the last point update (the
-        // put() call below) in the scope of the modCount check is not necessary.
+        // Unlike other similar methods which may be called from makeSpaceAndInsert(), namely
+        // growCapacityAndInsert() and inflateAndInsert(), we check the modCount here before the
+        // "insert" part of the method because the insertion might cause fromSegment or intoSegment
+        // to be inflated or split itself if during the splitting all or almost all entries went to
+        // one of the segments. There is no cheap way to detect if that have happened to
+        // additionally increment the local copy of modCount. (Compare with the similar problem in
+        // splitInflated().) After all, the main point is making a modCount check after bulky
+        // operations: split() and replaceInSegmentsArray() which are called above. Including the
+        // last point update (the internalPutIfAbsent() call below) in the scope of the modCount
+        // check is not necessary.
         checkModCountOrThrowCme(modCount);
 
-        // ### Insert the new entry into fromSegment or intoSegment.
-        long siblingSegmentsQualificationBit = 1L << siblingSegmentsQualificationBitIndex;
-        boolean newEntryShouldGoInFromSegment =
-                (hash & siblingSegmentsQualificationBit) == fromSegmentIsHigher;
-        Object segmentToInsertNewEntryInto =
-                newEntryShouldGoInFromSegment ? fromSegment : intoSegment;
-        if (put(segmentToInsertNewEntryInto, key, hash, value, true /* onlyIfAbsent */) != null) {
-            throw new ConcurrentModificationException();
+        // ### Insert the new entry into fromSegment or intoSegment: calling into
+        // internalPutIfAbsent() which accesses the segmentsArray (and the bit set with
+        // isFullCapacity flags, when this is implemented in isFullCapacitySegment() method)
+        // although both fromSegment and intoSegment are already available as local variables
+        // because choosing between fromSegment and intoSegment and determining whether the chosen
+        // segment has full capacity in an ad-hoc manner would likely result in more branches than
+        // internalPutIfAbsent(). Note that accessing segmentsArray (and the bit set) should read
+        // from L1 because this path with the same key and hash has already been taken in the
+        // beginning of the operation that initiated this splitAndInsert() call: in other words,
+        // higher in the stack. Also, calling to internalPutIfAbsent() is simpler than an
+        // alternative ad-hoc segment choice logic.
+        if (internalPutIfAbsent(key, hash, value) != null) {
+            throw new ConcurrentModificationException(
+                    "New entry shouldn't replace existing during split");
         }
     }
 
@@ -2537,7 +3143,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
      *
      * @apiNote siblingSegmentsQualificationBitIndex can be re-computed inside the method from
      * newSegmentOrder instead of being passed as a parameter. There is the same "pass-or-recompute"
-     * tradeoff as in {@link #insert} and {@link #makeSpaceAndInsert}. However, in split() an
+     * tradeoff as in {@link #doInsert} and {@link #makeSpaceAndInsert}. However, in split() an
      * additional factor for passing siblingSegmentsQualificationBitIndex is making it being
      * computed only once in {@link #splitAndInsert}, hence less implicit dependency and probability
      * of making mistakes.
@@ -2545,108 +3151,133 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     @SuppressWarnings({"UnnecessaryLabelOnBreakStatement", "UnnecessaryLabelOnContinueStatement"})
     @AmortizedPerSegment
     final long split(Object fromSegment, long fromSegment_bitSetAndState,
-            Object intoSegment, int intoSegmentAllocCapacity, int newSegmentOrder,
+            Object intoSegment, int intoSegment_allocCapacity, int newSegmentOrder,
             int siblingSegmentsQualificationBitIndex) {
-        // ### Convert full control slots in fromSegment's hash table to deleted:
-        // split() has a side-effect of purging deleted slots from the hash table of fromSegment
-        // (see the first call in this method) and "squeezing out" empty slots that were written in
-        // removeAtSlot() instead of deleted slots and may have been keeping probe chains longer
-        // than they needed to be for some keys that are present in fromSegment at the moment (see
-        // displacingLoop below in this method).
-        //
-        // Conversion of full slots to deleted and then, essentially, back is required even if there
-        // were no deletions from fromSegment because splitting of a segment (that is, moving
-        // approximately half of the entries to intoSegment) has the same effect as deletions. To
-        // prevent breaking chain invariants (of always less than GROUP_SLOTS consecutive empty
-        // slots on any chain between the base slot and the actual insertion slot; see how this
-        // invariant is ensured in removeAtSlot()) either a sort of "shift deletion" procedure
-        // (classical for linear probing) would be needed (but shift deletion would be very costly
-        // in SwissTable with its high load factors and where entries shifted by at least some slots
-        // is a norm rather than an exception, so this algorithm doesn't worth serious
-        // consideration), or at least two separate walks over the hash table of fromSegment would
-        // be required: the first one to move entries that need to go to intoSegment and to shift
-        // other slots, the second one walk should start from any empty slot (rather than from any
-        // slot, e. g. slot #0) and re-shift slots again, restoring the chain invariants. This
-        // second algorithm with walking the hash table twice is very likely to be slower than
-        // simply always converting full slots to deleted and having a displacing loop (what is
-        // implemented currently), and this alternative algorithm is definitely more complex.
-        // TODO compare the conversion + displacingLoop algorithm with the double walk algorithm
-        //  (low priority because unlikely to be fruitful)
-        covertAllDeletedToEmptyAndFullToDeletedControlSlots(fromSegment);
+        // Updating fromSegment_bitSetAndState's segment order early in this method because it's
+        // hard to track different segment orders of fromSegment and intoSegment and their possible
+        // buggy interactions in InterleavedSegments.swapContentsDuringSplit().
+        fromSegment_bitSetAndState = incrementSegmentOrder(fromSegment_bitSetAndState);
 
         // ### Defining variables that will be used in and after [fromSegment iteration].
+
         /* if Tracking hashCodeDistribution */
-        int initialFromSegmentSize = segmentSize(fromSegment_bitSetAndState);
+        int fromSegment_initialSize = segmentSize(fromSegment_bitSetAndState);
+        verifyEqual(fromSegment_initialSize, SEGMENT_MAX_ALLOC_CAPACITY);
         // This variable is used to count how many hashes of keys in fromSegment have 1 in
-        // LOG_HASH_TABLE_SIZE-th bit. See how it used in the end of this method.
+        // HASH__BASE_GROUP_INDEX_BITS-th bit. See how it used in the end of this method.
         // Not counting numKeysForHalfOne or numKeysForHalfTwo directly to make the computation
         // inside [fromSegment iteration] loop cheaper.
         int hashTableHalfBits = 0;
         /* endif */
-        int intoSegmentAllocIndex = 0;
-        // boolean as long: see [boolean as int]. Reusing a variable for two purposes, as a sanity
-        // boolean flag ("swappedSegmentsInsideLoop") and as a bit indicating that fromSegment is
-        // the higher index segment ("fromSegmentIsHigher") to minimize the number of variables in
-        // this giant method and thus use registers more efficiently. This variable is of long type
-        // rather than int to avoid conversion inside [fromSegment iteration] loop, where
-        // entryShouldRemainInFromSegment is computed. Unlike [boolean as int], "true" value is
-        // equal to siblingSegmentsQualificationBit (1 << siblingSegmentsQualificationBitIndex)
-        // rather than 1.
+        /* if Continuous segments || Supported intermediateSegments */
+        int intoSegment_currentSize = 0;
+        /* endif */
+        /* if Interleaved segments */
+        long intoSegment_bitSetAndState =
+                makeNewBitSetAndState(intoSegment_allocCapacity, newSegmentOrder);
+        /* endif */
+        long fromSegment_outboundOverflowCount_perGroupDeductions = 0;
+        long intoSegment_outboundOverflowCount_perGroupAdditions = 0;
+        // boolean as long: reusing a variable for two purposes, as a sanity boolean flag
+        // ("swappedSegmentsInsideLoop") and as a bit indicating that fromSegment is the
+        // higher-index segment ("fromSegmentIsHigher") to minimize the number of variables in this
+        // giant method and thus reduce register pressure. This variable is of long type rather than
+        // int to avoid conversion inside [fromSegment iteration] loop, where
+        // entryShouldRemainInFromSegment is computed. "True" value of "swappedSegmentsInsideLoop"
+        // part of this variable corresponds to siblingSegmentsQualificationBit =
+        // 1 << siblingSegmentsQualificationBitIndex rather than just 1.
         long swappedSegmentsInsideLoopAndFromSegmentIsHigher = 0;
-        // If this bit in a hash of some key is "fromSegmentIsHigher", then it should stay in
-        // fromSegment rather than be split into intoSegment.
+        // If this bit in a hash of some key is "fromSegmentIsHigher", then the entry should stay in
+        // fromSegment rather than move to intoSegment.
         long siblingSegmentsQualificationBit = 1L << siblingSegmentsQualificationBitIndex;
+        /* if Interleaved segments Supported intermediateSegments */
+        // TODO check that Hotspot compiles this expression into branchless code.
+        // TODO check if Hotspot emits more optimal machine code when a variable is kept as long and
+        //  casted down to int when needed or vice versa.
+        int intoSegment_isFullCapacity =
+                intoSegment_allocCapacity == SEGMENT_MAX_ALLOC_CAPACITY ? 1 : 0;
+        int fromSegment_isFullCapacity = 1;
+        /* endif */
 
-        // ### fromSegment iteration: restoring values in control slots, moving entries to
-        // ### intoSegment.
+        // ### fromSegment iteration: iterating all entries in the hash table, while moving the
+        // proper entries to intoSegment and reducing (if possible) unnecessary "group overflows"
+        // for entries that should remain in fromSegment, that is, moving the entries to (or, at
+        // least, closer to) their respective base groups (see HashTable.baseGroupIndex()).
         //
-        // Note: this loop is an extended version of
-        // [Restoring values in control slots and optimizing the hash table] loop in dropDeletes(),
-        // enriched with collecting statistics and moving entries to intoSegment. Whenever possible,
-        // comments are put in dropDeletes() and referenced from split() to reduce the size of
-        // split().
-        // [Byte-by-byte hash table iteration]
+        // Reducing group overflows is expected to be effective starting from the second iteration
+        // of the loop, because about half of the entries in the previous group are expected to be
+        // moved out to intoSegment, leaving holes for entries which overflown by one group in the
+        // current iteration group which should be just single percents of the total population of
+        // entries (see [Non-overflown entry]), and entries overflown by two or more steps in the
+        // group probing chain orders of magnitude more rare. Note: this reasoning depends on the
+        // current [Quadratic probing] chain which is baseGroupIndex + [0, 1, 3, 6, 2, 7, 5, 4], and
+        // in positive direction, as well as the following loop.
+        //
+        // However, on the first iteration of the following loop, overflown entries can't be shifted
+        // back in their group probing chains. One way to fix this it to make HASH_TABLE_GROUPS + 1
+        // steps in the loop rather than just HASH_TABLE_GROUPS, but that's relatively expensive
+        // solution because the remaining entries in the first iteration group would be checked (in
+        // particular, their hash code is computed) twice in the loop. There is no opportunity for
+        // a "split phase" between 0-th and 8-th iteration because we don't known a priori which
+        // entries should remain in fromSegment and which should move to intoSegment.
+        //
+        // A cheaper approach is taken here: missed opportunities for reducing entries' probing
+        // chain length ending at the first group iterated in the following loop is just tolerated.
+        // However, the first group in the iteration is chosen differently at random each time to
+        // prevent overflown entries from "accruing" in the group 0 (if it's always used as the
+        // start) in the series of generational segment splits.
+        //
+        // `size & HASH_TABLE_GROUPS_MASK` is effectively a pseudo-random value (after splitting the
+        // first segment in the SmoothieMap with the order of 0), yet it is deterministic when the
+        // map is populated with exactly the same data (e. g. in tests).
+        long iterGroupIndexStart = size & HASH_TABLE_GROUPS_MASK;
+
+        // [Branchless hash table iteration]: this instance of [Branchless hash table iteration] has
+        // yet different properties than Segment.removeIf() and compactEntriesDuringSegmentSwap()
+        // because the hash table should be SEGMENT_MAX_ALLOC_CAPACITY / HASH_TABLE_SLOTS = 75%
+        // full here. So if byte-by-byte hash table iteration is better than the branchless
+        // approach in any one of split(), Segment.removeIf(), and compactEntriesDuringSegmentSwap()
+        // methods, it should be in split().
+        // TODO compare the approaches for split().
+
         // [Int-indexed loop to avoid a safepoint poll]
-        for (int slotIndex = 0; slotIndex < HASH_TABLE_SLOTS; slotIndex++) {
-            // [Visiting only deleted slots]
-            boolean shouldVisitEntry =
-                    readControlByte(fromSegment, (long) slotIndex) == DELETED_CONTROL;
-            if (!shouldVisitEntry) {
-                continue;
-            }
-            int dataByteToDisplace = readData(fromSegment, (long) slotIndex);
+        for (int extraGroupIndex = 0; extraGroupIndex < HASH_TABLE_GROUPS; extraGroupIndex++) {
+            long iterGroupIndex = addGroupIndex(iterGroupIndexStart, (long) extraGroupIndex);
+            long iterDataGroupOffset = dataGroupOffset(iterGroupIndex
+                    /* if Interleaved segments Supported intermediateSegments */
+                    , (long) fromSegment_isFullCapacity/* endif */);
+            long iterDataGroup = readDataGroupAtOffset(fromSegment, iterDataGroupOffset);
 
-            byte controlByteToWriteAtSlotIndex;
+            // TODO compare with int-indexed loop with bitCount(bitMask) limit. It may be executed
+            //  without mispredicted branches on modern CPUs. However, this might be ineffective
+            //  because of possible update of iterBitMask in [Swap segments], meaning that the loop
+            //  limit might change in the course of the loop itself, which may inhibit CPU branch
+            //  prediction behaviour.
+            groupIteration:
+            for (long iterBitMask = matchFull(iterDataGroup);
+                 iterBitMask != 0L;
+                 iterBitMask = clearLowestSetBit(iterBitMask)) {
 
-            // See [displacingLoop] in dropDeletes().
-            displacingLoop:
-            for (boolean isFirstDisplacingLoopIteration = true;
-                // There is no condition in this loop. We either break from it (see
-                // `break displacingLoop`) or continue explicitly (see
-                // `continue displacingLoop`)
-                    ;
-                 isFirstDisplacingLoopIteration = false
-            ) {
-                int allocIndex = allocIndex(dataByteToDisplace);
-                K key = readKey(fromSegment, allocIndex);
+                long fromSegment_allocIndex;
+                // [Inlined lowestMatchingSlotIndex]
+                int iterTrailingZeros = Long.numberOfTrailingZeros(iterBitMask);
+                fromSegment_allocIndex = extractAllocIndex(iterDataGroup, iterTrailingZeros);
+                long fromSegment_allocOffset = allocOffset(fromSegment_allocIndex
+                        /* if Interleaved segments Supported intermediateSegments */
+                        , (long) fromSegment_isFullCapacity/* endif */);
+
+                K key = readKeyAtOffset(fromSegment, fromSegment_allocOffset);
                 long hash = keyHashCode(key);
 
                 /* if Tracking hashCodeDistribution */
-                int halfBit = 1 << (LOG_HASH_TABLE_SIZE - 1);
+                int halfBit = 1 << (HASH__BASE_GROUP_INDEX_BITS - 1);
                 // Counting hashTableHalfBits regardless of whether hashCodeDistribution is null
                 // (see [hashCodeDistribution null check]), because adding a null check is
                 // likely more expensive than doing this small branchless computation itself.
                 hashTableHalfBits += ((int) hash) & halfBit;
                 /* endif */
 
-                int slotIndexBase = slotIndex(hash);
-                // slotIndex is used at the second and later iterations of displacingLoop because
-                // before proceeding to these iterations
-                // [Virtual swap of data slot at slotIndex and newSlotIndex] is done.
-                int quadraticProbingChainGroupIndex =
-                        // [Replacing division with shift]
-                        (slotIndex - slotIndexBase) >>> GROUP_SLOTS_DIVISION_SHIFT;
-                byte restoredFullControlByte = (byte) hashControlBits(hash);
+                long baseGroupIndex = baseGroupIndex(hash);
 
                 // Using "fromSegmentIsHigher" meaning of the
                 // swappedSegmentsInsideLoopAndFromSegmentIsHigher variable in this expression.
@@ -2655,111 +3286,104 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                                 swappedSegmentsInsideLoopAndFromSegmentIsHigher;
 
                 if (entryShouldRemainInFromSegment) { // 50-50 unpredictable branch
-                    // ### The entry remains in fromSegment
+                    // ### The entry remains in fromSegment.
 
-                    // [Non-zero quadraticProbingChainGroupIndex]
-                    if (quadraticProbingChainGroupIndex != 0) { // Unlikely branch
-                        // [Find first non-full slot]
-                        int newSlotIndex;
-                        long searchControlsGroup;
-                        int trailingZeros;
-                        {
-                            int groupFirstSlotIndex = slotIndexBase;
-                            // TODO [Unbounded search loop]
-                            for (int slotIndexStep = 0; ; ) {
-                                searchControlsGroup =
-                                        readControlsGroup(fromSegment, (long) groupFirstSlotIndex);
-                                long emptyOrDeletedBitMask =
-                                        matchEmptyOrDeleted(searchControlsGroup);
-                                // [Positive likely branch]
-                                if (emptyOrDeletedBitMask != 0) {
-                                    // [Inlined lowestMatchIndex]
-                                    trailingZeros =
-                                            Long.numberOfTrailingZeros(emptyOrDeletedBitMask);
-                                    newSlotIndex = lowestMatchIndexFromTrailingZeros(
-                                            groupFirstSlotIndex, trailingZeros);
-                                    break;
-                                }
-                                slotIndexStep += GROUP_SLOTS; // [Quadratic probing]
-                                groupFirstSlotIndex =
-                                        addSlotIndex(groupFirstSlotIndex, slotIndexStep);
-                            }
-                        }
-                        int newQuadraticProbingChainGroupIndex =
-                                // [Replacing division with shift]
-                                (newSlotIndex - slotIndexBase) >>> GROUP_SLOTS_DIVISION_SHIFT;
-                        // [Likely "different newQuadraticProbingChainGroupIndex" branch]
-                        // [Positive likely branch]
-                        if (!groupIndexesEqualModuloHashTableGroups(
-                                newQuadraticProbingChainGroupIndex,
-                                quadraticProbingChainGroupIndex)) {
-                            // [Conditional control byte cloning]
-                            writeControlByteWithConditionalCloning(
-                                    fromSegment, (long) newSlotIndex, restoredFullControlByte);
-                            boolean newSlotWasEmpty =
-                                    isMatchingEmpty(searchControlsGroup, trailingZeros);
-                            if (newSlotWasEmpty) {
-                                // Finish displacingLoop.
-                                writeData(fromSegment, (long) newSlotIndex,
-                                        (byte) dataByteToDisplace);
-
-                                // Empty the slot at slotIndex.
-                                controlByteToWriteAtSlotIndex = EMPTY_CONTROL;
-                                // Not calling writeData() for slotIndex, i. e. leaving
-                                // "garbage" in that data slot.
-
-                                break displacingLoop;
-                            } else {
-                                // If [Branchless hash table iteration] was used in split() then
-                                // controlsGroup (or, rather, the iterated bitMask directly) and
-                                // dataGroup would need to be updated here if
-                                // newSlotIndex - slotIndex < GROUP_SLOTS.
-
-                                // [Virtual swap of data slot at slotIndex and newSlotIndex]
-                                dataByteToDisplace = replaceData(fromSegment,
-                                        (long) newSlotIndex, (byte) dataByteToDisplace);
-                                continue displacingLoop;
-                            }
-                        }
-                        // [Quadratic probing chain group indexes are equal]
+                    // Non-overflown entry:
+                    // If iterGroupIndex equals to baseGroupIndex then the condition of
+                    // `if (newGroupIndex == iterGroupIndex)` inside the [Find empty slot] loop
+                    // below must be true before the first iteration (although the loop is organized
+                    // so that this condition is not checked before the first iteration). In fact,
+                    // the condition below and the condition inside the loop can be both replaced
+                    // with a single loop condition. This is not done to preserve
+                    // [Positive likely branch], similarly to what is done in putImpl().
+                    //
+                    // This branch should be usually taken with the maximum load factor of
+                    // SEGMENT_MAX_ALLOC_CAPACITY / HASH_TABLE_SLOTS = 0.75 and therefore CPU
+                    // should predict this branch well.
+                    // TODO evaluate exactly the probability of this branch (should be about 98%?)
+                    if (iterGroupIndex == baseGroupIndex) { // [Positive likely branch]
+                        continue groupIteration;
                     }
-                    // Restore full control byte at slotIndex:
-                    controlByteToWriteAtSlotIndex = restoredFullControlByte;
-                    // This branch is unlikely because it could only be taken if
-                    // [Non-zero quadraticProbingChainGroupIndex] branch was taken which is
-                    // unlikely.
-                    if (!isFirstDisplacingLoopIteration) { // Unlikely branch
-                        // Delayed write of a swapped data byte at slotIndex:
-                        writeData(fromSegment, (long) slotIndex, (byte) dataByteToDisplace);
+                    // iterGroupIndex != baseGroupIndex: an unlikely path
+                    // [Find empty slot]
+                    for (long newGroupIndex = baseGroupIndex, groupIndexStep = 0; ; ) {
+                        long dataGroupOffset = dataGroupOffset(newGroupIndex
+                                /* if Interleaved segments Supported intermediateSegments */
+                                , (long) fromSegment_isFullCapacity/* endif */);
+                        long dataGroup = readDataGroupAtOffset(fromSegment, dataGroupOffset);
+                        long emptyBitMask = matchEmpty(dataGroup);
+                        if (emptyBitMask != 0) { // [Positive likely branch]
+                            int newSlotIndexWithinGroup = lowestMatchingSlotIndex(emptyBitMask);
+                            // Calling makeData() here should be faster than doing something like
+                            // extractDataByte(iterDataGroup, iterTrailingZeros) because makeData()
+                            // is one bitwise op and a cast, while extractDataByte() would be two
+                            // bitwise ops and a cast. Keeping the value when it was used inside the
+                            // extractAllocIndex(iterDataGroup, iterTrailingZeros) call above to
+                            // obtain allocIndex is also likely to be worse because of high register
+                            // pressure: the kept data value is likely going to be pushed to the
+                            // stack.
+                            byte data = makeData(dataGroup, fromSegment_allocIndex);
+                            writeTagAndData(fromSegment,
+                                    /* if Interleaved segments Supported intermediateSegments */
+                                    (long) fromSegment_isFullCapacity,/* endif */
+                                    newGroupIndex, newSlotIndexWithinGroup,
+                                    (byte) tagBits(hash), data);
+
+                            // An entry at the slot is shifted backwards closer to baseGroupIndex.
+                            // The difference between outboundOverflowCount changes should be
+                            // subtracted. XOR operation is such difference.
+                            fromSegment_outboundOverflowCount_perGroupDeductions +=
+                                    computeOutboundOverflowCount_perGroupChanges(
+                                            baseGroupIndex, newGroupIndex) ^
+                                            computeOutboundOverflowCount_perGroupChanges(
+                                                    baseGroupIndex, iterGroupIndex);
+
+                            // Empty the iteration slot:
+                            iterDataGroup = setSlotEmpty(iterDataGroup, iterTrailingZeros);
+                            // Not doing anything with the corresponding tag group, i. e. leaving
+                            // "garbage" in the tag byte of the emptied slot.
+
+                            continue groupIteration;
+                        }
+                        groupIndexStep += 1; // [Quadratic probing]
+                        newGroupIndex = addGroupIndex(newGroupIndex, groupIndexStep);
+                        if (newGroupIndex == iterGroupIndex) { // [Positive likely branch]
+                            // if newGroupIndex has reached iterGroupIndex then doing nothing
+                            // and proceeding to the next iteration of the groupIteration loop,
+                            // as well as in `if (iterGroupIndex == baseGroupIndex)` case above.
+                            continue groupIteration;
+                        }
                     }
-                    break displacingLoop;
                 }
                 else {
-                    // ### The entry is moved to intoSegment
+                    // ### The entry is moved to intoSegment.
 
+                    /* if Supported intermediateSegments */
+                    // Swap segments:
                     // #### Swap fromSegment's and intoSegment's contents if the intoSegment is
                     // #### full.
                     // The probability of taking the following branch once during the
                     // [fromSegment iteration], that is, when more than
-                    // SEGMENT_INTERMEDIATE_ALLOC_CAPACITY go into an intermediate-sized
+                    // SEGMENT_INTERMEDIATE_ALLOC_CAPACITY go into an intermediate-capacity
                     // intoSegment, equals to 1 -
-                    // CDF[BinomialDistribution[SEGMENT_MAX_ALLOC_CAPACITY(48), 0.5], 30] ~=
-                    // 3% (except for the cases when the distribution is skewed so that the majority
-                    // of segments at some order split with much more keys going to higher-index
-                    // siblings than to lower-index ones). There is no doubling of probability like
-                    // for HashCodeDistribution's
+                    // CDF[BinomialDistribution[SEGMENT_MAX_ALLOC_CAPACITY(48), 0.5], 30] ~= 3%
+                    // (in case of Continuous segments), or 1 -
+                    // CDF[BinomialDistribution[SEGMENT_MAX_ALLOC_CAPACITY(48), 0.5], 32] ~= 0.7%
+                    // (in case of Interleaved segments), except for the cases when the distribution
+                    // is skewed so that the majority of segments at some order split with much more
+                    // keys going to higher-index siblings than to lower-index ones. There is no
+                    // doubling of probability like for HashCodeDistribution's
                     // HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS values because
                     // if the distribution is skewed towards fromSegment the following branch is not
-                    // taken. If initialFromSegmentSize < SEGMENT_MAX_ALLOC_CAPACITY (48), in other
-                    // words, if there are some deleted control slots the probability is even lower.
+                    // taken.
                     //
                     // Therefore the following branch is very unlikely on each individual iteration.
                     //
                     // Doesn't seem practical to use [Positive likely branch] principle
                     // because it would require to add a dummy loop and organize code in a
                     // very unnatural way.
-                    if (intoSegmentAllocIndex == intoSegmentAllocCapacity) {
-                        // ### Swapping segments if intoSegment is overflowed.
+                    if (intoSegment_currentSize == intoSegment_allocCapacity) {
+                        // ### Swapping segments if intermediate-capacity intoSegment is overflowed.
                         // Alternative to swapping segments inline the [fromSegment iteration] and
                         // swapping fromSegment and intoSegment variables is finishing iteration in
                         // a separate method like "finishSplitAfterSwap()". The advantage of this
@@ -2775,120 +3399,205 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                         // Using "swappedSegmentsInsideLoop" meaning of the
                         // swappedSegmentsInsideLoopAndFromSegmentIsHigher variable in this
                         // expression.
-                        final boolean notSwappedSegmentsInsideLoop =
-                                swappedSegmentsInsideLoopAndFromSegmentIsHigher == 0;
-                        if (notSwappedSegmentsInsideLoop) {
-                            swappedSegmentsInsideLoopAndFromSegmentIsHigher =
-                                    siblingSegmentsQualificationBit;
-                            // makeSpaceAndInsert[Second route] guarantees that only
-                            // full-capacity segments are split:
-                            /* if Enabled extraChecks */
-                            assertEqual(allocCapacity(fromSegment_bitSetAndState),
-                                    SEGMENT_MAX_ALLOC_CAPACITY);
-                            /* endif */
-                            int fromSegmentAllocCapacity = SEGMENT_MAX_ALLOC_CAPACITY;
-                            fromSegment_bitSetAndState = swapHashTablesAndAllocAreasDuringSplit(
-                                    fromSegment, fromSegmentAllocCapacity,
-                                    fromSegment_bitSetAndState,
-                                    intoSegment, intoSegmentAllocCapacity);
-                            // Swap fromSegment and intoSegment variables.
-                            {
-                                Object tmpSegment = intoSegment;
-                                intoSegment = fromSegment;
-                                fromSegment = tmpSegment;
-
-                                intoSegmentAllocCapacity = fromSegmentAllocCapacity;
-                            }
-
-                            // If [Branchless hash table iteration] was used in split() then
-                            // dataGroup would need to be re-read here because it might have been
-                            // updated in a swapHashTablesAndAllocAreasDuringSplit() call above
-                            // if compactEntriesDuringSplit() was called. (The re-read could have
-                            // been conditional on the fact that fromSegment_bitSetAndState returned
-                            // from swapHashTablesAndAllocAreasDuringSplit() is different from the
-                            // former value, but the approaches would need to be compared.)
-                            // controlsGroup wouldn't need to be re-read because control slots are
-                            // not updated in swapHashTablesAndAllocAreasDuringSplit() or
-                            // compactEntriesDuringSplit().
-
-                        } else {
-                            // Already swapped segments inside the splitting loop once. This
-                            // might only happen if entries are inserted into fromSegment
-                            // concurrently with the splitting loop.
+                        if (swappedSegmentsInsideLoopAndFromSegmentIsHigher != 0) {
+                            // Already swapped segments inside the splitting loop once. This might
+                            // only happen if entries are inserted into fromSegment concurrently
+                            // with the splitting loop.
                             throw new ConcurrentModificationException();
                         }
+                        swappedSegmentsInsideLoopAndFromSegmentIsHigher =
+                                siblingSegmentsQualificationBit;
+
+                        // Write out the iterDataGroup as it may have been updated at
+                        // [Empty the iteration slot].
+                        /* if Enabled extraChecks */
+                        // fromSegment_isFullCapacity can change its initial value 1 only in the
+                        // end of segment swap itself.
+                        verifyEqual(fromSegment_isFullCapacity, 1);
+                        /* endif */
+                        /* if Interleaved segments */FullCapacitySegment./* endif */writeDataGroup(
+                                fromSegment, iterGroupIndex, iterDataGroup);
+
+                        // makeSpaceAndInsert[Second route] guarantees that only full-capacity
+                        // segments are split:
+                        /* if Enabled extraChecks */
+                        verifyEqual(allocCapacity(fromSegment_bitSetAndState),
+                                SEGMENT_MAX_ALLOC_CAPACITY);
+                        /* endif */
+                        int fromSegment_allocCapacity = SEGMENT_MAX_ALLOC_CAPACITY;
+                        /* if Continuous segments */
+                        long intoSegment_bitSetAndState = ContinuousSegments.SegmentBase
+                                .swapContentsDuringSplit(fromSegment,
+                                        fromSegment_allocCapacity, fromSegment_bitSetAndState,
+                                        intoSegment, intoSegment_allocCapacity);
+                        /* elif Interleaved segments */
+                        intoSegment_bitSetAndState =
+                                InterleavedSegments.swapContentsDuringSplit(
+                                        fromSegment, fromSegment_bitSetAndState,
+                                        intoSegment, intoSegment_bitSetAndState);
+                        /* endif */
+                        // Swap fromSegment and intoSegment variables.
+                        {
+                            fromSegment_bitSetAndState = intoSegment_bitSetAndState;
+                            /* if Interleaved segments */
+                            // The updated fromSegment_bitSetAndState is written into bitSetAndState
+                            // field of fromSegment in the call to
+                            // InterleavedSegments.swapContentsDuringSplit() above.
+                            // See the documentation to that method.
+                            intoSegment_bitSetAndState = getBitSetAndState(fromSegment);
+                            /* endif */
+
+                            Object tmpSegment = intoSegment;
+                            intoSegment = fromSegment;
+                            fromSegment = tmpSegment;
+
+                            intoSegment_allocCapacity = fromSegment_allocCapacity;
+
+                            fromSegment_isFullCapacity = intoSegment_isFullCapacity;
+                            intoSegment_isFullCapacity = 1;
+                        }
+
+                        // iterDataGroup needs to be re-read here because it might be updated during
+                        // a swapContentsDuringSplit() call above: in
+                        // compactEntriesDuringSegmentSwap() (if this method is called) in case of
+                        // Continuous segments and always in case of InterleavedSegments segments
+                        // (see InterleavedSegments.swapContentsDuringSplit()).
+                        iterDataGroupOffset = dataGroupOffset(iterGroupIndex
+                                /* if Interleaved segments Supported intermediateSegments */
+                                , (long) fromSegment_isFullCapacity/* endif */);
+                        iterDataGroup = readDataGroupAtOffset(fromSegment, iterDataGroupOffset);
+                        iterBitMask = matchFull(iterDataGroup);
+                        // Clear the already iterated bits to continue the loop correctly.
+                        iterBitMask = clearLowestNBits(iterBitMask, iterTrailingZeros);
                     }
+                    // end of [Swap segments]
+                    /* endif */
 
-                    V value = readValue(fromSegment, allocIndex);
+                    V value = readValueAtOffset(fromSegment, fromSegment_allocOffset);
 
-                    // #### Put the entry into intoSegment.
+                    // ### Put the entry into intoSegment:
                     {
-                        // Optimization
-                        // if (relativeGroupIndex == 0) { insertionSlotIndex = slotIndex; }
-                        // is impossible here because slotIndex may be already taken by some
-                        // entry that was previously moved to intoSegment into an
-                        // insertionSlotIndex that was greater than the slotIndex of that entry
-                        // in fromSegment because it was shifted and wrapped around the hash
-                        // table.
-                        // TODO check if an optimization is still possible in some other way,
-                        //  perhaps if linear probing is used instead of quadratic
-                        int insertionSlotIndex =
-                                findFirstEmptySlotForSlotIndexBase(intoSegment, slotIndexBase);
-                        // [Conditional control byte cloning]
-                        writeControlByteWithConditionalCloning(intoSegment,
-                                (long) insertionSlotIndex, restoredFullControlByte);
-                        writeData(intoSegment, (long) insertionSlotIndex,
-                                makeData(intoSegmentAllocIndex, hash));
-                        writeKey(intoSegment, intoSegmentAllocIndex, key);
-                        writeValue(intoSegment, intoSegmentAllocIndex, value);
-                        intoSegmentAllocIndex++;
+                        // [Find empty slot]. Even if iterGroupIndex equals baseGroupIndex,
+                        // [Find empty slot] loop can't be skipped because it's possible that
+                        // intoSegment's iterGroupIndex is already full of entries moved from the
+                        // previously visited groups in [fromSegment iteration] which is possible
+                        // due to hash table wrap around.
+                        // TODO [Unbounded search loop]
+                        internalPutLoop:
+                        for (long groupIndex = baseGroupIndex, groupIndexStep = 0; ;) {
+                            long dataGroupOffset = dataGroupOffset(groupIndex
+                                    /* if Interleaved segments Supported intermediateSegments */
+                                    , (long) intoSegment_isFullCapacity/* endif */);
+                            long dataGroup = readDataGroupAtOffset(intoSegment, dataGroupOffset);
+                            long emptyBitMask = matchEmpty(dataGroup);
+                            if (emptyBitMask != 0) { // [Positive likely branch]
+                                int insertionSlotIndexWithinGroup =
+                                        lowestMatchingSlotIndex(emptyBitMask);
+                                intoSegment_outboundOverflowCount_perGroupAdditions +=
+                                        computeOutboundOverflowCount_perGroupChanges(
+                                                baseGroupIndex, groupIndex);
+
+                                /* if Continuous segments */
+                                // allocIndex = segmentSize optimization: just using the current
+                                // intoSegment's size instead of calling
+                                // lowestFreeAllocIndex(intoSegment_bitSetAndState) is an
+                                // optimization based on the fact that we are populating intoSegment
+                                // privately in split() so there can't be any "holes" in its alloc
+                                // area due to entry removals.
+                                int intoSegment_allocIndex = intoSegment_currentSize;
+                                /* elif Interleaved segments */
+                                int intoSegment_allocIndex = freeAllocIndexClosestTo(
+                                        intoSegment_bitSetAndState,
+                                        allocIndexBoundaryForLocalAllocation((int) groupIndex
+                                            /* if Supported intermediateSegments */
+                                            , intoSegment_isFullCapacity/* endif */));
+                                intoSegment_bitSetAndState = setAllocBit(
+                                        intoSegment_bitSetAndState, intoSegment_allocIndex);
+                                /* endif */
+
+                                byte tag = (byte) tagBits(hash);
+                                writeEntry(intoSegment,
+                                        /* if Interleaved segments Supported intermediateSegments */
+                                        (long) intoSegment_isFullCapacity,/* endif */
+                                        key, tag, value, groupIndex, dataGroup,
+                                        insertionSlotIndexWithinGroup, intoSegment_allocIndex);
+                                /* if Continuous segments || Supported intermediateSegments */
+                                intoSegment_currentSize++;
+                                /* endif */
+                                break internalPutLoop;
+                            }
+                            groupIndexStep += 1; // [Quadratic probing]
+                            groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                            // [No break condition in a loop searching for an empty slot]
+                        }
                     }
 
                     // #### Purge the entry from fromSegment.
                     {
-                        eraseKeyAndValue(fromSegment, allocIndex);
+                        eraseKeyAndValueAtOffset(fromSegment, fromSegment_allocOffset);
                         fromSegment_bitSetAndState =
-                                clearAllocBit(fromSegment_bitSetAndState, allocIndex);
-                        controlByteToWriteAtSlotIndex = EMPTY_CONTROL;
-                        // Not calling writeData() for slotIndex, i. e. leaving "garbage" in
-                        // that data slot.
+                                clearAllocBit(fromSegment_bitSetAndState, fromSegment_allocIndex);
+                        // Empty the iteration slot:
+                        iterDataGroup = setSlotEmpty(iterDataGroup, iterTrailingZeros);
+                        // Not doing anything with the corresponding tag group, i. e. leaving
+                        // "garbage" in the tag byte of the emptied slot.
                     }
-                    break displacingLoop;
+                    continue groupIteration;
                 }
-                // Must break from or continue the displacingLoop across all paths above.
+                // Must break from or continue the groupIteration across all paths above.
                 // Uncommenting the following statement should make the compiler complain about
                 // "unreachable statement".
                 /* comment */
                 throw new AssertionError();
                 /**/
-            } // end of displacingLoop
-
-            // [Conditional control byte cloning]
-            writeControlByteWithConditionalCloning(
-                    fromSegment, (long) slotIndex, controlByteToWriteAtSlotIndex);
+            }
+            // Write out iterDataGroup updated at [Empty the iteration slot] places inside
+            // groupIteration loop.
+            /* if Interleaved segments Supported intermediateSegments */
+            // The value computed in the beginning of this loop cannot be reused because
+            // fromSegment_isFullCapacity may change during the execution of this loop in
+            // [Swap segments].
+            iterDataGroupOffset =
+                    dataGroupOffset(iterGroupIndex, (long) fromSegment_isFullCapacity);
+            /* endif */
+            writeDataGroupAtOffset(fromSegment, iterDataGroupOffset, iterDataGroup);
         }
 
-        // ### Update fromSegment's bitSetAndState.
-        // Zeroing deleted slot count because we purged all deleted slots in the beginning of this
-        // method.
-        fromSegment_bitSetAndState =
-                incrementSegmentOrderAndZeroDeletedSlotCount(fromSegment_bitSetAndState);
-        setBitSetAndStateAfterBulkOperation(fromSegment, fromSegment_bitSetAndState);
+        // TODO swap segments if intoSegment is of intermediate capacity and intoSegment_currentSize
+        //  is above some threshold (so that there is a sufficient skew of entries towards
+        //  intoSegment). The threshold may be a field of SmoothieMap dependent on the
+        //  OptimizationFactors chosen for the map.
 
-        // ### Write out intoSegment's bitSetAndState.
-        long intoSegment_bitSetAndState = makeBitSetAndStateForPrivatelyPopulatedSegment(
-                intoSegmentAllocCapacity, newSegmentOrder,
-                intoSegmentAllocIndex);
+        // ### Update fromSegment's bitSetAndState and outbound overflow counts.
+        setBitSetAndStateAfterBulkOperation(fromSegment, fromSegment_bitSetAndState);
+        // Need to update all groups rather than only those where the outbound overflow count is
+        // decremented to zero to overwrite potentially incorrect bits which may have been written
+        // to slots in [Writing incorrect outbound overflow data bits].
+        subtractOutboundOverflowCountsPerGroupAndUpdateAllGroups(fromSegment,
+                /* if Interleaved segments Supported intermediateSegments */
+                fromSegment_isFullCapacity,/* endif */
+                fromSegment_outboundOverflowCount_perGroupDeductions);
+
+        // ### Write out intoSegment's bitSetAndState and outbound overflow counts.
+        /* if Continuous segments */
+        long intoSegment_bitSetAndState = makeBitSetAndStateForPrivatelyPopulatedContinuousSegment(
+                intoSegment_allocCapacity, newSegmentOrder, intoSegment_currentSize);
+        /* endif */
         setBitSetAndState(intoSegment, intoSegment_bitSetAndState);
+        addOutboundOverflowCountsPerGroup(intoSegment,
+                /* if Interleaved segments Supported intermediateSegments */
+                intoSegment_isFullCapacity,/* endif */
+                intoSegment_outboundOverflowCount_perGroupAdditions);
         U.storeFence(); // [Safe segment publication]
 
         /* if Tracking hashCodeDistribution */
         // TODO [hashCodeDistribution null check]
         @Nullable HashCodeDistribution<K, V> hashCodeDistribution = this.hashCodeDistribution;
         if (hashCodeDistribution != null) {
-            int numKeysForHalfOne = hashTableHalfBits >>> (LOG_HASH_TABLE_SIZE - 1);
+            int numKeysForHalfOne =
+                    hashTableHalfBits >>> (HASH__BASE_GROUP_INDEX_BITS - 1);
             hashCodeDistribution.accountSegmentSplit(
-                    this, newSegmentOrder - 1, numKeysForHalfOne, initialFromSegmentSize);
+                    this, newSegmentOrder - 1, numKeysForHalfOne, fromSegment_initialSize);
         }
         /* endif */
 
@@ -2896,6 +3605,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     }
 
     /** Invariant before calling this method: oldSegment's size is equal to the capacity. */
+    @RarelyCalledAmortizedPerSegment
     private void inflateAndInsert(int modCount, int segmentOrder, Object oldSegment,
             long bitSetAndState, K key, long hash, V value) {
 
@@ -2904,12 +3614,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         setBitSetAndState(oldSegment, BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE);
 
         /* if Enabled extraChecks */
+        // Checking preconditions for copyEntriesDuringInflate()
         int allocCapacity = allocCapacity(bitSetAndState);
-        assertEqual(allocCapacity, SEGMENT_MAX_ALLOC_CAPACITY);
-        assertEqual(allocCapacity, segmentSize(bitSetAndState));
+        verifyEqual(allocCapacity, SEGMENT_MAX_ALLOC_CAPACITY);
+        verifyEqual(allocCapacity, segmentSize(bitSetAndState));
         /* endif */
         InflatedSegment<K, V> inflatedSegment = new InflatedSegment<>(segmentOrder, size);
-        copyEntriesFromOrdinaryDuringInflate(oldSegment, inflatedSegment);
+        //noinspection unchecked
+        ((Segment<K, V>) oldSegment).copyEntriesDuringInflate(this, inflatedSegment);
 
         int firstSegmentIndex = firstSegmentIndexByHashAndOrder(hash, segmentOrder);
         replaceInSegmentsArray(getNonNullSegmentsArrayOrThrowCme(),
@@ -2929,268 +3641,6 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         checkModCountOrThrowCme(modCount);
     }
 
-    private void copyEntriesFromOrdinaryDuringInflate(
-            Object oldSegment, InflatedSegment<K, V> intoSegment) {
-        // Just iterating all alloc indexes until constant SEGMENT_MAX_ALLOC_CAPACITY because it
-        // must be true in inflateAndInsert() from where this method is called that the segment's
-        // capacity is equal to SEGMENT_MAX_ALLOC_CAPACITY and that the size is equal to capacity.
-        for (int allocIndex = 0; allocIndex < SEGMENT_MAX_ALLOC_CAPACITY; allocIndex++) {
-            K key = readKey(oldSegment, allocIndex);
-            V value = readValue(oldSegment, allocIndex);
-            intoSegment.putDuringInflation(this, key, keyHashCode(key), value);
-        }
-    }
-
-    private void dropDeletesAndInsert(int modCount, Object segment, long bitSetAndState, K key,
-            long hash, V value, int allocIndex) {
-        // Increment modCount because dropping deleted slots from a segment is a modification
-        // itself.
-        modCount++;
-        // [Parallel modCount field increment]
-        this.modCount++;
-
-        setBitSetAndState(segment, BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE);
-
-        // ### Drop deleted slots from the hash table of the segment.
-        dropDeletes(segment);
-        bitSetAndState = makeBitSetAndStateWithNewDeletedSlotCount(bitSetAndState, 0);
-
-        // ### Insert the new entry.
-        int insertionSlotIndex = findFirstEmptySlotForHash(segment, hash);
-
-        // Inlined version of doInsert() that calls setLowestAllocBit() instead of
-        // updateDeletedSlotCountAndSetLowestAllocBit() (because we must not replace an empty slot
-        // just after dropping them) and setBitSetAndStateAfterBulkOperation() instead
-        // of simple setBitSetAndState().
-        {
-            bitSetAndState = setLowestAllocBit(bitSetAndState);
-            writeEntry(segment, key, hash, value, insertionSlotIndex, allocIndex);
-            size++;
-            this.modCount++;
-            modCount++;
-            setBitSetAndStateAfterBulkOperation(segment, bitSetAndState);
-        }
-
-        checkModCountOrThrowCme(modCount);
-    }
-
-    @SuppressWarnings({"UnnecessaryLabelOnBreakStatement", "UnnecessaryLabelOnContinueStatement"})
-    private void dropDeletes(Object segment) {
-        // TODO comment about this action
-        covertAllDeletedToEmptyAndFullToDeletedControlSlots(segment);
-
-        // ### Restoring values in control slots and optimizing the hash table:
-        // Note: this loop is a simplified version of [fromSegment iteration] loop in split(). These
-        // loops must have the same structure and be changed in parallel. Whenever possible,
-        // comments about various aspects of this loop are put in dropDeletes() and referenced from
-        // split() to reduce the size of the latter.
-        //
-        // Byte-by-byte hash table iteration: iterating the hash table one slot at a time with the
-        // following branch (which is fairly unpredictable; only at most 60-70% of slots can be
-        // matched. More specifically, not more than SEGMENT_MAX_NON_EMPTY_SLOTS -
-        // SEGMENT_MIN_DELETED_SLOTS_FOR_DROP_DELETES = 45 out of HASH_TABLE_SLOTS = 64. Also note
-        // that because of displacingLoop wrapping around the hash table (or going ahead of the
-        // current slotIndex) not all slots that are deleted at the beginning of this hash table
-        // iteration might be matched) instead of reading controlGroups and dataGroups at a time and
-        // having branchless iteration (like in Segment.removeIf() and compactEntriesDuringSplit())
-        // because displacingLoop high bytes of controlsGroup and dataGroup may be modified in
-        // displacingLoop. It is possible to check for that in
-        // [Likely "different newQuadraticProbingChainGroupIndex" branch] and update controlsGroup
-        // and dataGroup accordingly, but combined with other factors against
-        // [Branchless hash table iteration] it makes less likely that
-        // [Branchless hash table iteration] would be preferable in dropDeletes().
-        // TODO compare the approaches, separately from Segment.removeIf() and
-        //  compactEntriesDuringSplit()
-        //
-        // [Int-indexed loop to avoid a safepoint poll]
-        for (int slotIndex = 0; slotIndex < HASH_TABLE_SLOTS; slotIndex++) {
-            // Visiting only deleted slots: full entries (which may appear as the result of wrap
-            // around and forward replacement in displacingLoop) are skipped.
-            boolean shouldVisitEntry =
-                    readControlByte(segment, (long) slotIndex) == DELETED_CONTROL;
-            if (!shouldVisitEntry) {
-                continue;
-            }
-            int dataByteToDisplace = readData(segment, (long) slotIndex);
-
-            byte controlByteToWriteAtSlotIndex;
-
-            // This is an entry displacing loop in the spirit of Cuckoo or Robin Hood hashing.
-            //
-            // There is no equivalent to this loop in raw_hash_set.h, where the logic of this
-            // loop is fused with the outer loop by stepping back in the iteration:
-            // github.com/abseil/abseil-cpp/blob/256be563447a315f2a7993ec669460ba475fa86a/
-            // absl/container/internal/raw_hash_set.h#L1561. However, an inner loop which is a
-            // close equivalent to this loop is present in hashbrown:
-            // github.com/Amanieu/hashbrown/blob/00ba2f911577af79460be2d85ad2474428eda4bc/
-            // src/raw/mod.rs#L637
-            //
-            // The separate displacing loop allows avoiding repetition of a few operations in the
-            // beginning of the outer byte-by-byte loop: `boolean shouldVisitEntry = ...`
-            // and `if (!shouldVisitEntry)` which are unnecessary on the second and later iterations
-            // of the displacing loop. If [Branchless hash table iteration] was used instead of
-            // [Byte-by-byte hash table iteration] then the separate displacing loop would be
-            // mandatory.
-            //
-            // Effective variable of the displacing loop is dataByteToDisplace rather than
-            // isFirstDisplacingLoopIteration, but the former is controlled fully manually inside
-            // the loop.
-            displacingLoop:
-            for (boolean isFirstDisplacingLoopIteration = true;
-                // There is no condition in this loop. We either break from it (see
-                // `break displacingLoop`) or continue explicitly (see
-                // `continue displacingLoop`)
-                    ;
-                 isFirstDisplacingLoopIteration = false
-            ) {
-                int allocIndex = allocIndex(dataByteToDisplace);
-                K key = readKey(segment, allocIndex);
-                long hash = keyHashCode(key);
-
-                int slotIndexBase = slotIndex(hash);
-                // slotIndex is used at the second and later iterations of displacingLoop because
-                // before proceeding to these iterations
-                // [Virtual swap of data slot at slotIndex and newSlotIndex] is done.
-                int quadraticProbingChainGroupIndex =
-                        // [Replacing division with shift]
-                        (slotIndex - slotIndexBase) >>> GROUP_SLOTS_DIVISION_SHIFT;
-                byte restoredFullControlByte = (byte) hashControlBits(hash);
-
-                // Non-zero quadraticProbingChainGroupIndex:
-                // If quadraticProbingChainGroupIndex == 0 then the condition of
-                // [Likely "different newQuadraticProbingChainGroupIndex" branch] below is
-                // guaranteed to be false because quadraticProbingChainGroupIndex = 0 is the first
-                // checked word in the [Quadratic probing] chain, and
-                // newQuadraticProbingChainGroupIndex should point to the same or an earlier word in
-                // the [Quadratic probing] chain. This branch should be rarely taken with the
-                // maximum load factor of
-                // SEGMENT_MAX_NON_EMPTY_SLOTS / HASH_TABLE_SLOTS ~= 0.78 and therefore CPU
-                // should predict this branch well. This branch doesn't follow the
-                // [Positive likely branch] principle to enable fall-through logic below.
-                // TODO evaluate exactly the probability of this branch
-                if (quadraticProbingChainGroupIndex != 0) { // Unlikely branch
-                    // [Find first non-full slot]
-                    int newSlotIndex;
-                    long searchControlsGroup;
-                    int trailingZeros;
-                    {
-                        int groupFirstSlotIndex = slotIndexBase;
-                        // TODO [Unbounded search loop]
-                        for (int slotIndexStep = 0; ; ) {
-                            searchControlsGroup =
-                                    readControlsGroup(segment, (long) groupFirstSlotIndex);
-                            long emptyOrDeletedBitMask = matchEmptyOrDeleted(searchControlsGroup);
-                            // [Positive likely branch]
-                            if (emptyOrDeletedBitMask != 0) {
-                                // [Inlined lowestMatchIndex]
-                                trailingZeros = Long.numberOfTrailingZeros(emptyOrDeletedBitMask);
-                                newSlotIndex = lowestMatchIndexFromTrailingZeros(
-                                        groupFirstSlotIndex, trailingZeros);
-                                break;
-                            }
-                            slotIndexStep += GROUP_SLOTS; // [Quadratic probing]
-                            groupFirstSlotIndex = addSlotIndex(groupFirstSlotIndex, slotIndexStep);
-                        }
-                    }
-                    int newQuadraticProbingChainGroupIndex =
-                            // [Replacing division with shift]
-                            (newSlotIndex - slotIndexBase) >>> GROUP_SLOTS_DIVISION_SHIFT;
-                    // Likely "different newQuadraticProbingChainGroupIndex" branch:
-                    // quadraticProbingChainGroupIndex is greater than zero but
-                    // newQuadraticProbingChainGroupIndex is still expected to be zero, hence
-                    // it's likely that this branch is taken. Note: counterintuitively,
-                    // newQuadraticProbingChainGroupIndex can be greater than
-                    // quadraticProbingChainGroupIndex and it means the same thing as if it was
-                    // smaller, because quadratic probing chain group indexes are non-monotonic
-                    // (modulo HASH_TABLE_GROUPS).
-                    //
-                    // We have to compare probing chain group indexes modulo HASH_TABLE_GROUPS
-                    // because canonicalization of them via (& SLOT_MASK) is avoided when
-                    // quadraticProbingChainGroupIndex is computed to reduce the number of
-                    // operations to be performed outside of unlikely
-                    // [Non-zero quadraticProbingChainGroupIndex] branch.
-                    // [Positive likely branch]
-                    if (!groupIndexesEqualModuloHashTableGroups(
-                            newQuadraticProbingChainGroupIndex, quadraticProbingChainGroupIndex)) {
-                        // [Conditional control byte cloning]
-                        writeControlByteWithConditionalCloning(
-                                segment, (long) newSlotIndex, restoredFullControlByte);
-                        boolean newSlotWasEmpty =
-                                isMatchingEmpty(searchControlsGroup, trailingZeros);
-                        if (newSlotWasEmpty) {
-                            // Finish displacingLoop.
-                            writeData(segment, (long) newSlotIndex, (byte) dataByteToDisplace);
-
-                            // Empty the slot at slotIndex.
-                            controlByteToWriteAtSlotIndex = EMPTY_CONTROL;
-                            // Not calling writeData() for slotIndex, i. e. leaving "garbage" in
-                            // that data slot.
-
-                            break displacingLoop;
-                        } else {
-                            // Virtual swap of data slot at slotIndex and newSlotIndex:
-                            // virtually, we should swap data bytes between slots at slotIndex
-                            // and newSlotIndex, but we delay writing the data from newSlotIndex
-                            // to slotIndex until
-                            // [Delayed write of a swapped data byte at slotIndex]. There are
-                            // two reasons why this should be beneficial: 1) the data is just
-                            // a byte, so it may be stored in a register (although it's not
-                            // guaranteed because there are so many variables in play in this
-                            // method so that there are likely not enough registers for each of
-                            // them); 2) even if dataByteToDisplace is stored on a stack,
-                            // writing to a local on the stack should be cheaper than writing to
-                            // managed memory when there is a GC with expensive write barriers.
-                            // Compare with hashbrown (in Rust), which 1) doesn't know the size
-                            // of the swapped data, and the size is likely to not fit a
-                            // register, and 2) doesn't have write barriers.
-                            dataByteToDisplace = replaceData(
-                                    segment, (long) newSlotIndex, (byte) dataByteToDisplace);
-                            continue displacingLoop;
-                        }
-                    }
-                    // Quadratic probing chain group indexes are equal: if
-                    // newQuadraticProbingChainGroupIndex is equal to
-                    // quadraticProbingChainGroupIndex then fall through to
-                    // [Restore full control byte at slotIndex]. Note that at non-first iteration
-                    // of displacingLoop it may appear like a full cycle around the hash table has
-                    // been completed, and the quadraticProbingChainGroupIndex value (modulo
-                    // HASH_TABLE_GROUPS) is closer to the beginning of the chain (0) than it used
-                    // to be on the first or any other previous iteration of displacingLoop. This
-                    // may feel "wrong" but it doesn't seem that it breaks any of the invariants of
-                    // the hash table.
-                }
-                // Restore full control byte at slotIndex:
-                controlByteToWriteAtSlotIndex = restoredFullControlByte;
-                // This branch is unlikely because it could only be taken if
-                // [Non-zero quadraticProbingChainGroupIndex] branch was taken which is unlikely.
-                if (!isFirstDisplacingLoopIteration) { // Unlikely branch
-                    // Delayed write of a swapped data byte at slotIndex:
-                    writeData(segment, (long) slotIndex, (byte) dataByteToDisplace);
-                }
-                break displacingLoop;
-            } // end of displacingLoop
-
-            // Conditional control byte cloning: Unlike random entry writes in insert() or
-            // removeAtSlot() methods, whether it's needed to clone a control byte during
-            // dropDeletes() should usually change monotonically: yes for the first few
-            // iterations (GROUP_SLOTS *
-            // (SEGMENT_MAX_NON_EMPTY_SLOTS - SEGMENT_MIN_DELETED_SLOTS_FOR_DROP_DELETES) /
-            // HASH_TABLE_SLOTS ~= 5..6 on average, usually, that is, not considering exotic
-            // cases like [Dropping deleted slots from a non-full-capacity segment]), no for the
-            // rest of the iterations (SEGMENT_MAX_NON_EMPTY_SLOTS -
-            // SEGMENT_MIN_DELETED_SLOTS_FOR_DROP_DELETES - 5..6 ~= 40 on average). Hopefully,
-            // branch predictors in modern CPUs  can pick up this pattern, so that on average
-            // there should be little (1-2) mispredicted branches (TODO verify) in
-            // writeControlByteWithConditionalCloning() over the course of dropDeletes()
-            // compared to what would there be (6) if the branch taking was random. This should
-            // justify using conditional control byte cloning over branchless approach as in
-            // writeControlByte() (that has its own drawbacks, see a comment inside that
-            // method).
-            writeControlByteWithConditionalCloning(
-                    segment, (long) slotIndex, controlByteToWriteAtSlotIndex);
-        }
-    }
-
     //endregion
 
     //region removeAtSlot() and shrinking methods called from it
@@ -3199,46 +3649,51 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
      * Returns the updated bitSetAndState, but doesn't update {@link Segment#bitSetAndState} field.
      * Callers should call {@link Segment#setBitSetAndState} themselves with the value returned from
      * this method.
+     *
+     * @apiNote allocOffset is passed to this method along with allocIndex because the computation
+     * of the former is expensive in {@link InterleavedSegments}. However, when the computation is
+     * cheap (in {@link ContinuousSegments}), this likely makes more harm than good because of high
+     * register pressure and the necessity to push the values to and pull from the stack. See a
+     * similar trade-off in {@link #insert} and {@link #makeSpaceAndInsert}.
+     * TODO don't pass allocOffset for Continuous segments
+     *  (and leave a to-do to compare perf in that case)
      */
-    private long removeAtSlotNoShrink(
-            long bitSetAndState, Object segment, int slotIndex, int allocIndex) {
+    @HotPath
+    private long removeAtSlotNoShrink(long bitSetAndState, Object segment,
+            /* if Interleaved segments Supported intermediateSegments */int isFullCapacitySegment,
+            /* endif */
+            long outboundOverflowCount_perGroupDecrements, long dataGroupOffset,
+            long dataGroupWithEmptiedSlot, long allocIndex, long allocOffset) {
         size--;
         modCount++;
 
-        // Clearing the alloc bit before updating the deleted slot count probably makes data
-        // dependency chains shorter than if these updates were applied in the opposite order.
+        if (outboundOverflowCount_perGroupDecrements != 0) { // Unlikely branch
+            decrementOutboundOverflowCountsPerGroup(segment,
+                    /* if Interleaved segments Supported intermediateSegments */
+                    isFullCapacitySegment,/* endif */
+                    outboundOverflowCount_perGroupDecrements);
+        }
+
         bitSetAndState = clearAllocBit(bitSetAndState, allocIndex);
 
-        int prevGroupFirstSlotIndex = addSlotIndex(slotIndex, -GROUP_SLOTS);
-        long emptyBitMaskAfter = matchEmpty(readControlsGroup(segment, (long) slotIndex));
-        long emptyBitMaskBefore =
-                matchEmpty(readControlsGroup(segment, (long) prevGroupFirstSlotIndex));
-        // We count how many consecutive non empties we have to the right and to the left of
-        // slotIndex. If the sum is greater or equal to GROUP_SLOTS then there is at least one probe
-        // window that might have seen a full group.
-        //
-        // Note: if linear probing is used instead of [Quadratic probing], the last condition could
-        // be changed to `> GROUP_BITS` instead of `>= GROUP_BITS`.
-        //
-        // TODO check: is it worthwhile to have the two == 0 checks upfront or they could be dropped
-        boolean needToInsertDeleted = (emptyBitMaskBefore == 0) || (emptyBitMaskAfter == 0) ||
-                (Long.numberOfTrailingZeros(emptyBitMaskAfter) +
-                        Long.numberOfLeadingZeros(emptyBitMaskBefore)) >= GROUP_BITS;
-        // Enables branchless operations.
-        // TODO check if the conversion from boolean to int here is branchless itself, on the
-        //  assembly level
-        int insertDeleted = needToInsertDeleted ? 1 : 0;
-        writeControlByte(segment, (long) slotIndex, (byte) branchlessDeletedOrEmpty(insertDeleted));
-        bitSetAndState += DELETED_SLOT_COUNT_UNIT * (long) insertDeleted;
+        writeDataGroupAtOffset(segment, dataGroupOffset, dataGroupWithEmptiedSlot);
+        eraseKeyAndValueAtOffset(segment, allocOffset);
 
-        eraseKeyAndValue(segment, allocIndex);
         return bitSetAndState;
     }
 
     @HotPath
-    private void removeAtSlot(long hash, Object segment, int slotIndex, int allocIndex) {
+    private void removeAtSlot(long hash, Object segment,
+            /* if Interleaved segments Supported intermediateSegments */int isFullCapacitySegment,
+            /* endif */
+            long outboundOverflowCount_perGroupDecrements, long dataGroupOffset,
+            long dataGroupWithEmptiedSlot, long allocIndex, long allocOffset) {
         long bitSetAndState = getBitSetAndState(segment);
-        bitSetAndState = removeAtSlotNoShrink(bitSetAndState, segment, slotIndex, allocIndex);
+        bitSetAndState = removeAtSlotNoShrink(bitSetAndState, segment,
+                /* if Interleaved segments Supported intermediateSegments */
+                isFullCapacitySegment,/* endif */
+                outboundOverflowCount_perGroupDecrements, dataGroupOffset, dataGroupWithEmptiedSlot,
+                allocIndex, allocOffset);
         setBitSetAndState(segment, bitSetAndState);
         /* if Flag|Always doShrink */
         /* if Flag doShrink */if (doShrink) {/* endif */
@@ -3263,6 +3718,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 // Warning: this formula is valid only as long as both SEGMENT_MAX_ALLOC_CAPACITY
                 // and MIN_LEFTOVER_ALLOC_CAPACITY_AFTER_SHRINKING are even.
                 (SEGMENT_MAX_ALLOC_CAPACITY - MIN_LEFTOVER_ALLOC_CAPACITY_AFTER_SHRINKING) / 2) {
+            //noinspection UnnecessaryReturnStatement
             return;
         } else {
             // This branch is taken when segmentSize <=
@@ -3275,8 +3731,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             // Assumption that one of the siblings has the capacity of SEGMENT_MAX_ALLOC_CAPACITY:
             // In a pair of two sibling segments at least one should have the capacity of
             // SEGMENT_MAX_ALLOC_CAPACITY. There are two exceptions when this may not be the case:
-            //  (1) splitInflated() may produce two intermediate-sized segments. This should be very
-            //  rare because inflated segments themselves should be rare.
+            //  (1) splitInflated() may produce two intermediate-capacity segments. This should be
+            //  very rare because inflated segments themselves should be rare.
             //  (2) After shrinkAndTrimToSize(), the sibling segments can be arbitrarily sized. This
             //  is not a target case for optimization because after shrinkAndTrimToSize()
             //  SmoothieMap is assumed to be used as an immutable map, which is the point of
@@ -3436,18 +3892,19 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
      * fromSegment's bitSetAndState is updated to fully valid value inside this method, including
      * decrementing the segment order.
      */
+    @AmortizedPerSegment
     private void doShrinkInto(Object fromSegment, final long fromSegment_bitSetAndState,
-            Object intoSegment, long intoSegment_initialBitSetAndState) {
-        int intoSegment_initialSize = segmentSize(intoSegment_initialBitSetAndState);
-        int intoSegment_initialNonEmptySlots =
-                intoSegment_initialSize + deletedSlotCount(intoSegment_initialBitSetAndState);
-        int intoSegment_remainingEmptySlotsQuota =
-                SEGMENT_MAX_NON_EMPTY_SLOTS - intoSegment_initialNonEmptySlots;
-        if (intoSegment_remainingEmptySlotsQuota < 0) {
-            // Might be due to delete slot count overflow or underflow.
-            throw new ConcurrentModificationException();
-        }
-        long intoSegment_modifiedBitSetAndState = intoSegment_initialBitSetAndState;
+            Object intoSegment, long intoSegment_bitSetAndState) {
+
+        int intoSegment_allocCapacity = allocCapacity(intoSegment_bitSetAndState);
+        /* if Interleaved segments Supported intermediateSegments */
+        long fromSegment_isFullCapacity =
+                isFullCapacity(fromSegment_bitSetAndState) ? 1L : 0L;
+        // TODO check that Hotspot compiles this expression into branchless code.
+        int intoSegment_isFullCapacity =
+                intoSegment_allocCapacity == SEGMENT_MAX_ALLOC_CAPACITY ? 1 : 0;
+        /* endif */
+        long intoSegment_outboundOverflowCount_perGroupAdditions = 0;
 
         long fromSegment_bitSet = extractBitSetForIteration(fromSegment_bitSetAndState);
         // Branchless entries iteration: another option is checking every bit of the bitSet,
@@ -3455,7 +3912,9 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         // operations. But in doShrinkInto() there are expected to be many empty alloc indexes
         // (since we are able to shrink two segments into one) that would make a branch with a bit
         // checking unpredictable. This is a tradeoff similar to [Branchless hash table iteration].
-        // TODO compare the approaches
+        // TODO for Continuous segments, compare the approaches described above.
+        // TODO for Interleaved segments, the cost of branchless iteration is exacerbated by an
+        //  expensive allocOffset() call.
         // Backward entries iteration: should be a little cheaper than forward iteration because
         // the loop condition compares iterAllocIndex with 0 (which compiles into less machine μops
         // when a flag is checked just after a subtraction) and because it uses numberOfLeadingZeros
@@ -3467,68 +3926,78 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
              iterAllocIndex = Long.SIZE;
              (iterAllocIndex -= iterAllocIndexStep) >= 0;) {
 
-            K key = readKey(fromSegment, iterAllocIndex);
-            V value = readValue(fromSegment, iterAllocIndex);
+            long iterAllocOffset = allocOffset((long) iterAllocIndex
+                    /* if Interleaved segments Supported intermediateSegments */
+                    , fromSegment_isFullCapacity/* endif */);
+            K key = readKeyAtOffset(fromSegment, iterAllocOffset);
+            V value = readValueAtOffset(fromSegment, iterAllocOffset);
 
             // TODO check what is better - these two statements before or after
             //  the internal put operation, or one before and one after, or both after?
             fromSegment_bitSet = fromSegment_bitSet << iterAllocIndexStep;
             iterAllocIndexStep = Long.numberOfLeadingZeros(fromSegment_bitSet) + 1;
 
-            // ### Internal put:
+            // ### [Put the entry into intoSegment]
             long hash = keyHashCode(key);
-            int groupFirstSlotIndex = slotIndex(hash);
+            final long baseGroupIndex = baseGroupIndex(hash);
+            // [Find empty slot]
+            // TODO [Unbounded search loop]
             internalPutLoop:
-            for (int slotIndexStep = 0; ;) {
-                long controlsGroup = readControlsGroup(intoSegment, (long) groupFirstSlotIndex);
-                long emptyOrDeletedBitMask = matchEmptyOrDeleted(controlsGroup);
-                if (emptyOrDeletedBitMask != 0) { // [Positive likely branch]
-                    // [Inlined lowestMatchIndex]
-                    int trailingZeros = Long.numberOfTrailingZeros(emptyOrDeletedBitMask);
-                    int insertionSlotIndex =
-                            lowestMatchIndexFromTrailingZeros(groupFirstSlotIndex, trailingZeros);
-                    // [boolean as int]
-                    int replacingEmptySlot = extractMatchingEmpty(controlsGroup, trailingZeros);
-                    int allocIndex = lowestFreeAllocIndex(intoSegment_modifiedBitSetAndState);
-                    // No need to check that allocIndex is less than segment's alloc
-                    // capacity because it's guaranteed that there is enough capacity in
-                    // tryShrink2[1] and the bitSetAndState field isn't re-read in between.
-                    intoSegment_remainingEmptySlotsQuota -= replacingEmptySlot;
-                    if (intoSegment_remainingEmptySlotsQuota >= 0) {//[Positive likely branch]
-                        intoSegment_modifiedBitSetAndState =
-                                setLowestAllocBit(intoSegment_modifiedBitSetAndState);
-                        writeEntry(intoSegment, key, hash, value, insertionSlotIndex, allocIndex);
-                        modCount++;
-                    } else {
-                        // TODO dropDeletes
-                        throw new UnsupportedOperationException("TODO");
+            for (long groupIndex = baseGroupIndex, groupIndexStep = 0; ; ) {
+                long dataGroupOffset = dataGroupOffset(groupIndex
+                        /* if Interleaved segments Supported intermediateSegments */
+                        , (long) intoSegment_isFullCapacity/* endif */);
+                long dataGroup = readDataGroupAtOffset(intoSegment, dataGroupOffset);
+                long emptyBitMask = matchEmpty(dataGroup);
+                if (emptyBitMask != 0) { // [Positive likely branch]
+                    int insertionSlotIndexWithinGroup =
+                            lowestMatchingSlotIndex(emptyBitMask);
+                    intoSegment_outboundOverflowCount_perGroupAdditions +=
+                            computeOutboundOverflowCount_perGroupChanges(
+                                    baseGroupIndex, groupIndex);
+
+                    /* if Continuous segments */
+                    int intoSegment_allocIndex =
+                            lowestFreeAllocIndex(intoSegment_bitSetAndState);
+                    intoSegment_bitSetAndState =
+                            setLowestAllocBit(intoSegment_bitSetAndState);
+                    /* elif Interleaved segments */
+                    int intoSegment_allocIndex = freeAllocIndexClosestTo(
+                            intoSegment_bitSetAndState,
+                            allocIndexBoundaryForLocalAllocation((int) groupIndex
+                                    /* if Supported intermediateSegments */
+                                    , intoSegment_isFullCapacity/* endif */));
+                    intoSegment_bitSetAndState = setAllocBit(
+                            intoSegment_bitSetAndState, intoSegment_allocIndex);
+                    /* endif */
+                    if (intoSegment_allocIndex >= intoSegment_allocCapacity) {
+                        // Hash table overflow is possible if there are put operations
+                        // concurrent with this doShrinkInto() operation, or there is a racing
+                        // doShrinkInto() operation.
+                        throw new ConcurrentModificationException();
                     }
-                    //noinspection UnnecessaryLabelOnBreakStatement
+
+                    byte tag = (byte) tagBits(hash);
+                    writeEntry(intoSegment,
+                            /* if Interleaved segments Supported intermediateSegments */
+                            (long) intoSegment_isFullCapacity,/* endif */
+                            key, tag, value, groupIndex, dataGroup, insertionSlotIndexWithinGroup,
+                            intoSegment_allocIndex);
                     break internalPutLoop;
                 }
-                slotIndexStep += GROUP_SLOTS; // [Quadratic probing]
-                if (slotIndexStep < HASH_TABLE_SLOTS) {
-                    groupFirstSlotIndex = addSlotIndex(groupFirstSlotIndex, slotIndexStep);
-                } else {
-                    // Hash table overflow is possible if there are put operations
-                    // concurrent with this doShrinkInto() operation, or there is a racing
-                    // doShrinkInto() operation.
-                    throw new ConcurrentModificationException();
-                }
+                groupIndexStep += 1; // [Quadratic probing]
+                groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                // [No break condition in a loop searching for an empty slot]
             }
-            // End of internal put
         }
 
-        // ### Update intoSegment's bitSetAndState.
-        int intoSegment_newNonEmptySlots =
-                SEGMENT_MAX_NON_EMPTY_SLOTS - intoSegment_remainingEmptySlotsQuota;
-        int intoSegment_newDeletedSlotCount =
-                intoSegment_newNonEmptySlots - segmentSize(intoSegment_modifiedBitSetAndState);
-        long intoSegment_newBitSetAndState = makeBitSetAndStateWithNewDeletedSlotCount(
-                intoSegment_modifiedBitSetAndState, intoSegment_newDeletedSlotCount);
-        // Decrement intoSegment's order.
-        intoSegment_newBitSetAndState -= SEGMENT_ORDER_UNIT;
-        setBitSetAndStateAfterBulkOperation(intoSegment, intoSegment_newBitSetAndState);
+        // ### Update intoSegment's bitSetAndState and outbound overflow counts.
+        intoSegment_bitSetAndState -= SEGMENT_ORDER_UNIT;
+        setBitSetAndStateAfterBulkOperation(intoSegment, intoSegment_bitSetAndState);
+        addOutboundOverflowCountsPerGroup(intoSegment,
+                /* if Interleaved segments Supported intermediateSegments */
+                intoSegment_isFullCapacity,/* endif */
+                intoSegment_outboundOverflowCount_perGroupAdditions);
     }
     /* endif */ //comment*/ end if Flag|Always doShrink //*/
 
@@ -3540,22 +4009,23 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
      * This method is called to deflate an inflated segment that became small and now an ordinary
      * segment can hold all it's entries.
      * @param hash a hash code of some entry belonging to the given segment. It allows to determine
-     * the index(es) of the given segment in {@link #segmentsArray}.
+     *        the index(es) of the given segment in {@link #segmentsArray}.
      */
+    @RarelyCalledAmortizedPerSegment
     private void deflateSmall(long hash, InflatedSegment<K, V> inflatedSegment) {
         int modCount = getModCountOpaque();
 
         // The inflated segment's bitSetAndState is never reset back to an operational value after
         // this statement.
-        long inflatedSegmentBitSetAndState =
+        long inflatedSegment_bitSetAndState =
                 replaceBitSetAndStateWithBulkOperationPlaceholderOrThrowCme(inflatedSegment);
-        int segmentOrder = segmentOrder(inflatedSegmentBitSetAndState);
-        int deflatedSegmentAllocCapacity = SEGMENT_MAX_ALLOC_CAPACITY;
+        int segmentOrder = segmentOrder(inflatedSegment_bitSetAndState);
+        int deflatedSegment_allocCapacity = SEGMENT_MAX_ALLOC_CAPACITY;
         Segment<Object, Object> deflatedSegment =
-                Segment.allocateNewSegmentAndSetEmptyControls(deflatedSegmentAllocCapacity);
+                allocateNewSegmentWithoutSettingBitSetAndSet(deflatedSegment_allocCapacity);
 
         doDeflateSmall(
-                segmentOrder, inflatedSegment, deflatedSegment, deflatedSegmentAllocCapacity);
+                segmentOrder, inflatedSegment, deflatedSegment, deflatedSegment_allocCapacity);
         // storeFence() is called inside doDeflateSmall() to make publishing of deflatedSegment
         // safe.
 
@@ -3567,38 +4037,27 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         checkModCountOrThrowCme(modCount);
     }
 
-    private void replaceInflatedWithEmptyOrdinary(
-            int segmentIndex, InflatedSegment<K, V> inflatedSegment) {
-        // The inflated segment's bitSetAndState is never reset back to an operational value after
-        // this statement.
-        long inflatedSegmentBitSetAndState =
-                replaceBitSetAndStateWithBulkOperationPlaceholderOrThrowCme(inflatedSegment);
-        int segmentOrder = segmentOrder(inflatedSegmentBitSetAndState);
-        int ordinarySegmentAllocCapacity = getInitialSegmentAllocCapacity(segmentOrder);
-        Segment<Object, Object> ordinarySegment =
-                Segment.createNewSegment(ordinarySegmentAllocCapacity, segmentOrder);
-        int firstSegmentIndex = firstSegmentIndexByIndexAndOrder(segmentIndex, segmentOrder);
-        // replaceInSegmentsArray() increments modCount.
-        replaceInSegmentsArray(getNonNullSegmentsArrayOrThrowCme(),
-                firstSegmentIndex, segmentOrder, ordinarySegment);
-    }
-
     /**
      * Returns the number of entries moved from the inflated segment into an ordinary segment.
      *
-     * intoSegmentAllocCapacity could have not been passed and {@link
-     * Segment#SEGMENT_MAX_ALLOC_CAPACITY} used instead, but doing this to make the choice of
-     * intoSegmentAllocCapacity the sole responsibility of {@link #deflateSmall}.
+     * intoSegment_allocCapacity could have not been passed and {@link #SEGMENT_MAX_ALLOC_CAPACITY}
+     * used instead, but doing this to make the choice of intoSegment_allocCapacity the sole
+     * responsibility of {@link #deflateSmall}.
      */
+    @RarelyCalledAmortizedPerSegment
     private void doDeflateSmall(int segmentOrder, InflatedSegment<K, V> inflatedSegment,
-            Object intoSegment, int intoSegmentAllocCapacity) {
-        int segmentSize = 0;
+            Object intoSegment, int intoSegment_allocCapacity) {
+        int intoSegment_currentSize = 0;
+        long intoSegment_outboundOverflowCount_perGroupAdditions = 0;
+        /* if Interleaved segments */
+        long intoSegment_bitSetAndState =
+                makeNewBitSetAndState(intoSegment_allocCapacity, segmentOrder);
+        /* if Enabled extraChecks */
+        verifyEqual(intoSegment_allocCapacity, SEGMENT_MAX_ALLOC_CAPACITY);
+        /* endif */
+        /* endif */
+
         for (Node<K, V> node : inflatedSegment.delegate.keySet()) {
-            if (segmentSize >= intoSegmentAllocCapacity) {
-                // This is possible if entries are added to the inflated segment concurrently with
-                // the deflation.
-                throw new ConcurrentModificationException();
-            }
             K key = node.getKey();
             V value = node.getValue();
             // Possibly wrong hash from InflatedSegment's node: if there are concurrent
@@ -3609,18 +4068,92 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             // operations with the SmoothieMap (i. e. effectively could lead to a memory leak), but
             // nothing worse than that.
             long hash = node.hash;
-            int insertionSlotIndex = findFirstEmptySlotForHash(intoSegment, hash);
-            writeEntry(intoSegment, key, hash, value, insertionSlotIndex, segmentSize);
-            segmentSize++;
+
+            // ### [Put the entry into intoSegment]
+            final long baseGroupIndex = baseGroupIndex(hash);
+            // [Find empty slot]
+            internalPutLoop:
+            for (long groupIndex = baseGroupIndex, groupIndexStep = 0; ; ) {
+                long dataGroup = /* if Interleaved segments */FullCapacitySegment./* endif */
+                        readDataGroup(intoSegment, groupIndex);
+                long emptyBitMask = matchEmpty(dataGroup);
+                if (emptyBitMask != 0) { // [Positive likely branch]
+                    int insertionSlotIndexWithinGroup =
+                            lowestMatchingSlotIndex(emptyBitMask);
+                    intoSegment_outboundOverflowCount_perGroupAdditions +=
+                            computeOutboundOverflowCount_perGroupChanges(
+                                    baseGroupIndex, groupIndex);
+
+                    /* if Continuous segments */
+                    // [allocIndex = segmentSize optimization]
+                    int intoSegment_allocIndex = intoSegment_currentSize;
+                    /* elif Interleaved segments */
+                    int intoSegment_allocIndex = freeAllocIndexClosestTo(
+                            intoSegment_bitSetAndState,
+                            // Using FullCapacitySegment's allocIndexBoundaryForLocalAllocation()
+                            // method here rather than InterleavedSegment's because intoSegment is
+                            // guaranteed to be a full-capacity segment. See a check in the
+                            // beginning of this method.
+                            /* if Interleaved segments */FullCapacitySegment./* endif */
+                                    allocIndexBoundaryForLocalAllocation((int) groupIndex));
+                    intoSegment_bitSetAndState = setAllocBit(
+                            intoSegment_bitSetAndState, intoSegment_allocIndex);
+                    /* endif */
+                    if (intoSegment_allocIndex >= intoSegment_allocCapacity) {
+                        // This is possible if entries are added to the inflated segment
+                        // concurrently with the deflation.
+                        throw new ConcurrentModificationException();
+                    }
+
+                    byte tag = (byte) tagBits(hash);
+                    /* if Interleaved segments */FullCapacitySegment./* endif */writeEntry(
+                            intoSegment, key, tag, value, groupIndex, dataGroup,
+                            insertionSlotIndexWithinGroup, intoSegment_allocIndex);
+                    break internalPutLoop;
+                }
+                groupIndexStep += 1; // [Quadratic probing]
+                groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                // [No break condition in a loop searching for an empty slot]
+            }
+
+            intoSegment_currentSize++;
             // Unlike in other similar procedures, don't increment modCount here because
             // intoSegment is not yet published to segmentsArray.
         }
 
-        // Update intoSegment's bitSetAndState.
-        long intoSegmentBitSetAndState = makeBitSetAndStateForPrivatelyPopulatedSegment(
-                intoSegmentAllocCapacity, segmentOrder, segmentSize);
-        setBitSetAndState(intoSegment, intoSegmentBitSetAndState);
+        // Update intoSegment's bitSetAndState and outbound overflow counts.
+        /* if Continuous segments */
+        long intoSegment_bitSetAndState = makeBitSetAndStateForPrivatelyPopulatedContinuousSegment(
+                intoSegment_allocCapacity, segmentOrder, intoSegment_currentSize);
+        /* endif */
+        setBitSetAndState(intoSegment, intoSegment_bitSetAndState);
+        /* if Interleaved segments Supported intermediateSegments */
+        int intoSegment_isFullCapacity = 1;
+        /* endif */
+        // No point in specializing addOutboundOverflowCountsPerGroup() for a full-capacity segment
+        // because we are in a RarelyCalledAmortizedPerSegment method.
+        addOutboundOverflowCountsPerGroup(intoSegment,
+                /* if Interleaved segments Supported intermediateSegments */
+                intoSegment_isFullCapacity,/* endif */
+                intoSegment_outboundOverflowCount_perGroupAdditions);
         U.storeFence(); // [Safe segment publication]
+    }
+
+    @RarelyCalledAmortizedPerSegment
+    private void replaceInflatedWithEmptyOrdinary(
+            int segmentIndex, InflatedSegment<K, V> inflatedSegment) {
+        // The inflated segment's bitSetAndState is never reset back to an operational value after
+        // this statement.
+        long inflatedSegment_bitSetAndState =
+                replaceBitSetAndStateWithBulkOperationPlaceholderOrThrowCme(inflatedSegment);
+        int segmentOrder = segmentOrder(inflatedSegment_bitSetAndState);
+        int ordinarySegmentAllocCapacity = getInitialSegmentAllocCapacity(segmentOrder);
+        Segment<Object, Object> ordinarySegment =
+                createNewSegment(ordinarySegmentAllocCapacity, segmentOrder);
+        int firstSegmentIndex = firstSegmentIndexByIndexAndOrder(segmentIndex, segmentOrder);
+        // replaceInSegmentsArray() increments modCount.
+        replaceInSegmentsArray(getNonNullSegmentsArrayOrThrowCme(),
+                firstSegmentIndex, segmentOrder, ordinarySegment);
     }
 
     /**
@@ -3652,7 +4185,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         int resultSegmentsOrder = inflatedSegmentOrder + 1;
         int resultSegmentsAllocCapacity = getInitialSegmentAllocCapacity(resultSegmentsOrder);
         // Publishing result segments before population in splitInflated: result segments are first
-        // published to segmentsArray and then populated using the "public" put() procedure (see
+        // published to segmentsArray and then populated using the "public" putImpl() procedure (see
         // doSplitInflated()) rather than populated privately as in doShrinkInto() and
         // doDeflateSmall() because the inflated segment which is being split in this method may
         // contain more than SEGMENT_MAX_ALLOC_CAPACITY entries, therefore one of the result
@@ -3675,7 +4208,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         int firstIndexOfResultSegmentOne =
                 firstSegmentIndexByHashAndOrder(hash, resultSegmentsOrder);
         Segment<K, V> resultSegmentOne =
-                Segment.createNewSegment(resultSegmentsAllocCapacity, resultSegmentsOrder);
+                createNewSegment(resultSegmentsAllocCapacity, resultSegmentsOrder);
         Object[] segmentsArray = getNonNullSegmentsArrayOrThrowCme();
         replaceInSegmentsArray(
                 segmentsArray, firstIndexOfResultSegmentOne, resultSegmentsOrder, resultSegmentOne);
@@ -3684,7 +4217,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         int firstIndexOfResultSegmentTwo =
                 siblingSegmentIndex(firstIndexOfResultSegmentOne, resultSegmentsOrder);
         Segment<K, V> resultSegmentTwo =
-                Segment.createNewSegment(resultSegmentsAllocCapacity, resultSegmentsOrder);
+                createNewSegment(resultSegmentsAllocCapacity, resultSegmentsOrder);
         replaceInSegmentsArray(
                 segmentsArray, firstIndexOfResultSegmentTwo, resultSegmentsOrder, resultSegmentTwo);
         modCount++; // Matches the modCount field increment performed in replaceInSegmentsArray().
@@ -3711,15 +4244,23 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             V value = node.getValue();
             // [Possibly wrong hash from InflatedSegment's node]
             long hash = node.hash;
+            long hash_segmentLookupBits = segmentLookupBits(hash);
+            Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
+            /* if Interleaved segments Supported intermediateSegments */
+            int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+            /* endif */
             // [Publishing result segments before population in splitInflated] explains why we are
-            // using "public" put() method here. (1)
-            if (put(segmentByHash(hash), key, hash, value, true /* onlyIfAbsent */) != null) {
+            // using "public" putImpl() method here. (1)
+            if (putImpl(segment,
+                    /* if Interleaved segments Supported intermediateSegments */
+                    isFullCapacitySegment,/* endif */
+                    key, hash, value, true /* onlyIfAbsent */) != null) {
                 throw new ConcurrentModificationException();
             }
             numMovedEntries++;
         }
-        // Restoring the correct size after calling put() with entries that are already in the map
-        // in the loop above.
+        // Restoring the correct size after calling putImpl() with entries that are already in the
+        // map in the loop above.
         size = size - (long) numMovedEntries;
     }
 
@@ -3770,7 +4311,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         segmentIndex <<= -segmentsArrayOrder;
         segmentIndex = Integer.reverse(segmentIndex);
         int segmentOrder = segmentOrder(getBitSetAndState(segment));
-        assertThat(segmentOrder <= segmentsArrayOrder);
+        verifyThat(segmentOrder <= segmentsArrayOrder);
         int numberOfArrayIndexesWithThisSegment = 1 << (segmentsArrayOrder - segmentOrder);
         segmentIndex += numberOfArrayIndexesWithThisSegment;
         if (segmentIndex >= segmentsArrayLength)
@@ -3801,7 +4342,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
     @Override
     public final void forEach(BiConsumer<? super K, ? super V> action) {
-        Utils.requireNonNull(action);
+        checkNonNull(action);
         int modCount = getModCountOpaque();
         Object[] segmentsArray = getNonNullSegmentsArrayOrThrowIse();
         int segmentArrayLength = segmentsArray.length;
@@ -3818,7 +4359,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
     @Override
     public final boolean forEachWhile(BiPredicate<? super K, ? super V> predicate) {
-        Utils.requireNonNull(predicate);
+        checkNonNull(predicate);
         boolean interrupted = false;
         int modCount = getModCountOpaque();
         Object[] segmentsArray = getNonNullSegmentsArrayOrThrowIse();
@@ -3840,7 +4381,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
     @Override
     public final void replaceAll(BiFunction<? super K, ? super V, ? extends V> function) {
-        Utils.requireNonNull(function);
+        checkNonNull(function);
         int modCount = getModCountOpaque();
         Object[] segmentsArray = getNonNullSegmentsArrayOrThrowIse();
         int segmentArrayLength = segmentsArray.length;
@@ -3967,7 +4508,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
     @Override
     public final boolean removeIf(BiPredicate<? super K, ? super V> filter) {
-        Utils.requireNonNull(filter);
+        checkNonNull(filter);
         if (isEmpty())
             return false;
         // Updating this variable in a loop rather than having a variable "initialModCount" outside
@@ -4043,12 +4584,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         @Override
         public boolean remove(Object key) {
+            // TODO specialize to avoid access into value's memory: see
+            //  [Protecting null comparisons].
             return SmoothieMap.this.remove(key) != null;
         }
 
         @Override
         public final void forEach(Consumer<? super K> action) {
-            Utils.requireNonNull(action);
+            checkNonNull(action);
             int modCount = getModCountOpaque();
             Object[] segmentsArray = getNonNullSegmentsArrayOrThrowIse();
             int segmentArrayLength = segmentsArray.length;
@@ -4093,7 +4636,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         @Override
         public boolean retainAll(Collection<?> c) {
-            Utils.requireNonNull(c);
+            checkNonNull(c);
             return SmoothieMap.this.removeIf((k, v) -> !c.contains(k));
         }
     }
@@ -4128,7 +4671,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         @Override
         public void forEach(Consumer<? super V> action) {
-            Utils.requireNonNull(action);
+            checkNonNull(action);
             int modCount = getModCountOpaque();
             Object[] segmentsArray = getNonNullSegmentsArrayOrThrowIse();
             int segmentArrayLength = segmentsArray.length;
@@ -4145,13 +4688,13 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         @Override
         public boolean removeAll(Collection<?> c) {
-            Utils.requireNonNull(c);
+            checkNonNull(c);
             return SmoothieMap.this.removeIf((k, v) -> c.contains(v));
         }
 
         @Override
         public boolean retainAll(Collection<?> c) {
-            Utils.requireNonNull(c);
+            checkNonNull(c);
             return SmoothieMap.this.removeIf((k, v) -> !c.contains(v));
         }
     }
@@ -4212,6 +4755,9 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         private final Object[] segmentsArray;
         private final int segmentsArrayOrder;
         Segment<K, V> currentSegment;
+        /* if Interleaved segments Supported intermediateSegments */
+        int currentSegment_isFullCapacity;
+        /* endif */
         @Nullable Iterator<Node<K, V>> inflatedSegmentIterator;
 
         /**
@@ -4237,6 +4783,10 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         @EnsuresNonNull("currentSegment")
         private void initCurrentSegment(int currentSegmentIndex, Segment<K, V> currentSegment) {
             this.currentSegment = currentSegment;
+            /* if Interleaved segments Supported intermediateSegments */
+            this.currentSegment_isFullCapacity =
+                    smoothie.isFullCapacitySegmentByIndex(currentSegmentIndex, currentSegment);
+            /* endif */
             long currentSegment_bitSetAndState = getBitSetAndState(currentSegment);
 
             // findNextSegment() must be called before advancements
@@ -4320,20 +4870,21 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         private void advanceSegment() {
             int nextSegmentIndex = this.nextSegmentIndex;
             if (nextSegmentIndex < 0) {
-                // Logically, writing iterAllocIndex to -1 belongs to advanceOrdinarySegmentIteration(),
-                // but instead doing it here and in initCurrentSegment(), in the
-                // [Current segment is inflated] branch to avoid unnecessary field writes when an
-                // ordinary segment is followed by another ordinary segment (almost every time) in
-                // the expense of a single unnecessary field write (here) in the end of the
-                // iteration if the last iterated segment was inflated (which should almost never
-                // happen).
+                // Logically, writing iterAllocIndex to -1 belongs to
+                // advanceOrdinarySegmentIteration(), but instead doing it here and in
+                // initCurrentSegment() in the [Current segment is inflated] branch to avoid
+                // unnecessary field writes when an ordinary segment is followed by another ordinary
+                // segment (almost every time) in the expense of a single unnecessary field write
+                // (here) in the end of the iteration if the last iterated segment was inflated
+                // (which should almost never happen).
                 this.iterAllocIndex = -1;
                 // Don't advance, the iteration is complete. iterAllocIndex stores -1 and
                 // inflatedSegmentIterator stores null at this point.
                 return;
             }
             @Nullable Segment<K, V> nextSegment = this.nextSegment;
-            /* if Enabled extraChecks */assertNonNull(nextSegment);/* endif */
+            /* if Enabled extraChecks */
+            verifyNonNull(nextSegment);/* endif */
             initCurrentSegment(nextSegmentIndex, nextSegment);
         }
 
@@ -4388,7 +4939,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         }
 
         private K nextKeyInOrdinarySegment(int allocIndex) {
-            K key = readKeyChecked(currentSegment, allocIndex);
+            K key = readKeyCheckedAtIndex(currentSegment, (long) allocIndex);
             advanceOrdinarySegmentIteration(this.bitSet, allocIndex);
             return key;
         }
@@ -4427,7 +4978,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         }
 
         private V nextValueInOrdinarySegment(int allocIndex) {
-            V value = readValueChecked(currentSegment, allocIndex);
+            V value = readValueCheckedAtIndex(currentSegment, (long) allocIndex);
             advanceOrdinarySegmentIteration(this.bitSet, allocIndex);
             return value;
         }
@@ -4468,9 +5019,12 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         private Entry<K, V> nextEntryInOrdinarySegment(int allocIndex) {
             Segment<K, V> currentSegment = this.currentSegment;
-            checkAllocIndex(currentSegment, allocIndex);
-            K key = readKey(currentSegment, allocIndex);
-            V value = readValue(currentSegment, allocIndex);
+            checkAllocIndex(currentSegment, (long) allocIndex);
+            long allocOffset = allocOffset((long) allocIndex
+                    /* if Interleaved segments Supported intermediateSegments */
+                    , (long) this.currentSegment_isFullCapacity/* endif */);
+            K key = readKeyAtOffset(currentSegment, allocOffset);
+            V value = readValueAtOffset(currentSegment, allocOffset);
             advanceOrdinarySegmentIteration(this.bitSet, allocIndex);
             return entry.withKeyAndValue(key, value);
         }
@@ -4493,602 +5047,77 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     @SuppressWarnings("unused") // To be used in non-Immutable iterators
     final class SmoothieEntry extends SimpleEntry<K, V> {
         final Object segment;
-        final int allocIndex;
+        final long allocOffset;
         final int mc = modCount;
 
-        SmoothieEntry(Object segment, int allocIndex) {
-            super(readKey(segment, allocIndex), readValue(segment, allocIndex));
+        SmoothieEntry(Object segment, long allocOffset) {
+            super(readKeyAtOffset(segment, allocOffset), readValueAtOffset(segment, allocOffset));
             this.segment = segment;
-            this.allocIndex = allocIndex;
+            this.allocOffset = allocOffset;
         }
 
         @Override
         public V setValue(V value) {
             if (mc != modCount)
                 throw new ConcurrentModificationException();
-            writeValue(segment, allocIndex, value);
+            writeValueAtOffset(segment, allocOffset, value);
             return super.setValue(value);
         }
     }
 
     //endregion
 
-    //region HashTableArea
     /**
-     * HashTableArea contains an open-addressing hash table of 64 slots with linear probing, 1-byte
-     * keys and values stored separately, i. e. 64 bytes of keys are contiguous (see {@link #c0}),
-     * and then there are 64 contiguous bytes of values (see {@link #d0}).
+     * TODO describe what's implied by the comment to {@link BitSetAndState}.
      *
-     * HashTableArea (together with {@link Segment}) reimplements SwissTable, specifically this
-     * version: https://github.com/abseil/abseil-cpp/blob/3088e76c597e068479e82508b1770a7ad0c806b6/
-     * absl/container/internal/raw_hash_set.h, with some improvements adopted from hashbrown,
-     * specifically this version:
-     * https://github.com/Amanieu/hashbrown/tree/6b9cc4e01090553c5928ccc0ee4568319ee0ed33/src.
-     * Naming of variables and methods is kept close to raw_hash_set.h.
+     * The lines of inheritance of Segment objects (intended to enforce field arrangement and
+     * grouping in the memory layout of segment objects, since JVMs must obey to the inheritance
+     * boundaries: see the comment for {@link ContinuousSegments.HashTableArea}) are the following:
      *
-     * HashTableArea is made a superclass of {@link Segment} to ensure that {@link Segment#k0} and
-     * {@link Segment#v0} are laid before the primitive fields by the JVM and therefore are followed
-     * directly by {@link Segment17#k1}, etc. This is guaranteed because JVMs don't mix fields
-     * declared in superclasses and subclasses.
+     * Continuous segments:
+     *  {@link ContinuousSegments.HashTableArea} ->
+     *  {@link ContinuousSegment_BitSetAndStateArea} ->
+     *  Segment (this class) ->
+     *    {@link ContinuousSegments.SegmentBase} ->
+     *      {@link ContinuousSegments.Segment17}
+     *      ..
+     *      {@link ContinuousSegments.Segment48}
+     *    {@link InflatedSegment}
      *
-     * All instance fields of HashTableArea are private and must not be accessed using normal
-     * .fieldName Java syntax, because JVMs are free to lay the fields in an arbitrary order, while
-     * we need a specific, stable layout. This layout corresponds to the order in which the fields
-     * are declared. The data is accessed using {@link #CONTROLS_OFFSET} and {@link
-     * #DATA_SLOTS_OFFSET}.
+     * Full-capacity interleaved segments:
+     *  {@link InterleavedSegment_BitSetAndStateArea} ->
+     *  Segment (this class) ->
+     *  {@link InterleavedSegments.FullCapacitySegment_AllocationSpaceBeforeGroup0} ->
+     *  ...
+     *  {@link InterleavedSegments.FullCapacitySegment_AllocationSpaceAfterGroup7} ->
+     *  {@link InterleavedSegments.FullCapacitySegment} ->
+     *  {@link InflatedSegment} (if intermediate-capacity segments are not supported)
+     *
+     * Intermediate-capacity interleaved segments:
+     *  {@link InterleavedSegment_BitSetAndStateArea} ->
+     *  Segment (this class) ->
+     *  {@link InterleavedSegments.IntermediateCapacitySegment_AllocationSpaceBeforeGroup0} ->
+     *  ...
+     *  {@link InterleavedSegments.IntermediateCapacitySegment_AllocationSpaceAfterGroup7} ->
+     *  {@link InterleavedSegments.IntermediateCapacitySegment} ->
+     *  {@link InflatedSegment}
+     *
+     * The confusing part is that {@link ContinuousSegment_BitSetAndStateArea} and {@link
+     * InterleavedSegment_BitSetAndStateArea} are generated from the same source but appear in
+     * different places in the hierarchy for Continuous and Interleaved segments.
      */
-    static class HashTableArea {
-        /**
-         * 64 1-byte control slots. The lower 7 bits of a used slot are taken from {@link
-         * SmoothieMap}'s key hash code. The highest bit of 1 denotes a special control, either
-         * {@link Segment#EMPTY_CONTROL} or {@link Segment#DELETED_CONTROL}.
-         *
-         * {@link Segment#INFLATED_SEGMENT_MARKER_CONTROL} value indicates that the segment is an
-         * {@link InflatedSegment}.
-         */
-        @SuppressWarnings("unused")
-        private long c0, c1, c2, c3, c4, c5, c6, c7;
-
-        static final int HASH_TABLE_SLOTS = 64;
-        static final int SLOT_MASK = HASH_TABLE_SLOTS - 1;
-        static final int GROUP_SLOTS = Long.BYTES;
-        /** [Replacing division with shift] */
-        static final int GROUP_SLOTS_DIVISION_SHIFT = 3; // = numberOfTrailingZeros(GROUP_SLOTS)
-        @IntVal(8)
-        static final int HASH_TABLE_GROUPS = HASH_TABLE_SLOTS / GROUP_SLOTS;
-        static final int GROUP_BITS = Long.SIZE;
-
-        static {
-            assertThat(Integer.numberOfTrailingZeros(GROUP_SLOTS) == GROUP_SLOTS_DIVISION_SHIFT);
-            assertThat(HASH_TABLE_SLOTS == HASH_TABLE_GROUPS * GROUP_SLOTS);
-        }
-
-        /** The cloned {@link #c0} enables branchless operations. */
-        @SuppressWarnings("unused")
-        private long c0Clone;
-        static final int CLONED_CONTROL_SLOTS = GROUP_SLOTS;
-
-        /**
-         * 1-byte data slots, corresponding to the control slots. The lower 6 bits of a used slot
-         * contain an entry allocation index, e. g. 0 means that {@link SmoothieMap}'s entry is
-         * stored in {@link Segment#k0} and {@link Segment#v0}. The highest 2 bits are taken from
-         * {@link SmoothieMap}'s key hash code and are compared with the bits of the hash code of
-         * the key being looked up to reduce the probability of calling equals() on different keys
-         * by extra 75%.
-         *
-         * The tradeoff here is that it's possible to make HashTableArea 16 bytes smaller if only
-         * 6-bit entry allocated indexes are stored. However, to read and write 6-bit slots an
-         * offset and a shift should be computed using either integral division by 6 or a lookup
-         * table, and extra shifting and bit masking is involved. Another approach is the layout of
-         * 64 4-bit slots followed by 64 2-bit slots which doesn't require neither integral division
-         * nor a lookup table, but on the other hand it requires two reads and two writes and even
-         * more shifting and bit masking operations.
-         *
-         * In any case, 6-bit slot management is estimated to add at least 3-5 cycles to the latency
-         * of reading operations with a Segment and double of that, 6-10 cycles for writing
-         * operations (however I haven't actually tried to measure that. - leventov), not
-         * considering the effect of the reduced probability of calling equals() on different keys,
-         * described above, for 1-byte slots. On the other hand, 16 bytes that could have been saved
-         * is about 1.7% (not compressed Oops) to 3.1% (compressed Oops) of the size of a Segment.
-         *
-         * Data slots that correspond to empty control slots are not required to have specific
-         * values, in particular, zeros. They can have "garbage" values.
-         *
-         * TODO consider using
-         *  https://en.wikipedia.org/wiki/Bit_Manipulation_Instruction_Sets#Parallel_bit_deposit_and_extract
-         *  in native code
-         *
-         * TODO compare with interleaved controls group - data group layout
-         */
-        @SuppressWarnings("unused")
-        private long d0, d1, d2, d3, d4, d5, d6, d7;
-        static final int DATA_BYTES = 64;
-
-        static final int TOTAL_HASH_TABLE_BYTES =
-                HASH_TABLE_SLOTS + CLONED_CONTROL_SLOTS + DATA_BYTES;
-
-        private static final boolean LITTLE_ENDIAN =
-                ByteOrder.nativeOrder() == ByteOrder.LITTLE_ENDIAN;
-        static final long CONTROLS_OFFSET;
-        static final long CLONED_CONTROLS_OFFSET;
-        /**
-         * Pre-casted constant: since {@link #CONTROLS_OFFSET} is not a compile-time constant, it
-         * might be better to use a pre-casted int constant rather than casting from long to int
-         * each time at some usage sites.
-         */
-        static final int CONTROLS_OFFSET_AS_INT;
-        private static final long DATA_SLOTS_OFFSET;
-
-        static {
-            CONTROLS_OFFSET = minInstanceFieldOffset(HashTableArea.class);
-            CLONED_CONTROLS_OFFSET = CONTROLS_OFFSET + HASH_TABLE_SLOTS;
-            CONTROLS_OFFSET_AS_INT = (int) CONTROLS_OFFSET;
-            DATA_SLOTS_OFFSET = CONTROLS_OFFSET + HASH_TABLE_SLOTS + CLONED_CONTROL_SLOTS;
-            assertThat((TOTAL_HASH_TABLE_BYTES % Long.BYTES) == 0);
-        }
-
-        static boolean groupIndexesEqualModuloHashTableGroups(int groupIndex1, int groupIndex2) {
-            return ((groupIndex1 - groupIndex2) & (HASH_TABLE_GROUPS - 1)) == 0;
-        }
-
-        static void assertNonNullSegment(Object segment) {
-            // TODO link to ticket in YouTrack when created
-            // TODO inline when issue in IntelliJ is fixed
-            //noinspection ResultOfMethodCallIgnored
-            assertNonNull(segment);
-        }
-
-        static long readControlsGroup(Object segment, long firstSlotIndex) {
-            /* if Enabled extraChecks */assertNonNullSegment(segment);/* endif */
-            long controlsGroup = U.getLong(segment, CONTROLS_OFFSET + firstSlotIndex);
-            if (LITTLE_ENDIAN) {
-                return controlsGroup;
-            } else {
-                return Long.reverseBytes(controlsGroup);
-            }
-        }
-
-        static int readControlByte(Object segment, long slotIndex) {
-            /* if Enabled extraChecks */assertNonNullSegment(segment);/* endif */
-            return (int) U.getByte(segment, CONTROLS_OFFSET + slotIndex);
-        }
-
-        static void writeControlByte(Object segment, long slotIndex, byte controlByte) {
-            /* if Enabled extraChecks */assertNonNullSegment(segment);/* endif */
-            U.putByte(segment, CONTROLS_OFFSET + slotIndex, controlByte);
-            // Sets the cloned control. For slot indexes between 8th and 63th, i. e. 87.5% of the
-            // time this computation results in the same index as the original, and the same byte in
-            // memory is set twice. The alternative is a conditional block as in
-            // writeControlByteWithConditionalCloning(), but that is a branch.
-            // TODO compare the approaches, importantly with Shenandoah GC that emits primitive
-            //  write barriers
-            long clonedSlotIndex = ((slotIndex - GROUP_SLOTS) & SLOT_MASK) + GROUP_SLOTS;
-            U.putByte(segment, CONTROLS_OFFSET + clonedSlotIndex, controlByte);
-        }
-
-        static void writeControlByteWithConditionalCloning(Object segment, long slotIndex,
-                byte controlByte) {
-            /* if Enabled extraChecks */assertNonNullSegment(segment);/* endif */
-            U.putByte(segment, CONTROLS_OFFSET + slotIndex, controlByte);
-            if (slotIndex < GROUP_SLOTS) {
-                long clonedSlotIndex = slotIndex + HASH_TABLE_SLOTS;
-                U.putByte(segment, CONTROLS_OFFSET + clonedSlotIndex, controlByte);
-            }
-        }
-
-        static int readData(Object segment, long slotIndex) {
-            /* if Enabled extraChecks */assertNonNullSegment(segment);/* endif */
-            // Another option is `DATA_SLOTS_OFFSET + 63 - slotIndex`, that makes more control byte
-            // and data byte accesses to fall in a single cache line (and on the order hand, more
-            // accesses are two cache lines apart, compared to `DATA_SLOTS_OFFSET + slotIndex`).
-            // Warning: it would require to add a Long.reverseBytes() call in
-            // readDataGroupByGroupIndex(). Other data-access methods also would need to be updated.
-            // TODO compare the approaches
-            return (int) U.getByte(segment, DATA_SLOTS_OFFSET + slotIndex);
-        }
-
-        static long readDataGroup(Object segment, long firstSlotIndex) {
-            /* if Enabled extraChecks */assertNonNullSegment(segment);/* endif */
-            long dataGroup = U.getLong(segment, DATA_SLOTS_OFFSET + firstSlotIndex);
-            if (LITTLE_ENDIAN) {
-                return dataGroup;
-            } else {
-                return Long.reverseBytes(dataGroup);
-            }
-        }
-
-        static void writeData(Object segment, long slotIndex, byte data) {
-            /* if Enabled extraChecks */assertNonNullSegment(segment);/* endif */
-            U.putByte(segment, DATA_SLOTS_OFFSET + slotIndex, data);
-        }
-
-        static int replaceData(Object segment, long slotIndex, byte newData) {
-            /* if Enabled extraChecks */assertNonNullSegment(segment);/* endif */
-            long offset = DATA_SLOTS_OFFSET + slotIndex;
-            int oldData = (int) U.getByte(segment, offset);
-            U.putByte(segment, offset, newData);
-            return oldData;
-        }
-    }
-    //endregion
-
-    static class BitSetAndStateArea extends HashTableArea {
-        /**
-         * The lower 48 bits of bitSetAndState is a bit set denoting free and occupied
-         * allocation indexes.
-         *
-         * The next 5 bits (from 48th to 52nd) represent the segment order. See {@link
-         * SmoothieMap#lastComputedAverageSegmentOrder} and {@link SmoothieMap#order} for more info
-         * about this concept.
-         *
-         * The next 5 bits (from 53rd to 57th) are used to codify the allocation capacity of this
-         * segment. The value of 0 in these bits (i. e, all bits from 59th to 63rd are zeros) is
-         * assigned for {@link Segment17}, 1 - for {@link Segment18}, etc through 31 for {@link
-         * Segment48}. This information is not extracted through a polymorphic method on {@link
-         * Segment} because it would require to access object headers of Segments, and maybe even
-         * virtual method table, i. e. would actually be much slower. See {@link Segment} javadoc
-         * for more info about the approach to the method dispatch in this class.
-         *
-         * The highest 6 bits (from 58th to 63rd) represent the number of control slots with {@link
-         * Segment#DELETED_CONTROL}, i. e. the number of deleted slots in the hash table. This value is
-         * updated in a branchless manner using {@link #DELETED_SLOT_COUNT_UNIT}, and if the segment is
-         * updated concurrently, the deleted slot count could inadvertently overflow or underflow. To
-         * avoid illegal memory access, it's critical to ensure that no race could lead to corruption of
-         * the previous value in bitSetAndState, {@link #allocCapacity}, that must not be modified
-         * through the entire lifetime of a segment. That is why the deleted slot count value is placed
-         * in the highest-order bits of bitSetAndState, so that no overflow or underflow of this value
-         * could corrupt other values.
-         *
-         * All four values are packed into a single long rather than having their own fields in order to
-         * save memory. The saving is 8 bytes if UseCompressedOops is false and
-         * UseCompressedClassPointers is false, because ObjectAlignmentInBytes is at least 8 bytes, the
-         * object header size is 16 bytes, all fields before bitSetAndState are longs, and the next
-         * field {@link Segment#k0} requires 8-byte alignment too. In addition, storing four values in
-         * a single long field allows to reduce the number of memory reads and writes required during
-         * insert and delete operations, when several of those values are read and/or updated.
-         */
-        long bitSetAndState;
-
-        private static final int BIT_SET_BITS = 48;
-        static final int SEGMENT_MAX_ALLOC_CAPACITY = BIT_SET_BITS;
-        /** {@link #SEGMENT_MAX_ALLOC_CAPACITY} = 48 = 16 * 3 */
-        static final int MAX_ALLOC_CAPACITY_POWER_OF_TWO_COMPONENT_SIZE = 16;
-        static final int MAX_ALLOC_CAPACITY_POWER_OF_TWO_COMPONENT_SIZE_DIVISION_SHIFT = 4;
-        static final long BIT_SET_MASK = (1L << BIT_SET_BITS) - 1;
-
-        static {
-            if (Integer.numberOfTrailingZeros(MAX_ALLOC_CAPACITY_POWER_OF_TWO_COMPONENT_SIZE)
-                    != MAX_ALLOC_CAPACITY_POWER_OF_TWO_COMPONENT_SIZE_DIVISION_SHIFT) {
-                throw new AssertionError();
-            }
-        }
-
-        /**
-         * Free allocation slots correspond to set bits, and vice versa, occupied slots correspond
-         * to clear bits in {@link #bitSetAndState}. This is done to avoid extra bitwise inversions
-         * for the typical operation of finding the lowest free slot, because there are only {@link
-         * Long#numberOfTrailingZeros(long)} and {@link Long#numberOfLeadingZeros(long)} methods in
-         * {@code Long} class, no methods for leading/trailing "ones".
-         */
-        static final long EMPTY_BIT_SET = BIT_SET_MASK;
-
-        private static final int SEGMENT_ORDER_SHIFT = BIT_SET_BITS;
-        static final long SEGMENT_ORDER_UNIT = 1L << SEGMENT_ORDER_SHIFT;
-        /**
-         * 5 bits is enough to store values from 0 to {@link #MAX_SEGMENTS_ARRAY_ORDER} = 30.
-         */
-        private static final int SEGMENT_ORDER_BITS = 5;
-        private static final int SEGMENT_ORDER_MASK = (1 << SEGMENT_ORDER_BITS) - 1;
-
-        /**
-         * There are not enough bits to store the alloc capacity directly, because it requires 6 bits
-         * (numbers up to {@link #SEGMENT_MAX_ALLOC_CAPACITY}). Therefore it's not possible to create a segment
-         * of any alloc capacity between 0 and {@link #SEGMENT_MAX_ALLOC_CAPACITY}. The minimum supported alloc
-         * capacity is {@link #BASE_ALLOC_CAPACITY}
-         */
-        private static final int EXTRA_ALLOC_CAPACITY_SHIFT =
-                SEGMENT_ORDER_SHIFT + SEGMENT_ORDER_BITS;
-        private static final int EXTRA_ALLOC_CAPACITY_BITS = 5;
-        private static final int EXTRA_ALLOC_CAPACITY_MASK = (1 << EXTRA_ALLOC_CAPACITY_BITS) - 1;
-        private static final int MAX_EXTRA_ALLOC_CAPACITY = (1 << EXTRA_ALLOC_CAPACITY_BITS) - 1;
-        /**
-         * Equals to 17.
-         * Warning: {@link #allocCapacityMinusOneHalved} relies on this value to be odd. {@link
-         * Segment#tryShrink1} relies on this value to be greater than 2.
-         */
-        private static final int BASE_ALLOC_CAPACITY =
-                SEGMENT_MAX_ALLOC_CAPACITY - MAX_EXTRA_ALLOC_CAPACITY;
-
-        private static final int DELETED_SLOT_COUNT_SHIFT =
-                EXTRA_ALLOC_CAPACITY_SHIFT + EXTRA_ALLOC_CAPACITY_BITS;
-        static final long DELETED_SLOT_COUNT_UNIT = 1L << DELETED_SLOT_COUNT_SHIFT;
-        private static final int DELETED_SLOT_COUNT_BITS = 6;
-        private static final int DELETED_SLOT_COUNT_MASK = (1 << DELETED_SLOT_COUNT_BITS) - 1;
-        private static final long NEGATIVE_DELETED_SLOT_COUNT_MASK =
-                ~(((long) DELETED_SLOT_COUNT_MASK) << DELETED_SLOT_COUNT_SHIFT);
-
-        /**
-         * A special deleted slot count value, impossible for an ordinary segment, used for {@link
-         * InflatedSegment} to make it possible to identify it before checking the class of a
-         * segment object.
-         *
-         * It's important that the deleted slot count in an inflated segment's bitSetAndState is
-         * different from {@link #BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE}'s deleted slot count
-         * value that is {@link #DELETED_SLOT_COUNT_MASK}, so that it is possible to distinguish
-         * between an inflated bitSetAndState with the segment order of 0 and a bulk operation
-         * placeholder bitSetAndState.
-         */
-        private static final int INFLATED_SEGMENT_DELETED_SLOT_COUNT = DELETED_SLOT_COUNT_MASK - 1;
-
-        /**
-         * This value is assigned into {@link #bitSetAndState} in the beginning of bulk operations
-         * (like {@link Segment#tryShrink2} and {@link #splitAndInsert})) so that concurrent
-         * operations could catch this condition and throw {@link ConcurrentModificationException}
-         * more likely.
-         *
-         * This value is comprised of a full bit set (see {@link #EMPTY_BIT_SET}), an extra alloc
-         * capacity of 0, a segment order of 0, and a deleted slot count equal to {@link
-         * #DELETED_SLOT_COUNT_MASK}. Any entry insertion or deletion operation triggers either
-         * shrinking or growing if encounters this bitSetAndState, where it is identified that this
-         * bitSetAndState is a placeholder, and then a {@link ConcurrentModificationException} is
-         * thrown.
-         */
-        static final long BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE =
-                ((long) DELETED_SLOT_COUNT_MASK) << DELETED_SLOT_COUNT_SHIFT;
-
-        private static final long BIT_SET_AND_STATE_OFFSET;
-
-        static {
-            assertIsPowerOfTwo(MAX_ALLOC_CAPACITY_POWER_OF_TWO_COMPONENT_SIZE, "");
-            // Checking that all bitSetAndState's areas are set up correctly
-            long fullBitSetAndState = BIT_SET_MASK |
-                    ((long) SEGMENT_ORDER_MASK << SEGMENT_ORDER_SHIFT) |
-                    ((long) EXTRA_ALLOC_CAPACITY_MASK << EXTRA_ALLOC_CAPACITY_SHIFT) |
-                    ((long) DELETED_SLOT_COUNT_MASK << DELETED_SLOT_COUNT_SHIFT);
-            assertThat(fullBitSetAndState == -1L);
-            assertThat(BASE_ALLOC_CAPACITY == 17);
-        }
-
-        static {
-            try {
-                Field bitSetAndStateField =
-                        BitSetAndStateArea.class.getDeclaredField("bitSetAndState");
-                BIT_SET_AND_STATE_OFFSET = U.objectFieldOffset(bitSetAndStateField);
-            } catch (NoSuchFieldException e) {
-                throw new AssertionError(e);
-            }
-        }
-
-        static long getBitSetAndState(Object segment) {
-            /* if Enabled extraChecks */assertNonNullSegment(segment);/* endif */
-            return U.getLong(segment, BIT_SET_AND_STATE_OFFSET);
-        }
-
-        static void setBitSetAndState(Object segment, long bitSetAndState) {
-            /* if Enabled extraChecks */assertNonNullSegment(segment);/* endif */
-            U.putLong(segment, BIT_SET_AND_STATE_OFFSET, bitSetAndState);
-        }
-
-        static long makeNewBitSetAndState(int allocCapacity, int segmentOrder) {
-            int extraAllocCapacity = allocCapacity - BASE_ALLOC_CAPACITY;
-            return EMPTY_BIT_SET |
-                    (((long) segmentOrder) << SEGMENT_ORDER_SHIFT) |
-                    (((long) extraAllocCapacity) << EXTRA_ALLOC_CAPACITY_SHIFT);
-        }
-
-        /**
-         * A privately populated segment has no deleted slots and the first {@code segmentSize}
-         * contiguous allocation slots are occupied.
-         */
-        static long makeBitSetAndStateForPrivatelyPopulatedSegment(int allocCapacity,
-                int segmentOrder, int segmentSize) {
-            long bitSet = ((EMPTY_BIT_SET << segmentSize) & EMPTY_BIT_SET);
-            int extraAllocCapacity = allocCapacity - BASE_ALLOC_CAPACITY;
-            return bitSet |
-                    (((long) segmentOrder) << SEGMENT_ORDER_SHIFT) |
-                    (((long) extraAllocCapacity) << EXTRA_ALLOC_CAPACITY_SHIFT);
-        }
-
-        static long incrementSegmentOrderAndZeroDeletedSlotCount(long bitSetAndState) {
-            return (bitSetAndState + SEGMENT_ORDER_UNIT) & NEGATIVE_DELETED_SLOT_COUNT_MASK;
-        }
-
-        static long makeBitSetAndStateWithNewAllocCapacity(
-                long bitSetAndState, int newAllocCapacity) {
-            long negativeExtraAllocCapacityMask =
-                    ~(((long) EXTRA_ALLOC_CAPACITY_MASK) << EXTRA_ALLOC_CAPACITY_SHIFT);
-            int newExtraAllocCapacity = newAllocCapacity - BASE_ALLOC_CAPACITY;
-            return (bitSetAndState & negativeExtraAllocCapacityMask) |
-                    (((long) newExtraAllocCapacity) << EXTRA_ALLOC_CAPACITY_SHIFT);
-        }
-
-        static long makeBitSetAndStateWithNewDeletedSlotCount(
-                long bitSetAndState, int newDeletedSlotCount) {
-            return (bitSetAndState & NEGATIVE_DELETED_SLOT_COUNT_MASK) |
-                    (((long) newDeletedSlotCount) << DELETED_SLOT_COUNT_SHIFT);
-        }
-
-        /**
-         * Returns a bitSetAndState that includes a full bit set, an extra alloc capacity of 0, the
-         * specified segment order and a deleted slot count equal to {@link
-         * #INFLATED_SEGMENT_DELETED_SLOT_COUNT}.
-         */
-        static long makeInflatedBitSetAndState(int segmentOrder) {
-            return (((long) INFLATED_SEGMENT_DELETED_SLOT_COUNT) << DELETED_SLOT_COUNT_SHIFT) |
-                    (((long) segmentOrder) << SEGMENT_ORDER_SHIFT);
-        }
-
-        static boolean isInflatedBitSetAndState(long bitSetAndState) {
-            long inflatedSegmentWithZeroOrder_bitSetAndState =
-                    ((long) INFLATED_SEGMENT_DELETED_SLOT_COUNT) << DELETED_SLOT_COUNT_SHIFT;
-            // Check that the deleted slot counts match.
-            return (bitSetAndState & inflatedSegmentWithZeroOrder_bitSetAndState) ==
-                    inflatedSegmentWithZeroOrder_bitSetAndState;
-        }
-
-        static long clearBitSetAndDeletedSlotCount(long bitSetAndState) {
-            bitSetAndState |= EMPTY_BIT_SET;
-            bitSetAndState &= ~(((long) DELETED_SLOT_COUNT_MASK) << DELETED_SLOT_COUNT_SHIFT);
-            return bitSetAndState;
-        }
-
-        /**
-         * Inverts the bitSet's bits so that set bits correspond to occupied slots (by default, it's
-         * vice versa in bitSetAndState, see the comment for {@link #EMPTY_BIT_SET}) to make it
-         * convenient for branchless iteration via {@link Long#numberOfLeadingZeros} or {@link
-         * Long#numberOfTrailingZeros}.
-         */
-        static long extractBitSetForIteration(long bitSetAndState) {
-            return (~bitSetAndState) & BIT_SET_MASK;
-        }
-
-        /**
-         * This method could return a value outside of the allowed range, if the segment is already
-         * full. The result must be checked for being less than {@link #allocCapacity}.
-         */
-        static int lowestFreeAllocIndex(long bitSetAndState) {
-            return Long.numberOfTrailingZeros(bitSetAndState);
-        }
-
-        static long clearAllocBit(long bitSetAndState, int allocIndex) {
-            return bitSetAndState | (1L << allocIndex);
-        }
-
-        static long updateDeletedSlotCountAndSetLowestAllocBit(long bitSetAndState,
-                int replacingEmptySlot) {
-            return (bitSetAndState & (bitSetAndState - 1)) +
-                    (DELETED_SLOT_COUNT_UNIT - DELETED_SLOT_COUNT_UNIT * (long) replacingEmptySlot);
-        }
-
-        static long setLowestAllocBit(long bitSetAndState) {
-            return bitSetAndState & (bitSetAndState - 1);
-        }
-
-        static int segmentSize(long bitSetAndState) {
-            // Using this form rather than Long.bitCount((~bitSetAndState) & BIT_SET_MASK), because
-            // segmentSize() method is typically used in other arithmetic operations and
-            // comparisons, so the `BIT_SET_BITS -` part could be applied by the compiler to some
-            // earlier computed expression, shortening the longest data dependency chain.
-            return BIT_SET_BITS - Long.bitCount(bitSetAndState & BIT_SET_MASK);
-        }
-
-        static boolean isEmpty(long bitSetAndState) {
-            return (bitSetAndState & BIT_SET_MASK) == EMPTY_BIT_SET;
-        }
-
-        static int segmentOrder(long bitSetAndState) {
-            return ((int) (bitSetAndState >>> SEGMENT_ORDER_SHIFT)) & SEGMENT_ORDER_MASK;
-        }
-
-        static int allocCapacity(long bitSetAndState) {
-            int extraAllocCapacity = ((int) (bitSetAndState >>> EXTRA_ALLOC_CAPACITY_SHIFT)) &
-                    EXTRA_ALLOC_CAPACITY_MASK;
-            return BASE_ALLOC_CAPACITY + extraAllocCapacity;
-        }
-
-        /**
-         * Computes `(allocCapacity(bitSetAndState) - 1) / 2` with the same complexity as {@link
-         * #allocCapacity} itself.
-         */
-        static int allocCapacityMinusOneHalved(long bitSetAndState) {
-            int extraAllocCapacityHalved =
-                    ((int) (bitSetAndState >>> (EXTRA_ALLOC_CAPACITY_SHIFT + 1)))
-                            & (EXTRA_ALLOC_CAPACITY_MASK >>> 1);
-            // For this method to return the correct value of `(allocCapacity(bitSetAndState) - 1) / 2`,
-            // BASE_ALLOC_CAPACITY should be odd.
-            return ((BASE_ALLOC_CAPACITY - 1) / 2) + extraAllocCapacityHalved;
-        }
-
-        static int deletedSlotCount(long bitSetAndState) {
-            return (int) (bitSetAndState >>> DELETED_SLOT_COUNT_SHIFT);
-        }
-
-        static long replaceBitSetAndStateWithBulkOperationPlaceholderOrThrowCme(Object segment) {
-            long bitSetAndState = getBitSetAndState(segment);
-            if (bitSetAndState == BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE) {
-                throw new ConcurrentModificationException();
-            }
-            setBitSetAndState(segment, BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE);
-            return bitSetAndState;
-        }
-
-        static void setBitSetAndStateAfterBulkOperation(Object segment, long newBitSetAndState) {
-            // This extra check doesn't guarantee anything because the update is not atomic, but it
-            // raises the chances of catching concurrent modification.
-            if (getBitSetAndState(segment) != BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE) {
-                throw new ConcurrentModificationException();
-            }
-            setBitSetAndState(segment, newBitSetAndState);
-        }
-
-        /** @deprecated in order not to forget to remove calls from production code */
-        @Deprecated
-        final DebugBitSetAndState debugBitSetAndState() {
-            return new DebugBitSetAndState(bitSetAndState);
-        }
-
-        /** A structure view on {@link #bitSetAndState} for debugging. */
-        static class DebugBitSetAndState {
-            final long bitSet;
-            final int size;
-            final int order;
-            final int allocCapacity;
-            final int deletedSlotCount;
-
-            DebugBitSetAndState(long bitSetAndState) {
-                bitSet = extractBitSetForIteration(bitSetAndState);
-                size = Long.bitCount(bitSet);
-                order = segmentOrder(bitSetAndState);
-                allocCapacity = allocCapacity(bitSetAndState);
-                deletedSlotCount = deletedSlotCount(bitSetAndState);
-            }
-        }
-    }
-
-    /**
-     * TODO describe what's implied by the comment to {@link #bitSetAndState}.
-     */
-    static class Segment<K, V> extends BitSetAndStateArea implements Cloneable {
-
-        /**
-         * If the number of non-empty (full or deleted) slots in a segment is about to exceed this
-         * threshold, {@link #dropDeletes} (if the number of deleted slots is greater or equal to
-         * {@link #SEGMENT_MIN_DELETED_SLOTS_FOR_DROP_DELETES}) or {@link #split} is initiated.
-         *
-         * There are three conflicting requirements affecting this constant and {@link
-         * #SEGMENT_MIN_DELETED_SLOTS_FOR_DROP_DELETES}:
-         *
-         *  - Max non-empty slots shouldn't be much greater than {@link
-         *    #SEGMENT_MAX_ALLOC_CAPACITY} (ideally should be equal to it), because the more
-         *    non-empty slots could be present in a hash table the longer probe chains could become,
-         *    that not only makes search slower for some keys, but could also reduce the quality of
-         *    branch prediction (e. g. [Quadratic probing] loops are expected to perform only one
-         *    iteration) for all SmoothieMaps, even those that don't have deleted slots at all.
-         *
-         *  - {@link #SEGMENT_MIN_DELETED_SLOTS_FOR_DROP_DELETES} shouldn't be too small,
-         *    because in the "insertions + deletions, steady net growth" case it leads to calling
-         *    {@link #dropDeletes} soon before a subsequent {@link #split}. The latter drops deleted
-         *    slots as a side effect too, repeating the work of the preceding {@link #dropDeletes}.
-         *
-         *  - SEGMENT_MAX_NON_EMPTY_SLOTS - {@link #SEGMENT_MIN_DELETED_SLOTS_FOR_DROP_DELETES}
-         *    (this constant means the maximum number of full slots for which segment splitting is
-         *    never initiated) shouldn't be much smaller than {@link #SEGMENT_MAX_ALLOC_CAPACITY},
-         *    because it leads to splitting a segment with too few entries, that reduces the memory
-         *    utilization (efficiency) of a SmoothieMap.
-         *
-         *    Also, bigger difference between SEGMENT_MAX_NON_EMPTY_SLOTS - {@link
-         *    #SEGMENT_MIN_DELETED_SLOTS_FOR_DROP_DELETES} and {@link #SEGMENT_MAX_ALLOC_CAPACITY}
-         *    reduces the statistical quality of hash code distribution analysis when segments are
-         *    split, see the comment for {@link
-         *    HashCodeDistribution#OUTLIER_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS
-         *    }, [Adding up to SEGMENT_MAX_ALLOC_CAPACITY entries] section.
-         *
-         * TODO experiment with these constants
-         */
-        static final int SEGMENT_MAX_NON_EMPTY_SLOTS = SEGMENT_MAX_ALLOC_CAPACITY + 2;
-
-        /** @see #SEGMENT_MAX_NON_EMPTY_SLOTS */
-        static final int SEGMENT_MIN_DELETED_SLOTS_FOR_DROP_DELETES = 5;
+    abstract static class Segment<K, V>
+            /* comment // if-elif Continuous|Interleaved segments templating: The following JPSG's
+            `if` looks like manual templating, but we don't want to add with Continuous|Inflated
+            segments in the header of SmoothieMap.java because there are many distinct references in
+            this class to both Continuous and Inflated segments and either one of them would be
+            corrupted by Continuous|Inflated segments templating. //*/
+            /* if Continuous segments */
+            extends ContinuousSegment_BitSetAndStateArea<K, V>
+            /* elif Interleaved segments //
+            extends InterleavedSegment_BitSetAndStateArea<K, V>
+            // endif */
+            implements Cloneable {
 
         /** TODO experiment with this constant */
         static final int MIN_LEFTOVER_ALLOC_CAPACITY_AFTER_SHRINKING = 4;
@@ -5107,330 +5136,55 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
          */
         static final int MIN_LEFTOVER_ALLOC_CAPACITY_AFTER_DEFLATION = 1;
 
-        /**
-         * EMPTY_CONTROL and {@link #DELETED_CONTROL} values are taken from hashbrown:
-         * https://github.com/Amanieu/hashbrown/blob/6b9cc4e01090553c5928ccc0ee4568319ee0ed33/
-         * src/raw/mod.rs#L46-L50
-         *
-         * It differs from raw_hash_set.h, because Segment doesn't need a "sentinel" value (see
-         * https://github.com/abseil/abseil-cpp/blob/3088e76c597e068479e82508b1770a7ad0c806b6/
-         * absl/container/internal/raw_hash_set.h#L292) for iteration. The sentinel value is only
-         * necessary in C++ due to how C++ iterators work, requiring the end() pointer. See
-         * https://github.com/Amanieu/hashbrown/issues/35#issuecomment-444684378 for more info.
-         */
-        static final @IntVal(0b1111_1111) byte EMPTY_CONTROL = -1;
-        static final @IntVal(0b1000_0000) byte DELETED_CONTROL = -128;
-        /**
-         * The value to fill control slots with in {@link InflatedSegment}'s in {@link
-         * HashTableArea}. See the Javadoc for {@link InflatedSegment} and
-         * [InflatedSegment checking after unsuccessful key search] for details.
-         */
-        static final int INFLATED_SEGMENT_MARKER_CONTROL = 0b1000_1000;
-
-        static final long MOST_SIGNIFICANT_BIT = 1L << 7;
-
-        /** {@link #EMPTY_CONTROL} repeated 8 times */
-        static final long EMPTY_CONTROLS_GROUP = -1L;
-
-        private static final long MOST_SIGNIFICANT_BYTE_BITS = 0x8080808080808080L;
-        private static final long LEAST_SIGNIFICANT_BYTE_BITS = 0x0101010101010101L;
-
-        /**
-         * A group of {@link #INFLATED_SEGMENT_MARKER_CONTROL} values to fill {@link
-         * InflatedSegment}'s control slots with.
-         */
-        @SuppressWarnings({"NumericOverflow", "ConstantOverflow"})
-        static final long INFLATED_SEGMENT_MARKER_CONTROLS_GROUP =
-                INFLATED_SEGMENT_MARKER_CONTROL * LEAST_SIGNIFICANT_BYTE_BITS;
-
-        static boolean isFirstSlotFull(long controlsGroup) {
-            return (controlsGroup & MOST_SIGNIFICANT_BIT) == 0;
-        }
-
-        /**
-         * For the technique, see:
-         * http://graphics.stanford.edu/~seander/bithacks.html##ValueInWord
-         * (Determine if a word has a byte equal to n).
-         *
-         * Caveat: there are false positives but:
-         * - they only occur if there is a real match
-         * - they never occur on {@link #EMPTY_CONTROL} or {@link #DELETED_CONTROL}
-         * - they will be handled gracefully by subsequent checks in code
-         *
-         * Example:
-         *   controlsGroup = 0x1716151413121110
-         *   hashControlBits = 0x12
-         *   return (x - LEAST_SIGNIFICANT_BYTE_BITS) & ~x & MOST_SIGNIFICANT_BYTE_BITS
-         *     = 0x0000000080800000
-         *
-         * This method is copied from https://github.com/abseil/abseil-cpp/blob/
-         * 3088e76c597e068479e82508b1770a7ad0c806b6/absl/container/internal/raw_hash_set.h#L428-L446
-         */
-        static long match(long controlsGroup, long hashControlBits) {
-            long x = controlsGroup ^ (LEAST_SIGNIFICANT_BYTE_BITS * hashControlBits);
-            return (x - LEAST_SIGNIFICANT_BYTE_BITS) & ~x & MOST_SIGNIFICANT_BYTE_BITS;
-        }
-
-        static long matchEmpty(long controlsGroup) {
-            // Matches when the two highest bits in a control byte are ones.
-            return (controlsGroup & (controlsGroup << 1)) & MOST_SIGNIFICANT_BYTE_BITS;
-        }
-
-        /**
-         * Matches deleted control slots. Doesn't consider the possibility that control slots may
-         * be {@link #INFLATED_SEGMENT_MARKER_CONTROL} (if they are, they are going to be matched
-         * too).
-         */
-        static long matchDeleted(long controlsGroup) {
-            // Matches when the highest bit is one and the 7th bit is 0.
-            // The alternative is (x ^ (~x << 1)) & MSB, but that seems to incur one more step in
-            // the longest data dependency chain (1 ~; 2 <<; 3 ^; 4 &) than the version below.
-            return (controlsGroup ^ (controlsGroup << 1)) &
-                    (controlsGroup & MOST_SIGNIFICANT_BYTE_BITS);
-        }
-
-        static long matchFull(long controlsGroup) {
-            // Matches when the highest bit in a byte is zero.
-            return (~controlsGroup) & MOST_SIGNIFICANT_BYTE_BITS;
-        }
-
-        static long matchFullOrDeleted(long controlsGroup) {
-            // Matches when there is a zero among two highest bits in a control byte: the highest
-            // bit for full slots, the second highest bit for deleted slots.
-            return (~controlsGroup | (~controlsGroup << 1)) & MOST_SIGNIFICANT_BYTE_BITS;
-        }
-
-        /**
-         * Matches empty or deleted control slots. Doesn't consider the possibility that control
-         * slots may be {@link #INFLATED_SEGMENT_MARKER_CONTROL} (if they are, they are going to be
-         * matched too).
-         */
-        static long matchEmptyOrDeleted(long controlsGroup) {
-            return controlsGroup & MOST_SIGNIFICANT_BYTE_BITS;
-        }
-
-        // TODO fix; find out why this method is needed in raw_hash_set.h
-        static int countLeadingEmptyOrDeleted(long controlsGroup) {
-            long gaps = 0x00FEFEFEFEFEFEFEL;
-            return (Long.numberOfTrailingZeros(((~controlsGroup & (controlsGroup >> 7)) | gaps) + 1) + 7)
-                    >> 3;
-        }
-
-        /**
-         * Performs the following transformation on all bytes in the controls group:
-         * {@link #DELETED_CONTROL} -> {@link #EMPTY_CONTROL}
-         * Neither {@link #EMPTY_CONTROL} nor {@link #DELETED_CONTROL}, i. e. a full slot ->
-         *   {@link #DELETED_CONTROL}.
-         *
-         * Doesn't consider the possibility that control slots may be {@link
-         * #INFLATED_SEGMENT_MARKER_CONTROL}. If they are, they are going to be converted to {@link
-         * #EMPTY_CONTROL}.
-         */
-        static long convertDeletedToEmptyAndFullToDeleted(long controlsGroup) {
-            // Map high bit = 1 (EMPTY_CONTROL or DELETED_CONTROL) to 1111_1111 (EMPTY_CONTROL)
-            // and high bit = 0 (a full slot) to 1000_0000 (DELETED_CONTROL)
-            long fullBitMask = (~controlsGroup) & MOST_SIGNIFICANT_BYTE_BITS;
-            return (~fullBitMask + (fullBitMask >>> 7));
-        }
-
-        static int lowestMatchIndex(int groupFirstSlotIndex, long groupBitMask) {
-            return addSlotIndex(groupFirstSlotIndex,
-                    // [Replacing division with shift]
-                    Long.numberOfTrailingZeros(groupBitMask) >>> BYTE_SIZE_DIVISION_SHIFT);
-        }
-
-        /**
-         * The second part of inlined {@link #lowestMatchIndex} method, see
-         * [Inlined lowestMatchIndex].
-         */
-        static int lowestMatchIndexFromTrailingZeros(int groupFirstSlotIndex, int trailingZeros) {
-            return addSlotIndex(groupFirstSlotIndex,
-                    // [Replacing division with shift]
-                    trailingZeros >>> BYTE_SIZE_DIVISION_SHIFT);
-        }
-
-        /**
-         * Determines whether the lowest empty or deleted slot in the controls group is empty (then
-         * returns 1), or deleted (then returns 0).
-         * @param trailingZeros the number of trailing zeros in a result of
-         *        {@link #matchEmptyOrDeleted} call. I. e. this argument must be equal to
-         *        Long.numberOfTrailingZeros(matchEmptyOrDeleted(controlsGroup)).
-         *
-         * @implNote implementation of this method exploits the fact that {@link #EMPTY_CONTROL}'s
-         * 7th bit is 1, and {@link #DELETED_CONTROL}'s 7th bit is 0. trailingZeros is the number of
-         * bits until the most significant bit of the corresponding matched control byte (see {@link
-         * #matchEmptyOrDeleted}), i. e. until the 7th bit.
-         */
-        static int extractMatchingEmpty(long controlsGroup, int trailingZeros) {
-            return (int) ((controlsGroup >>> (trailingZeros - 1)) & 1);
-        }
-
-        /**
-         * Shifts the data group to the right to make the data byte corresponding to the matched
-         * control byte the first byte in the data group.
-         * @param trailingZeros the number of trailing zeros in a result of any matching method,
-         *        like {@link #match}, {@link #matchDeleted}, etc. I. e. this argument must be equal
-         *        to Long.numberOfTrailingZeros(match*(controlsGroup)).
-         */
-        static long extractDataByte(long dataGroup, int trailingZeros) {
-            return dataGroup >>> (trailingZeros - (Byte.SIZE - 1));
-        }
-
-        /**
-         * Determines whether the lowest empty or deleted slot in the controls group is empty (then
-         * returns true), or deleted (then returns false).
-         *
-         * This method is equivalent to {@link #extractMatchingEmpty}, except that it returns a
-         * boolean result instead of 1/0 integer.
-         *
-         * @param trailingZeros the number of trailing zeros in a result of
-         *        {@link #matchEmptyOrDeleted} call. I. e. this argument must be equal to
-         *        Long.numberOfTrailingZeros(matchEmptyOrDeleted(controlsGroup)).
-         */
-        static boolean isMatchingEmpty(long controlsGroup, int trailingZeros) {
-            return ((controlsGroup >>> (trailingZeros - 1)) & 1) != 0;
-        }
-
-        /**
-         * If the given `deleted` is 1 returns {@link #DELETED_CONTROL}, if the given `deleted` is 0
-         * returns {@link #EMPTY_CONTROL}.
-         */
-        static int branchlessDeletedOrEmpty(int deleted) {
-            return EMPTY_CONTROL - ((EMPTY_CONTROL - DELETED_CONTROL) * deleted);
-        }
-
-        /** = numberOfTrailingZeros({@link #HASH_TABLE_SLOTS}). */
+        /** = numberOfTrailingZeros({@link HashTable#HASH_TABLE_SLOTS}). */
         @CompileTimeConstant
         static final int LOG_HASH_TABLE_SIZE = 6;
-        static final int HASH_CONTROL_BITS = 7;
-        private static final long HASH_CONTROL_BIT_MASK = (1 << HASH_CONTROL_BITS) - 1;
-        private static final int ALLOC_INDEX_DATA_BITS = 6;
-        private static final int ALLOC_INDEX_DATA_MASK = (1 << ALLOC_INDEX_DATA_BITS) - 1;
-        static final int HASH_DATA_BITS = Byte.SIZE - ALLOC_INDEX_DATA_BITS;
-        private static final int HASH_DATA_BITS_MASK =
-                ((1 << HASH_DATA_BITS) - 1) << ALLOC_INDEX_DATA_BITS;
-        private static final int HASH_DATA_SHIFT_IN_DATA_BYTE = ALLOC_INDEX_DATA_BITS;
-        private static final int HASH_DATA_BITS_SHIFT_FOR_KEY_HASH =
-                HASH_CONTROL_BITS - ALLOC_INDEX_DATA_BITS;
+        /** = numberOfTrailingZeros({@link HashTable#HASH_TABLE_GROUPS}). */
+        @CompileTimeConstant
+        static final int HASH__BASE_GROUP_INDEX_BITS = 3;
+        static final int TAG_HASH_BITS = 8;
+        private static final long TAG_HASH_BIT_MASK = (1 << TAG_HASH_BITS) - 1;
 
         static {
-            assertThat(LOG_HASH_TABLE_SIZE == Integer.numberOfTrailingZeros(HASH_TABLE_SLOTS));
-            assertThat(SLOT_MASK == (1 << LOG_HASH_TABLE_SIZE) - 1);
-            assertThat(HASH_DATA_BITS_MASK == 0b1100_0000);
-            assertThat(HASH_DATA_BITS_SHIFT_FOR_KEY_HASH == 1);
+            verifyEqual(LOG_HASH_TABLE_SIZE, numberOfTrailingZeros(HASH_TABLE_SLOTS));
+            verifyEqual(HASH__BASE_GROUP_INDEX_BITS, numberOfTrailingZeros(HASH_TABLE_GROUPS));
         }
 
-        static long clearLowestSetBit(long bitMask) {
-            return bitMask & (bitMask - 1);
+        static long tagBits(long hash) {
+            return (hash >> HASH__BASE_GROUP_INDEX_BITS) & TAG_HASH_BIT_MASK;
         }
 
-        static int slotIndex(long hash) {
-            return ((int) hash) & SLOT_MASK;
-        }
-
-        static int addSlotIndex(int slotIndex, int addition) {
-            return (slotIndex + addition) & SLOT_MASK;
-        }
-
-        static long hashControlBits(long hash) {
-            return (hash >> LOG_HASH_TABLE_SIZE) & HASH_CONTROL_BIT_MASK;
-        }
-
-        static boolean matchHashDataBits(int data, long hash) {
-            return ((data ^ ((int) (hash >> HASH_DATA_BITS_SHIFT_FOR_KEY_HASH))) &
-                    HASH_DATA_BITS_MASK) == 0;
-        }
-
-        static int debugExtractHashDataBits(int data) {
-            return (data & HASH_DATA_BITS_MASK) >> HASH_DATA_SHIFT_IN_DATA_BYTE;
-        }
-
-        static byte makeData(int allocIndex, long hash) {
-            int hashPart =
-                    ((int) (hash >> HASH_DATA_BITS_SHIFT_FOR_KEY_HASH)) & HASH_DATA_BITS_MASK;
-            return (byte) (hashPart | allocIndex);
-        }
-
-        /**
-         * @param data an int value containing the data byte in its lower 8 bits. Higher bits may
-         *        contain garbage.
-         */
-        static byte changeAllocIndexInData(int data, int newAllocIndex) {
-            return (byte) ((data & HASH_DATA_BITS_MASK) | newAllocIndex);
-        }
-
-        /**
-         * @param data an int value containing the data byte in its lower 8 bits. Higher bits may
-         *        contain garbage.
-         */
-        static int allocIndex(int data) {
-            return data & ALLOC_INDEX_DATA_MASK;
-        }
-
-        static <K, V> Segment<K, V> allocateSegment(int allocCapacity) {
-            Class<? extends Segment<K, V>> c = acquireClass(allocCapacity);
-            try {
-                @SuppressWarnings("unchecked")
-                Segment<K, V> segment = (Segment<K, V>) U.allocateInstance(c);
-                return segment;
-            } catch (InstantiationException e) {
-                throw new AssertionError(e);
-            }
-        }
-
-        static <K, V> Segment<K, V> allocateNewSegmentAndSetEmptyControls(int allocCapacity) {
-            Segment<K, V> segment = allocateSegment(allocCapacity);
-            segment.setAllControlSlotsFromGroup(EMPTY_CONTROLS_GROUP);
-            return segment;
-        }
-
-        static <K, V> Segment<K, V> createNewSegment(int allocCapacity, int segmentOrder) {
-            Segment<K, V> segment = allocateNewSegmentAndSetEmptyControls(allocCapacity);
-            segment.bitSetAndState = makeNewBitSetAndState(allocCapacity, segmentOrder);
-            // Safe segment publication: ensure racy readers always see correctly initialized
-            // bitSetAndState. It's hard to prove that no races are possible that could lead to
-            // a JVM crash or memory corruption due to access to an alloc index beyond the alloc
-            // capacity of the segment, especially considering the possibility of non-atomic
-            // bitSetAndState access on 32-bit platforms.
-            U.storeFence();
-            return segment;
-        }
-
-        /**
-         * This constructor must not be used. {@link #createNewSegment(int, int)} should be used
-         * instead to obtain a Segment instance. This constructor is not annotated @Deprecated
-         * because that makes all implicit no-arg constructors in classes {@link Segment17} through
-         * {@link Segment48} to appear to use a deprecated member, and thus generate compiler
-         * warnings.
-         */
-        Segment() {
-        }
-
-        static <K> K readKey(Object segment, @NonNegative int allocIndex) {
-            /* if Enabled extraChecks */assertNonNullSegment(segment);/* endif */
+        static <K> K readKeyAtOffset(Object segment, long allocOffset) {
+            /* if Enabled extraChecks */assert segment != null;/* endif */
             //noinspection unchecked
-            K key = (K) U.getObject(segment, allocKeyOffset(allocIndex));
+            K key = (K) U.getObject(segment, allocOffset);
+            /* if Enabled extraConcurrencyChecks */
+            // Protecting null comparisons: comparisons of objects with nulls leads to access into
+            // object's memory at least with some GC algorithms on Hotspot, which is wasteful if
+            // the queried key is the same object as stored inside the SmoothieMap.
+            // TODO research with which GCs this is the case
             if (key == null) {
                 throw new ConcurrentModificationException();
             }
+            /* endif */
             return key;
         }
 
         /**
-         * This method is called from iterators (either directly, or via {@link #readKeyChecked} or
-         * {@link #readValueChecked}) where there is no guarantee that the allocIndex belongs to the
-         * provided segment object because of potential racy concurrent method calls on the Iterator
-         * object itself. allocIndex may be equal to {@link #SEGMENT_MAX_ALLOC_CAPACITY} - 1, from
-         * some segment and the segment provided may be a segment with {@link
-         * #SEGMENT_INTERMEDIATE_ALLOC_CAPACITY} which follows the full-capacity to which the
-         * allocIndex really belongs.
+         * This method is called from iterators (either directly, or via {@link
+         * #readKeyCheckedAtIndex} or {@link #readValueCheckedAtIndex}) where there is no guarantee
+         * that the allocIndex belongs to the provided segment object because of potential racy
+         * concurrent method calls on the Iterator object itself. allocIndex may be equal to {@link
+         * #SEGMENT_MAX_ALLOC_CAPACITY} - 1 (in some segment) and the segment provided may be a
+         * segment with {@link #SEGMENT_INTERMEDIATE_ALLOC_CAPACITY} which follows the full-capacity
+         * to which the allocIndex really belongs.
          *
          * To avoid memory corruption or segmentation faults, we must read the segment's {@link
-         * #allocCapacity} and compare to the allocIndex, similar to what JVM does during normal
-         * array accesses. We also check that the segment object is not null because if the Iterator
-         * object is created in one thread and {@link ImmutableKeyIterator#next()} is called from
-         * another thread {@link ImmutableSmoothieIterator#currentSegment} might not be visible and
-         * null is read from this field and passed into readKeyAllocCapacityChecked().
+         * BitSetAndState#allocCapacity} and compare to the allocIndex, similar to what JVM does
+         * during normal array accesses. We also check that the segment object is not null because
+         * if the Iterator object is created in one thread and {@link ImmutableKeyIterator#next()}
+         * is called from another thread {@link ImmutableSmoothieIterator#currentSegment} might not
+         * be visible and null is read from this field and passed into readKeyCheckedAtIndex().
          *
          * The alternative to doing the extra checks (which requires extra reading of {@link
          * #bitSetAndState} on every iteration) is to store a "SegmentIteration" object with
@@ -5443,330 +5197,132 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
          * extra writes, and extra allocations (both {@link AmortizedPerSegment}).
          * TODO compare the approaches (low-priority because unlikely to be fruitful)
          */
-        static void checkAllocIndex(Object segment, @NonNegative int allocIndex) {
+        static void checkAllocIndex(Object segment, @NonNegative long allocIndex) {
             if (segment == null) {
                 throw new ConcurrentModificationException();
             }
             long bitSetAndState = getBitSetAndState(segment);
             int allocCapacity = allocCapacity(bitSetAndState);
-            if (allocIndex >= allocCapacity) {
+            if (allocIndex >= (long) allocCapacity) {
                 throw new ConcurrentModificationException();
             }
         }
 
-        static <K> K readKeyChecked(Object segment, @NonNegative int allocIndex) {
+        static <K> K readKeyCheckedAtIndex(Object segment, @NonNegative long allocIndex) {
             checkAllocIndex(segment, allocIndex);
             //noinspection unchecked
-            K key = (K) U.getObject(segment, allocKeyOffset(allocIndex));
+            K key = (K) U.getObject(segment, allocOffset(allocIndex));
+            /* if Enabled extraConcurrencyChecks */
+            // [Protecting null comparisons]
             if (key == null) {
                 // Concurrent segment modification or an inflated segment: key may be null not only
                 // because of concurrent modification (entry deletion) in the segment, but also
                 // because the segment provided is in fact an InflatedSegment which has nulls at all
-                // alloc indexes. The Javadoc comment for this method explains how a wrong segment
-                // object may be passed into this method.
+                // alloc indexes. The Javadoc comment for checkAllocIndex() explains how a wrong
+                // segment object may be passed into this method.
                 throw new ConcurrentModificationException();
             }
+            /* endif */
             return key;
         }
 
-        static <V> V readValue(Object segment, @NonNegative int allocIndex) {
-            /* if Enabled extraChecks */assertNonNullSegment(segment);/* endif */
+        static <V> V readValueAtOffset(Object segment, long allocOffset) {
+            /* if Enabled extraChecks */assert segment != null;/* endif */
             //noinspection unchecked
-            V value = (V) U.getObject(segment, allocValueOffset(allocIndex));
+            V value = (V) U.getObject(segment, valueOffsetFromAllocOffset(allocOffset));
+            /* if Enabled extraConcurrencyChecks */
+            // [Protecting null comparisons]
             if (value == null) {
                 throw new ConcurrentModificationException();
             }
+            /* endif */
             return value;
         }
 
-        static <V> V readValueChecked(Object segment, @NonNegative int allocIndex) {
+        static <V> V readValueCheckedAtIndex(Object segment, @NonNegative long allocIndex) {
             checkAllocIndex(segment, allocIndex);
             //noinspection unchecked
-            V value = (V) U.getObject(segment, allocValueOffset(allocIndex));
+            V value = (V) U.getObject(segment, valueOffsetFromAllocOffset(allocOffset(allocIndex)));
+            /* if Enabled extraConcurrencyChecks */
+            // [Protecting null comparisons]
             if (value == null) {
                 // [Concurrent segment modification or an inflated segment]
                 throw new ConcurrentModificationException();
             }
+            /* endif */
             return value;
         }
-
-        static void writeKey(Object segment, int allocIndex, Object key) {
-            /* if Enabled extraChecks */assertNonNullSegment(segment);/* endif */
-            U.putObject(segment, allocKeyOffset(allocIndex), key);
+        static void writeValueAtOffset(Object segment, long allocOffset, Object value) {
+            /* if Enabled extraChecks */assert segment != null;/* endif */
+            U.putObject(segment, valueOffsetFromAllocOffset(allocOffset), value);
         }
 
-        static void writeValue(Object segment, int allocIndex, Object value) {
-            /* if Enabled extraChecks */assertNonNullSegment(segment);/* endif */
-            U.putObject(segment, allocValueOffset(allocIndex), value);
+        /**
+         * Generalized version of {@link
+         * InterleavedSegments.FullCapacitySegment#writeKeyAndValueAtIndex} and {@link
+         * InterleavedSegments.IntermediateCapacitySegment#writeKeyAndValueAtIndex}.
+         */
+        static void writeKeyAndValueAtIndex(Object segment,
+                /* if Interleaved segments Supported intermediateSegments */
+                long isFullCapacitySegment,/* endif */
+                int allocIndex, Object key, Object value) {
+            /* if Enabled extraChecks */assert segment != null;/* endif */
+            long allocOffset = allocOffset((long) allocIndex
+                    /* if Interleaved segments Supported intermediateSegments */
+                    , isFullCapacitySegment/* endif */);
+            U.putObject(segment, allocOffset, key);
+            U.putObject(segment, valueOffsetFromAllocOffset(allocOffset), value);
         }
 
-        static void eraseKeyAndValue(Object segment, int allocIndex) {
-            /* if Enabled extraChecks */assertNonNullSegment(segment);/* endif */
-            long keyOffset = allocKeyOffset(allocIndex);
-            long valueOffset = keyOffset + ARRAY_OBJECT_INDEX_SCALE_AS_LONG;
-            U.putObject(segment, keyOffset, null);
-            U.putObject(segment, valueOffset, null);
-        }
-
-        static <K, V> void writeEntry(Object segment, K key, long hash, V value, int slotIndex,
+        /**
+         * This method is kept separate from {@link #writeKeyAndValueAtIndex} because with some GC
+         * algorithms more optimal code may be emitted when writing nulls that any object (null or
+         * non-null). Also it's semantically clearer and has a better name.
+         */
+        static void eraseKeyAndValueAtIndex(Object segment,
+                /* if Interleaved segments Supported intermediateSegments */
+                long isFullCapacitySegment,/* endif */
                 int allocIndex) {
-            writeControlByte(segment, (long) slotIndex, (byte) hashControlBits(hash));
-            writeData(segment, (long) slotIndex, makeData(allocIndex, hash));
-            writeKey(segment, allocIndex, key);
-            writeValue(segment, allocIndex, value);
+            long allocOffset = allocOffset((long) allocIndex
+                    /* if Interleaved segments Supported intermediateSegments */
+                    , isFullCapacitySegment/* endif */);
+            eraseKeyAndValueAtOffset(segment, allocOffset);
+        }
+
+        static void eraseKeyAndValueAtOffset(Object segment, long allocOffset) {
+            /* if Enabled extraChecks */assert segment != null;/* endif */
+            U.putObject(segment, allocOffset, null);
+            U.putObject(segment, valueOffsetFromAllocOffset(allocOffset), null);
+        }
+
+        /**
+         * Generalized version of {@link
+         * InterleavedSegments.FullCapacitySegment#writeEntry(Object, Object, byte, Object, long, long, int, int)}.
+         */
+        static <K, V> void writeEntry(Object segment,
+                /* if Interleaved segments Supported intermediateSegments */
+                long isFullCapacitySegment,/* endif */
+                K key, byte tag, V value, long groupIndex, long dataGroup, int slotIndexWithinGroup,
+                int allocIndex) {
+            writeTagAndData(segment,
+                    /* if Interleaved segments Supported intermediateSegments */
+                    isFullCapacitySegment,/* endif */
+                    groupIndex, slotIndexWithinGroup, tag, makeData(dataGroup, allocIndex));
+            writeKeyAndValueAtIndex(segment,
+                    /* if Interleaved segments Supported intermediateSegments */
+                    isFullCapacitySegment,/* endif */
+                    allocIndex, key, value);
         }
 
         //region Segment's internal bulk operations
 
-        final void setAllControlSlotsFromGroup(long controlsGroup) {
-            // Looping manually instead of using Unsafe.setMemory() because Unsafe prohibits calling
-            // setMemory() with non-array objects since Java 9.
-            // Int-indexed loop to avoid a safepoint poll:
-            // see http://psy-lob-saw.blogspot.com/2016/02/wait-for-it-counteduncounted-loops.html
-            for (int offset = CONTROLS_OFFSET_AS_INT,
-                 limit = CONTROLS_OFFSET_AS_INT + HASH_TABLE_SLOTS + CLONED_CONTROL_SLOTS;
-                 offset < limit;
-                 offset += Long.BYTES) {
-                U.putLong(this, (long) offset, controlsGroup);
-            }
-        }
+        @RarelyCalledAmortizedPerSegment
+        abstract void copyEntriesDuringInflate(
+                SmoothieMap<K, V> map, InflatedSegment<K, V> intoSegment);
 
-        @AmortizedPerSegment
-        void copyHashTableFrom(Object oldSegment) {
-            /* if Enabled extraChecks */assertNonNullSegment(oldSegment);/* endif */
-            // Looping manually instead of using Unsafe.copyMemory() because Unsafe prohibits
-            // calling copyMemory() with non-array objects since Java 9.
-            // [Int-indexed loop to avoid a safepoint poll]
-            for (int offset = CONTROLS_OFFSET_AS_INT,
-                 limit = CONTROLS_OFFSET_AS_INT + TOTAL_HASH_TABLE_BYTES;
-                 offset < limit;
-                 offset += Long.BYTES) {
-                long offsetAsLong = (long) offset;
-                U.putLong(this, offsetAsLong, U.getLong(oldSegment, offsetAsLong));
-            }
-        }
+        abstract void setAllDataGroups(long dataGroup);
 
-        void copyAllocAreaFrom(Object oldSegment, int oldSegmentCapacity) {
-            /* if Enabled extraChecks */assertNonNullSegment(oldSegment);/* endif */
-            for (int allocIndex = 0; allocIndex < oldSegmentCapacity; allocIndex++) {
-                long keyOffset = allocKeyOffset(allocIndex);
-                long valueOffset = keyOffset + ARRAY_OBJECT_INDEX_SCALE_AS_LONG;
-                // Raw key and value objects copy: not using readKey() and readValue() for
-                // performance and because they check the objects for not being nulls, however in
-                // this loop we may copy nulls in some slots. Not checking for that to make the
-                // iteration branchless and streamlined.
-                // TODO some GCs may in fact do nullness checks themselves on putObject(). If they
-                //  also have write barriers for writing nulls, it might be better to have explicit
-                //  nullness checks and not copy nulls to `this` segment. We know that object slots
-                //  at `this` segment are all nulls before this loop; the GC might not know that
-                //  and prepare for the worse (that the slots may contain non-null objects) or make
-                //  such checks before the writes.
-                U.putObject(this, keyOffset, U.getObject(oldSegment, keyOffset));
-                U.putObject(this, valueOffset, U.getObject(oldSegment, valueOffset));
-            }
-        }
-
-        @AmortizedPerSegment
-        static void swapHashTables(Object segmentOne, Object segmentTwo) {
-            /* if Enabled extraChecks */
-            assertNonNullSegment(segmentOne);
-            assertNonNullSegment(segmentTwo);
-            /* endif */
-            // [Int-indexed loop to avoid a safepoint poll]
-            for (int offset = CONTROLS_OFFSET_AS_INT,
-                 limit = CONTROLS_OFFSET_AS_INT + TOTAL_HASH_TABLE_BYTES;
-                 offset < limit; offset += Long.BYTES) {
-                long offsetAsLong = (long) offset;
-                long hashTableWordOne = U.getLong(segmentOne, offsetAsLong);
-                long hashTableWordTwo = U.getLong(segmentTwo, offsetAsLong);
-                U.putLong(segmentOne, offsetAsLong, hashTableWordTwo);
-                U.putLong(segmentTwo, offsetAsLong, hashTableWordOne);
-            }
-        }
-
-        @AmortizedPerSegment
-        static void covertAllDeletedToEmptyAndFullToDeletedControlSlots(Object segment) {
-            /* if Enabled extraChecks */assertNonNullSegment(segment);/* endif */
-            // Alternative to converting the cloned group just like other groups is actually cloning
-            // the first group after the conversion. TODO compare the approaches
-            // [Int-indexed loop to avoid a safepoint poll]
-            for (int offset = CONTROLS_OFFSET_AS_INT,
-                 limit = CONTROLS_OFFSET_AS_INT + HASH_TABLE_SLOTS + CLONED_CONTROL_SLOTS;
-                 offset < limit;
-                 offset += Long.BYTES) {
-                long controlsGroup = U.getLong(segment, (long) offset);
-                long convertedControlsGroup = convertDeletedToEmptyAndFullToDeleted(controlsGroup);
-                U.putLong(segment, (long) offset, convertedControlsGroup);
-            }
-        }
-
-        /**
-         * Returns the nonFullSegment_bitSetAndState with an updated bit set: allocations are moved
-         * around in this method, so the allocation index mapping might change. Also, sets
-         * allocCapacity encoded in nonFullSegment_bitSetAndState to fullSegment_allocCapacity.
-         *
-         * BitSetAndState's fields other than the bit set (see {@link
-         * BitSetAndStateArea#bitSetAndState}) of the nonFullSegment_bitSetAndState given into this
-         * method are not reliable and must not be used.
-         *
-         * This method must only be called in the context of {@link #split} because it may call to
-         * {@link #compactEntriesDuringSplit} which should always be called in the context of {@link
-         * #split}. See the comment for {@link #compactEntriesDuringSplit}.
-         */
-        @AmortizedPerSegment
-        static long swapHashTablesAndAllocAreasDuringSplit(Object nonFullSegment,
-                int nonFullSegment_allocCapacity, long nonFullSegment_bitSetAndState,
-                Object fullSegment, int fullSegment_allocCapacity) {
-            // Compacting entries of nonFullSegment if needed to be able to swap allocation areas.
-            // This must be done before swapping the hash tables, because
-            // compactEntriesDuringSplit() updates some data slots of nonFullSegment.
-            if (fullSegment_allocCapacity < nonFullSegment_allocCapacity) { // Likelihood - ???
-                nonFullSegment_bitSetAndState = compactEntriesDuringSplit(nonFullSegment,
-                        nonFullSegment_allocCapacity, nonFullSegment_bitSetAndState,
-                        fullSegment_allocCapacity);
-            }
-
-            if (fullSegment_allocCapacity > nonFullSegment_allocCapacity) { // Unlikely branch
-                // Cannot swap; should not happen
-                throw new AssertionError();
-            }
-
-            swapHashTables(nonFullSegment, fullSegment);
-
-            // Swapping allocation areas.
-            for (int allocIndex = 0; allocIndex < fullSegment_allocCapacity; allocIndex++) {
-                long keyOffset = allocKeyOffset(allocIndex);
-                long valueOffset = keyOffset + ARRAY_OBJECT_INDEX_SCALE_AS_LONG;
-
-                // TODO [Raw key and value objects copy]
-                Object k1 = U.getObject(fullSegment, keyOffset);
-                Object v1 = U.getObject(fullSegment, valueOffset);
-
-                Object k2 = U.getObject(nonFullSegment, keyOffset);
-                Object v2 = U.getObject(nonFullSegment, valueOffset);
-
-                U.putObject(nonFullSegment, keyOffset, k1);
-                U.putObject(nonFullSegment, valueOffset, v1);
-
-                U.putObject(fullSegment, keyOffset, k2);
-                U.putObject(fullSegment, valueOffset, v2);
-            }
-
-            return makeBitSetAndStateWithNewAllocCapacity(
-                    nonFullSegment_bitSetAndState, fullSegment_allocCapacity);
-        }
-
-        /**
-         * "Defragment" entries so that all entries that are stored at alloc indexes equal to and
-         * beyond fitInAllocCapacity are moved to smaller alloc indexes.
-         *
-         * Must be called only in the context of {@link #split}, because it assumes that deleted
-         * control slots are in fact former full, and there are no "true" deleted control slots,
-         * i. e. that the segment is in the process of split[fromSegment iteration] after calling
-         * to {@link #covertAllDeletedToEmptyAndFullToDeletedControlSlots}.
-         *
-         * @return an updated bitSetAndState
-         */
-        @AmortizedPerSegment
-        private static long compactEntriesDuringSplit(Object segment, int allocCapacity,
-                long bitSetAndState, int fitInAllocCapacity) {
-            /* if Enabled extraChecks */assertNonNullSegment(segment);/* endif */
-            int segmentSize = segmentSize(bitSetAndState);
-            if (segmentSize > fitInAllocCapacity) {
-                throw new ConcurrentModificationException();
-            }
-            if (fitInAllocCapacity >= allocCapacity) {
-                // compactEntriesDuringSplit() method must not be called if it's not needed anyway.
-                throw new AssertionError();
-            }
-
-            // Branchless hash table iteration:
-            // Using bitMask-style loop to go over all full or deleted slots in the group.
-            // The alternative approach is to iterate over each byte in separation. It's hard to say
-            // which approach approach is better without benchmarking. The bitMask approach is
-            // branchless, but it incurs more arithmetic operations and a (relatively expensive?)
-            // numberOfTrailingZeros() call. Simpler [Byte-by-byte hash table iteration] has an
-            // extra branch but it would be relatively well predicated here because 23-28% of slots
-            // (more specifically, between SEGMENT_MAX_NON_EMPTY_SLOTS -
-            // SEGMENT_MIN_DELETED_SLOTS_FOR_DROP_DELETES - SEGMENT_INTERMEDIATE_ALLOC_CAPACITY = 15
-            // and SEGMENT_MAX_ALLOC_CAPACITY - SEGMENT_INTERMEDIATE_ALLOC_CAPACITY = 18 slots out
-            // of 64) should be matched.
-            // TODO compare the approaches
-            // See also [Branchless entries iteration].
-            //
-            // This two-level hash table iteration loop is the same as in Segment.removeIf().
-            // Modifications to these instances of the loop must be done simultaneously.
-            // [Int-indexed loop to avoid a safepoint poll]
-            for (int iterationGroupFirstSlotIndex = 0;
-                 iterationGroupFirstSlotIndex < HASH_TABLE_SLOTS;
-                 iterationGroupFirstSlotIndex += GROUP_SLOTS) {
-
-                long controlsGroup =
-                        readControlsGroup(segment, (long) iterationGroupFirstSlotIndex);
-                long dataGroup = readDataGroup(segment, (long) iterationGroupFirstSlotIndex);
-
-                // matchFullOrDeleted() because the segment is in the process of
-                // split[fromSegment iteration] after calling to
-                // covertAllDeletedToEmptyAndFullToDeletedControlSlots(). Both full and deleted
-                // slots are mapping to full data slots. split[fromSegment iteration] may also be
-                // already completed, then there are only full control slots that are matched.
-                for (long bitMask = matchFullOrDeleted(controlsGroup);
-                     bitMask != 0L;
-                     bitMask = clearLowestSetBit(bitMask)) {
-
-                    int slotIndex;
-                    int dataByte;
-                    { // [Inlined lowestMatchIndex]
-                        int trailingZeros = Long.numberOfTrailingZeros(bitMask);
-                        // TODO lowestMatchIndexFromTrailingZeros() makes & SLOT_MASK, maybe this is
-                        //  unnecessary in the context of this loop?
-                        slotIndex = lowestMatchIndexFromTrailingZeros(
-                                iterationGroupFirstSlotIndex, trailingZeros);
-                        // Pseudo dataByte: `(int) extractDataByte(dataGroup, trailingZeros)`
-                        // doesn't actually represent just a data byte because it may contain other
-                        // data bytes in bits 8-31, but it doesn't matter because dataByte is only
-                        // used as an argument for allocIndex() and changeAllocIndexInData() which
-                        // care only about the lowest 8 bits.
-                        dataByte = (int) extractDataByte(dataGroup, trailingZeros);
-                    }
-
-                    int allocIndex = allocIndex(dataByte);
-                    if (allocIndex < fitInAllocCapacity) { // [Positive likely branch]
-                        continue;
-                    }
-
-                    // ### Moving the entry at allocIndex to a smaller index.
-                    int newAllocIndex = lowestFreeAllocIndex(bitSetAndState);
-                    // Transitively checks that newAllocIndex < allocCapacity as required by
-                    // lowestFreeAllocIndex(), because it's ensured that fitInAllocCapacity is less
-                    // than allocCapacity in a guard condition above.
-                    if (newAllocIndex >= fitInAllocCapacity) {
-                        // Can happen if entries are inserted into the segment concurrently with
-                        // split(), including concurrently with this method which is called from
-                        // swapHashTablesAndAllocAreasDuringSplit() which is called from split().
-                        throw new ConcurrentModificationException();
-                    }
-                    // First calling setLowestAllocBit() and then clearAllocBit() leads to less
-                    // data dependencies than if these methods were called in the reverse order.
-                    bitSetAndState = clearAllocBit(setLowestAllocBit(bitSetAndState), allocIndex);
-
-                    Object key = readKey(segment, allocIndex);
-                    Object value = readValue(segment, allocIndex);
-
-                    eraseKeyAndValue(segment, allocIndex);
-
-                    writeKey(segment, newAllocIndex, key);
-                    writeValue(segment, newAllocIndex, value);
-
-                    // Alternative is to update a long word and write it out after the inner
-                    // loop if diverges from originalDataGroup. But that's more complicated.
-                    // TODO compare approaches
-                    writeData(segment, (long) slotIndex,
-                            changeAllocIndexInData(dataByte, newAllocIndex));
-                }
-            }
-            return bitSetAndState;
-        }
+        abstract void clearHashTableAndAllocArea();
 
         //endregion
 
@@ -5793,19 +5349,11 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             long bitSetAndState = this.bitSetAndState;
             int segmentSize = segmentSize(bitSetAndState);
             if (segmentSize > 0) { // [Positive likely branch]
-                setAllControlSlotsFromGroup(EMPTY_CONTROLS_GROUP);
-                // Leaving garbage in data slots.
-
                 map.size -= (long) segmentSize;
                 map.modCount++;
-                int allocCapacity = allocCapacity(bitSetAndState);
-                for (int allocIndex = 0; allocIndex < allocCapacity; allocIndex++) {
-                    long keyOffset = allocKeyOffset(allocIndex);
-                    long valueOffset = keyOffset + ARRAY_OBJECT_INDEX_SCALE_AS_LONG;
-                    U.putObject(this, keyOffset, null);
-                    U.putObject(this, valueOffset, null);
-                }
-                this.bitSetAndState = clearBitSetAndDeletedSlotCount(bitSetAndState);
+                clearHashTableAndAllocArea();
+                this.bitSetAndState = clearBitSet(bitSetAndState);
+                clearOutboundOverflowCountsPerGroup();
                 return true;
             } else {
                 return false;
@@ -5820,6 +5368,12 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             throw new UnsupportedOperationException();
         }
 
+        /* if !(Interleaved segments Supported intermediateSegments) */
+        /**
+         * Mirror of {@link InterleavedSegments.FullCapacitySegment#hashCode(SmoothieMap)} and
+         * {@link InterleavedSegments.IntermediateCapacitySegment#hashCode(SmoothieMap)}.
+         */
+        @Override
         int hashCode(SmoothieMap<K, V> map) {
             int h = 0;
             long bitSet = extractBitSetForIteration(bitSetAndState);
@@ -5831,12 +5385,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             // numberOfLeadingZeros() in the CPU pipeline, so the tradeoff should be evaluated
             // separately from iterators. TODO compare the approaches
             // 2. [Backward entries iteration]
+            // 3. [Int-indexed loop to avoid a safepoint poll].
+            // TODO check that Hotspot actually removes a safepoint poll for this unusual loop shape
             for (int iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1,
                  iterAllocIndex = Long.SIZE;
                  (iterAllocIndex -= iterAllocIndexStep) >= 0;) {
-
-                K key = readKey(this, iterAllocIndex);
-                V value = readValue(this, iterAllocIndex);
+                long iterAllocOffset = allocOffset((long) iterAllocIndex);
+                K key = readKeyAtOffset(this, iterAllocOffset);
+                V value = readValueAtOffset(this, iterAllocOffset);
 
                 // TODO check what is better - these two statements before or after
                 //  the hash code computation, or one before and one after, or both after?
@@ -5847,16 +5403,23 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             }
             return h;
         }
+        /* endif */
 
+        /* if !(Interleaved segments Supported intermediateSegments) */
+        /**
+         * Mirror of {@link InterleavedSegments.FullCapacitySegment#forEach} and
+         * {@link InterleavedSegments.IntermediateCapacitySegment#forEach}.
+         */
+        @Override
         void forEach(BiConsumer<? super K, ? super V> action) {
             long bitSet = extractBitSetForIteration(bitSetAndState);
             // [Iteration in bulk segment methods]
             for (int iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1,
                  iterAllocIndex = Long.SIZE;
                  (iterAllocIndex -= iterAllocIndexStep) >= 0;) {
-
-                K key = readKey(this, iterAllocIndex);
-                V value = readValue(this, iterAllocIndex);
+                long iterAllocOffset = allocOffset((long) iterAllocIndex);
+                K key = readKeyAtOffset(this, iterAllocOffset);
+                V value = readValueAtOffset(this, iterAllocOffset);
 
                 // TODO check what is better - these two statements before or after
                 //  the action, or one before and one after, or both after?
@@ -5866,15 +5429,22 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 action.accept(key, value);
             }
         }
+        /* endif */
 
-        final void forEachKey(Consumer<? super K> action) {
+        /* if !(Interleaved segments Supported intermediateSegments) */
+        /**
+         * Mirror of {@link InterleavedSegments.FullCapacitySegment#forEachKey} and
+         * {@link InterleavedSegments.IntermediateCapacitySegment#forEachKey}.
+         */
+        @Override
+        void forEachKey(Consumer<? super K> action) {
             long bitSet = extractBitSetForIteration(bitSetAndState);
             // [Iteration in bulk segment methods]
             for (int iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1,
                  iterAllocIndex = Long.SIZE;
                  (iterAllocIndex -= iterAllocIndexStep) >= 0;) {
-
-                K key = readKey(this, iterAllocIndex);
+                long iterAllocOffset = allocOffset((long) iterAllocIndex);
+                K key = readKeyAtOffset(this, iterAllocOffset);
 
                 // TODO check what is better - these two statements before or after
                 //  the action, or one before and one after, or both after?
@@ -5884,15 +5454,22 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 action.accept(key);
             }
         }
+        /* endif */
 
-        final void forEachValue(Consumer<? super V> action) {
+        /* if !(Interleaved segments Supported intermediateSegments) */
+        /**
+         * Mirror of {@link InterleavedSegments.FullCapacitySegment#forEachValue} and
+         * {@link InterleavedSegments.IntermediateCapacitySegment#forEachValue}.
+         */
+        @Override
+        void forEachValue(Consumer<? super V> action) {
             long bitSet = extractBitSetForIteration(bitSetAndState);
             // [Iteration in bulk segment methods]
             for (int iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1,
                  iterAllocIndex = Long.SIZE;
                  (iterAllocIndex -= iterAllocIndexStep) >= 0;) {
-
-                V value = readValue(this, iterAllocIndex);
+                long iterAllocOffset = allocOffset((long) iterAllocIndex);
+                V value = readValueAtOffset(this, iterAllocOffset);
 
                 // TODO check what is better - these two statements before or after
                 //  the action, or one before and one after, or both after?
@@ -5902,16 +5479,23 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 action.accept(value);
             }
         }
+        /* endif */
 
-        final boolean forEachWhile(BiPredicate<? super K, ? super V> predicate) {
+        /* if !(Interleaved segments Supported intermediateSegments) */
+        /**
+         * Mirror of {@link InterleavedSegments.FullCapacitySegment#forEachWhile} and
+         * {@link InterleavedSegments.IntermediateCapacitySegment#forEachWhile}.
+         */
+        @Override
+        boolean forEachWhile(BiPredicate<? super K, ? super V> predicate) {
             long bitSet = extractBitSetForIteration(bitSetAndState);
             // [Iteration in bulk segment methods]
             for (int iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1,
                  iterAllocIndex = Long.SIZE;
                  (iterAllocIndex -= iterAllocIndexStep) >= 0;) {
-
-                K key = readKey(this, iterAllocIndex);
-                V value = readValue(this, iterAllocIndex);
+                long iterAllocOffset = allocOffset((long) iterAllocIndex);
+                K key = readKeyAtOffset(this, iterAllocOffset);
+                V value = readValueAtOffset(this, iterAllocOffset);
 
                 // TODO check what is better - these two statements before or after
                 //  the action, or one before and one after, or both after?
@@ -5924,34 +5508,48 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             }
             return true;
         }
+        /* endif */
 
-        final void replaceAll(BiFunction<? super K, ? super V, ? extends V> function) {
+        /* if !(Interleaved segments Supported intermediateSegments) */
+        /**
+         * Mirror of {@link InterleavedSegments.FullCapacitySegment#replaceAll} and
+         * {@link InterleavedSegments.IntermediateCapacitySegment#replaceAll}.
+         */
+        @Override
+        void replaceAll(BiFunction<? super K, ? super V, ? extends V> function) {
             long bitSet = extractBitSetForIteration(bitSetAndState);
             // [Iteration in bulk segment methods]
             for (int iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1,
                  iterAllocIndex = Long.SIZE;
                  (iterAllocIndex -= iterAllocIndexStep) >= 0;) {
-
-                K key = readKey(this, iterAllocIndex);
-                V value = readValue(this, iterAllocIndex);
+                long iterAllocOffset = allocOffset((long) iterAllocIndex);
+                K key = readKeyAtOffset(this, iterAllocOffset);
+                V value = readValueAtOffset(this, iterAllocOffset);
 
                 // TODO check what is better - these two statements before or after
                 //  the action, or one before and one after, or both after?
                 bitSet = bitSet << iterAllocIndexStep;
                 iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1;
 
-                writeValue(this, iterAllocIndex, function.apply(key, value));
+                writeValueAtOffset(this, iterAllocOffset, function.apply(key, value));
             }
         }
+        /* endif */
 
-        final boolean containsValue(SmoothieMap<K, V> map, V queriedValue) {
+        /* if !(Interleaved segments Supported intermediateSegments) */
+        /**
+         * Mirror of {@link InterleavedSegments.FullCapacitySegment#containsValue} and
+         * {@link InterleavedSegments.IntermediateCapacitySegment#containsValue}.
+         */
+        @Override
+        boolean containsValue(SmoothieMap<K, V> map, V queriedValue) {
             long bitSet = extractBitSetForIteration(bitSetAndState);
             // [Iteration in bulk segment methods]
             for (int iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1,
                  iterAllocIndex = Long.SIZE;
                  (iterAllocIndex -= iterAllocIndexStep) >= 0;) {
-
-                V internalVal = readValue(this, iterAllocIndex);
+                long iterAllocOffset = allocOffset((long) iterAllocIndex);
+                V internalVal = readValueAtOffset(this, iterAllocOffset);
 
                 // TODO check what is better - these two statements before or after
                 //  the value objects comparison, or one before and one after, or both after?
@@ -5966,16 +5564,23 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             }
             return false;
         }
+        /* endif */
 
-        final void writeAllEntries(ObjectOutputStream s) throws IOException {
+        /* if !(Interleaved segments Supported intermediateSegments) */
+        /**
+         * Mirror of {@link InterleavedSegments.FullCapacitySegment#writeAllEntries} and
+         * {@link InterleavedSegments.IntermediateCapacitySegment#writeAllEntries}.
+         */
+        @Override
+        void writeAllEntries(ObjectOutputStream s) throws IOException {
             long bitSet = extractBitSetForIteration(bitSetAndState);
             // [Iteration in bulk segment methods]
             for (int iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1,
                  iterAllocIndex = Long.SIZE;
                  (iterAllocIndex -= iterAllocIndexStep) >= 0;) {
-
-                K key = readKey(this, iterAllocIndex);
-                V value = readValue(this, iterAllocIndex);
+                long iterAllocOffset = allocOffset((long) iterAllocIndex);
+                K key = readKeyAtOffset(this, iterAllocOffset);
+                V value = readValueAtOffset(this, iterAllocOffset);
 
                 // TODO check what is better - these two statements before or after writing the
                 //  objects to the output stream, or one before and one after, or both after?
@@ -5986,69 +5591,62 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 s.writeObject(value);
             }
         }
+        /* endif */
 
-        final int removeIf(
+        @Override
+        int removeIf(
                 SmoothieMap<K, V> map, BiPredicate<? super K, ? super V> filter, int modCount) {
+            // TODO update according to other bulk methods above
             long bitSetAndState = this.bitSetAndState;
             int initialModCount = modCount;
             try {
                 // [Branchless hash table iteration]. Unlike [Branchless hash table iteration] in
-                // compactEntriesDuringSplit() the branchless iteration here is more likely to
-                // be a better choice than [Byte-by-byte hash table iteration] because the segment
-                // is expected to be averagely filled during removeIf() (more specifically, expected
+                // compactEntriesDuringSegmentSwap() the branchless iteration here is more likely to
+                // be a better choice than byte-by-byte checking approach because the segment is
+                // expected to be averagely filled during removeIf() (more specifically, expected
                 // number of full slots is about (SEGMENT_MAX_ALLOC_CAPACITY +
                 // (SEGMENT_MAX_ALLOC_CAPACITY / 2)) / 2 = 36 out of HASH_TABLE_SLOTS = 64, or 56%),
-                // so byte-by-byte checking branch would be less predictable here.
-                // TODO compare the approaches, separately from compactEntriesDuringSplit() because
-                //  the branch probability is different.
-                //
-                // This two-level hash table iteration loop is the same as in
-                // compactEntriesDuringSplit(). Modifications to these instances of the loop must be
-                // done simultaneously.
+                // so byte-by-byte checking branch would be even less predictable in removeIf() than
+                // in compactEntriesDuringSegmentSwap().
+                // TODO compare the approaches, separately from compactEntriesDuringSegmentSwap()
+                //  and split() because the branch probability is different.
+
                 // [Int-indexed loop to avoid a safepoint poll]
-                for (int iterationGroupFirstSlotIndex = 0;
-                     iterationGroupFirstSlotIndex < HASH_TABLE_SLOTS;
-                     iterationGroupFirstSlotIndex += GROUP_SLOTS) {
+                for (int iterGroupIndex = 0; iterGroupIndex < HASH_TABLE_GROUPS; iterGroupIndex++) {
+                    long iterDataGroupOffset = dataGroupOffset((long) iterGroupIndex);
+                    long dataGroup = readDataGroupAtOffset(this, iterDataGroupOffset);
 
-                    long controlsGroup =
-                            readControlsGroup(this, (long) iterationGroupFirstSlotIndex);
-                    long dataGroup = readDataGroup(this, (long) iterationGroupFirstSlotIndex);
-
-                    // [Branchless hash table iteration]. Unlike other instances of
-                    // [Branchless hash table iteration] in split(), dropDeletes(), and
-                    //
-                    innerLoop:
-                    for (long bitMask = matchFull(controlsGroup);
+                    groupIteration:
+                    for (long bitMask = matchFull(dataGroup);
                          bitMask != 0L;
                          bitMask = clearLowestSetBit(bitMask)) {
 
-                        int slotIndex;
-                        int dataByte;
-                        { // [Inlined lowestMatchIndex]
-                            int trailingZeros = Long.numberOfTrailingZeros(bitMask);
-                            // TODO lowestMatchIndexFromTrailingZeros() makes & SLOT_MASK, maybe
-                            //  this is unnecessary in the context of this loop?
-                            slotIndex = lowestMatchIndexFromTrailingZeros(
-                                    iterationGroupFirstSlotIndex, trailingZeros);
-                            // [Pseudo dataByte]
-                            dataByte = (int) extractDataByte(dataGroup, trailingZeros);
-                        }
+                        // [Inlined lowestMatchingSlotIndex]
+                        int trailingZeros = Long.numberOfTrailingZeros(bitMask);
+                        long allocIndex = extractAllocIndex(dataGroup, trailingZeros);
+                        long allocOffset = allocOffset(allocIndex);
 
-                        int allocIndex = allocIndex(dataByte);
-
-                        K key = readKey(this, allocIndex);
-                        V value = readValue(this, allocIndex);
+                        K key = readKeyAtOffset(this, allocOffset);
+                        V value = readValueAtOffset(this, allocOffset);
 
                         if (!filter.test(key, value)) {
-                            continue innerLoop;
+                            continue groupIteration;
                         }
 
+                        // TODO use hosted overflow mask (when implemented; inspired by
+                        //  hostedOverflowCounts in F14) to avoid a potentially expensive
+                        //  keyHashCode() call here.
+                        long baseGroupIndex = baseGroupIndex(map.keyHashCode(key));
+                        long outboundOverflowCount_perGroupDecrements =
+                                computeOutboundOverflowCount_perGroupChanges(
+                                        baseGroupIndex, (long) iterGroupIndex);
                         // TODO research if it's possible to do something better than just call
                         //  removeAtSlotNoShrink() in a loop, which may result in calling expensive
                         //  operations a lot of times if nearly all entries are removed from the
                         //  segment during this loop.
-                        bitSetAndState = map.removeAtSlotNoShrink(
-                                bitSetAndState, this, slotIndex, allocIndex);
+                        bitSetAndState = map.removeAtSlotNoShrink(bitSetAndState, this,
+                                outboundOverflowCount_perGroupDecrements, iterDataGroupOffset,
+                                setSlotEmpty(dataGroup, trailingZeros), allocIndex, allocOffset);
                         // Matches the modCount field increment performed in removeAtSlotNoShrink().
                         modCount++;
                     }
@@ -6057,7 +5655,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 // Writing bitSetAndState in a finally block because we want the segment to remain
                 // in a consistent state if an exception was thrown from filter.test(), or in a
                 // more up-to-date, debuggable state if a ConcurrentModificationException was thrown
-                // from readKey() or readValue().
+                // from readKeyAtOffset() or readValueAtOffset().
                 if (modCount != initialModCount) {
                     setBitSetAndState(this, bitSetAndState);
                 }
@@ -6069,145 +5667,77 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         //region Segment's stats and debug bulk operations
 
-        void aggregateStats(SmoothieMap<K, V> map, OrdinarySegmentStats ordinarySegmentStats) {
-            ordinarySegmentStats.incrementAggregatedSegments();
-            // [Byte-by-byte hash table iteration]
-            for (int slotIndex = 0; slotIndex < HASH_TABLE_SLOTS; slotIndex++) {
-                int controlByte = readControlByte(this, (long) slotIndex);
-                if (controlByte == EMPTY_CONTROL) {
-                    continue;
-                }
-                if (controlByte == DELETED_CONTROL) {
-                    ordinarySegmentStats.aggregateDeletedSlot();
-                    continue;
-                }
-                // Slot is full
-                int data = readData(this, (long) slotIndex);
-                int allocIndex = allocIndex(data);
-                K key = readKey(this, allocIndex);
-                long hash = map.keyHashCode(key);
-                int slotIndexBase = slotIndex(hash);
-                ordinarySegmentStats.aggregateFullSlot(slotIndexBase, slotIndex);
-            }
-        }
+        abstract void aggregateStats(
+                SmoothieMap<K, V> map, OrdinarySegmentStats ordinarySegmentStats);
 
         /** @deprecated in order not to forget to remove calls from production code */
         @Deprecated
-        String debugToString() {
-            DebugBitSetAndState bitSetAndState = new DebugBitSetAndState(this.bitSetAndState);
-            StringBuilder sb = new StringBuilder();
-            sb.append(bitSetAndState).append('\n');
-            sb.append("Slots:\n");
-            for (int allocIndex = 0; allocIndex < bitSetAndState.allocCapacity; allocIndex++) {
-                Object key = U.getObject(this, allocKeyOffset(allocIndex));
-                Object value = U.getObject(this, allocValueOffset(allocIndex));
-                sb.append(key).append('=').append(value).append('\n');
-            }
-            return sb.toString();
-        }
+        abstract String debugToString();
 
         /** @deprecated in order not to forget to remove calls from production code */
         @Deprecated
-        @Nullable DebugHashTableSlot<K, V>[] debugHashTable(SmoothieMap<K, V> map) {
-            @Nullable DebugHashTableSlot[] debugHashTableSlots =
-                    new DebugHashTableSlot[HASH_TABLE_SLOTS + CLONED_CONTROL_SLOTS];
-            // [Byte-by-byte hash table iteration]
-            for (int slotIndex = 0; slotIndex < HASH_TABLE_SLOTS + CLONED_CONTROL_SLOTS;
-                 slotIndex++) {
-                int controlByte = readControlByte(this, (long) slotIndex);
-                if (controlByte == EMPTY_CONTROL) {
-                    continue;
-                }
-                int dataByte = readData(this, (long) (slotIndex & SLOT_MASK));
-                debugHashTableSlots[slotIndex] =
-                        new DebugHashTableSlot<>(map, this, (byte) controlByte, dataByte);
-            }
-            //noinspection unchecked
-            return debugHashTableSlots;
-        }
+        abstract @Nullable DebugHashTableSlot<K, V>[] debugHashTable(SmoothieMap<K, V> map);
 
         static class DebugHashTableSlot<K, V> {
-            final byte controlByte;
+            final byte tagByte;
             final byte dataByte;
             final int allocIndex;
-            final int hashDataBits;
             final @Nullable K key;
             final long hash;
-            final boolean hashDataBitsMatch;
-            final byte restoredFullControlByte;
+            final byte tagByteFromKey;
             final @Nullable V value;
 
             @SuppressWarnings("unchecked")
             DebugHashTableSlot(SmoothieMap<K, V> map, Segment<K, V> segment,
-                    byte controlByte, int dataByte) {
-                this.controlByte = controlByte;
+                    int allocIndex, long valueOffset, byte tagByte, int dataByte) {
+                this.tagByte = tagByte;
                 this.dataByte = (byte) dataByte;
-                this.allocIndex = allocIndex(dataByte);
-                this.hashDataBits = debugExtractHashDataBits(dataByte);
-                this.key = (K) U.getObject(segment, allocKeyOffset(allocIndex));
+                this.allocIndex = allocIndex;
+                /* if Interleaved segments Supported intermediateSegments */
+                long isFullCapacitySegment = isFullCapacity(getBitSetAndState(segment)) ? 1L : 0L;
+                /* endif */
+                long allocOffset = allocOffset((long) allocIndex
+                        /* if Interleaved segments Supported intermediateSegments */
+                        , isFullCapacitySegment/* endif */);
+                this.key = (K) U.getObject(segment, allocOffset);
                 if (key != null) {
                     hash = map.keyHashCode(key);
-                    hashDataBitsMatch = matchHashDataBits(dataByte, hash);
-                    restoredFullControlByte = (byte) hashControlBits(hash);
+                    tagByteFromKey = (byte) tagBits(hash);
                 } else {
                     hash = 0L;
-                    hashDataBitsMatch = false;
-                    restoredFullControlByte = 0;
+                    tagByteFromKey = 0;
                 }
-                this.value = (V) U.getObject(segment, allocValueOffset(allocIndex));
+                this.value = (V) U.getObject(segment, valueOffset);
             }
 
             @SuppressWarnings("AutoBoxing")
             @Override
             public String toString() {
-                return String.format("%8s,%2d,%" + HASH_DATA_BITS + "s,%5s,%8s,%s",
-                        Integer.toBinaryString(Byte.toUnsignedInt(controlByte)),
-                        allocIndex, Integer.toBinaryString(hashDataBits), hashDataBitsMatch,
-                        Integer.toBinaryString(Byte.toUnsignedInt(restoredFullControlByte)), key);
+                return String.format("%8s,%2d,%8s,%s",
+                        Integer.toBinaryString(Byte.toUnsignedInt(tagByte)), allocIndex,
+                        Integer.toBinaryString(Byte.toUnsignedInt(tagByteFromKey)), key);
             }
         }
 
         //endregion
-
-        static final long ALLOC_OFFSET;
-        private static final long ALLOC_VALUE_OFFSET;
-
-        /** `* 2` because there are two objects, key and value, that contribute to the scale. */
-        private static final int ALLOC_INDEX_SHIFT =
-                Integer.numberOfTrailingZeros(ARRAY_OBJECT_INDEX_SCALE * 2);
-
-        static {
-            try {
-                // TODO Excelsior JET: ensure it works with Excelsior JET's negative object field
-                //  offsets, see https://www.excelsiorjet.com/blog/articles/unsafe-harbor/
-                ALLOC_OFFSET = min(U.objectFieldOffset(Segment.class.getDeclaredField("k0")),
-                        U.objectFieldOffset(Segment.class.getDeclaredField("v0")));
-                ALLOC_VALUE_OFFSET = ALLOC_OFFSET + ARRAY_OBJECT_INDEX_SCALE_AS_LONG;
-            } catch (NoSuchFieldException e) {
-                throw new AssertionError(e);
-            }
-        }
-
-        private static long allocKeyOffset(int allocIndex) {
-            return ALLOC_OFFSET + (long) (allocIndex << ALLOC_INDEX_SHIFT);
-        }
-
-        private static long allocValueOffset(int allocIndex) {
-            return ALLOC_VALUE_OFFSET + (long) (allocIndex << ALLOC_INDEX_SHIFT);
-        }
-
-        @SuppressWarnings("unused")
-        Object k0, v0;
     }
 
     /**
-     * InflatedSegment inherits {@link Segment} and therefore {@link HashTableArea} which is unused
-     * in InflatedSegment. This is done so that on the hot point access path checking whether the
+     * InflatedSegment inherits {@link Segment} and therefore the hash table area (either {@link
+     * ContinuousSegments.HashTableArea} or within {@link InterleavedSegments}) which is unused
+     * in an InflatedSegment. This is done so that on the hot point access path checking whether the
      * segment being queried is inflated or not can be done _after_ unsuccessful key search in the
-     * hash table (in the first accessed control group), not before it.
+     * hash table (in the first accessed hash table's group), not before it.
      * See [InflatedSegment checking after unsuccessful key search].
      */
-    static class InflatedSegment<K, V> extends Segment<K, V> {
+    static class InflatedSegment<K, V>
+            /* if Continuous segments //
+            extends Segment<K, V>
+            // elif Interleaved segments Supported intermediateSegments */
+            extends InterleavedSegments.IntermediateCapacitySegment<K, V>
+            /* elif Interleaved segments NotSupported intermediateSegments //
+            extends InterleavedSegments.FullCapacitySegment<K, V>
+            // endif */ {
         /**
          * Allows to store {@link #SEGMENT_MAX_ALLOC_CAPACITY} + 1 entries without a rehash,
          * assuming that {@link #INFLATED_SEGMENT_DELEGATE_HASH_MAP_LOAD_FACTOR} is also used.
@@ -6235,7 +5765,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         InflatedSegment(int segmentOrder, long smoothieMapSize) {
             bitSetAndState = makeInflatedBitSetAndState(segmentOrder);
-            setAllControlSlotsFromGroup(INFLATED_SEGMENT_MARKER_CONTROLS_GROUP);
+            setAllDataGroups(INFLATED_SEGMENT__MARKER_DATA_GROUP);
             delegate = new HashMap<>(INFLATED_SEGMENT_DELEGATE_HASH_MAP_INITIAL_CAPACITY,
                     INFLATED_SEGMENT_DELEGATE_HASH_MAP_LOAD_FACTOR);
             /* if Tracking hashCodeDistribution */
@@ -6254,7 +5784,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 long checkAndReportIfTooLarge_lastCall_smoothieSize,
                 int checkAndReportIfTooLarge_lastCall_delegateSize/* endif */) {
             this.bitSetAndState = bitSetAndState;
-            setAllControlSlotsFromGroup(INFLATED_SEGMENT_MARKER_CONTROLS_GROUP);
+            setAllDataGroups(INFLATED_SEGMENT__MARKER_DATA_GROUP);
             this.delegate = delegate;
             /* if Tracking hashCodeDistribution */
             this.checkAndReportIfTooLarge_lastCall_smoothieSize =
@@ -6277,7 +5807,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         }
 
         @Nullable V computeIfPresent(SmoothieMap<K, V> smoothie,
-                K key, long hash, BiFunction<? super K, ? super V, ? extends V> remappingFunction) {
+                K key, long hash,
+                BiFunction<? super K, ? super V, ? extends @Nullable V> remappingFunction) {
             InflatedSegmentQueryContext<K, V> context = smoothie.getInflatedSegmentQueryContext();
             HashMap<Node<K, V>, Node<K, V>> delegate = this.delegate;
             @Nullable Object computeIfPresentResult =
@@ -6303,7 +5834,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             // also [Don't increment SmoothieMap's modCount on non-structural modification].
             if (shouldDeflate(delegate.size())) {
                 smoothie.deflateSmall(hash, this);
-            } else if (shouldBeSplit(smoothie, segmentOrder(bitSetAndState)) < 0) {
+            } else if (shouldBeSplit(smoothie, segmentOrder(bitSetAndState))) {
                 smoothie.splitInflated(hash, this);
             }
         }
@@ -6322,14 +5853,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
          * (Note that it might be less than the average segment order plus {@link
          * #MAX_SEGMENT_ORDER_DIFFERENCE_FROM_AVERAGE} if {@link #segmentsArray}'s length is already
          * equal to {@link #MAX_SEGMENTS_ARRAY_LENGTH}.)
-         *
-         * This invariant is used in {@link #checkAndReportIfTooLarge} which should always be called
-         * after shouldBeSplit() and this is also the reason why this method returns an int encoding
-         * an average segment order rather than just a boolean.
-         *
-         * This method follows the [Negative integer return contract] principle.
          */
-        private int shouldBeSplit(SmoothieMap<K, V> smoothie, int segmentOrder) {
+        private boolean shouldBeSplit(SmoothieMap<K, V> smoothie, int segmentOrder) {
             int lastComputedAverageSegmentOrder = (int) smoothie.lastComputedAverageSegmentOrder;
             // If this inflated segment's order is equal to MAX_SEGMENTS_ARRAY_ORDER it can't be
             // split anyway, even if the average segment order is equal to
@@ -6363,31 +5888,32 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 // irrelevant. In the latter case the inflated segment is expected to deflate
                 // eventually via deflateSmall().
                 //
-                // This is an unlikely branch, but can't follow the [Positive likely branch]
-                // principle here because of lastComputedAverageSegmentOrder's update and the
-                // fall-through logic.
-                if (segmentOrder <= maxSplittableSegmentOrder(lastComputedAverageSegmentOrder)) {
+                // [Positive likely branch]
+                if (segmentOrder > maxSplittableSegmentOrder(lastComputedAverageSegmentOrder)) {
+                    return false;
+                } else {
                     lastComputedAverageSegmentOrder =
                             smoothie.computeAverageSegmentOrder(smoothie.size);
                     int maxSplittableSegmentOrder =
                             maxSplittableSegmentOrder(lastComputedAverageSegmentOrder);
-                    if (segmentOrder <= maxSplittableSegmentOrder) {
-                        return -1; // should be split
-                    }
-                    // Intentional fall-through to `return lastComputedAverageSegmentOrder;`
+                    return segmentOrder <= maxSplittableSegmentOrder;
                 }
+            } else {
+                // Cannot split a segment if it is already of the maximum possible order.
+                return false;
             }
-            return lastComputedAverageSegmentOrder;
         }
 
         /**
+         * @param matchValue if non-null the entry's value should be equal to matchValue for removal
+         *        or replacement.
          * @return a value removed or replaced in the map, or null if no change was made. If
          * matchValue is null, the returned value is the internal value removed or replaced in the
          * map. If matchValue is non-null, the returned value could be the internal value _or_ the
          * matchValue itself.
          */
-        @Nullable V replace(SmoothieMap<K, V> smoothie, K key, long hash, @Nullable V matchValue,
-                @Nullable V replacementValue) {
+        @Nullable V removeOrReplace(SmoothieMap<K, V> smoothie, K key, long hash,
+                @Nullable V matchValue, @Nullable V replacementValue) {
             InflatedSegmentQueryContext<K, V> context = smoothie.getInflatedSegmentQueryContext();
             HashMap<Node<K, V>, Node<K, V>> delegate = this.delegate;
             @Nullable V removedOrReplacedVal;
@@ -6428,9 +5954,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 HashMap<Node<K, V>, Node<K, V>> delegate/* endif */) {
             // [Segment structure modification only after entry structure modification]
             int segmentOrder = segmentOrder(bitSetAndState);
-            int segmentShouldBeSplitIfNegativeOrAverageSegmentOrder =
-                    shouldBeSplit(smoothie, segmentOrder);
-            if (segmentShouldBeSplitIfNegativeOrAverageSegmentOrder < 0) {
+            if (shouldBeSplit(smoothie, segmentOrder)) {
                 smoothie.splitInflated(hash, this);
             }
             /* if Tracking hashCodeDistribution */
@@ -6442,9 +5966,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 //  which has it always non-null. (But properly then it should be inlined into
                 //  SmoothieMap altogether.)
                 if (hashCodeDistribution != null) {
-                    checkAndReportIfTooLarge(hashCodeDistribution, segmentOrder, smoothie,
-                            delegate.size(), key,
-                            segmentShouldBeSplitIfNegativeOrAverageSegmentOrder);
+                    checkAndReportIfTooLarge(
+                            hashCodeDistribution, segmentOrder, smoothie, delegate.size(), key);
                 }
             }
             /* endif */
@@ -6461,7 +5984,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         }
 
         @Nullable V computeIfAbsent(SmoothieMap<K, V> smoothie, K key, long hash,
-                Function<? super K, ? extends V> mappingFunction) {
+                Function<? super K, ? extends @Nullable V> mappingFunction) {
             InflatedSegmentQueryContext<K, V> context = smoothie.getInflatedSegmentQueryContext();
             HashMap<Node<K, V>, Node<K, V>> delegate = this.delegate;
             Node<K, V> nodeWithKeyAndHash = context.getNodeForKey(key, hash);
@@ -6483,8 +6006,9 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             }
         }
 
-        @Nullable V compute(SmoothieMap<K, V> smoothie,
-                K key, long hash, BiFunction<? super K, ? super V, ? extends V> remappingFunction) {
+        @Nullable V compute(SmoothieMap<K, V> smoothie, K key, long hash,
+                BiFunction<? super K, ? super @Nullable V, ? extends @Nullable V> remappingFunction)
+        {
             InflatedSegmentQueryContext<K, V> context = smoothie.getInflatedSegmentQueryContext();
             HashMap<Node<K, V>, Node<K, V>> delegate = this.delegate;
             Node<K, V> nodeWithKeyAndHash = context.getNodeForKey(key, hash);
@@ -6515,7 +6039,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         }
 
         @Nullable V merge(SmoothieMap<K, V> smoothie, K key, long hash, V value,
-                BiFunction<? super V, ? super V, ? extends V> remappingFunction) {
+                BiFunction<? super V, ? super V, ? extends @Nullable V> remappingFunction) {
             InflatedSegmentQueryContext<K, V> context = smoothie.getInflatedSegmentQueryContext();
             HashMap<Node<K, V>, Node<K, V>> delegate = this.delegate;
             Node<K, V> nodeWithKeyAndHash = context.getNodeForKey(key, hash);
@@ -6542,8 +6066,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         /* if Tracking hashCodeDistribution */
         private void checkAndReportIfTooLarge(HashCodeDistribution<K, V> hashCodeDistribution,
-                int segmentOrder, SmoothieMap<K, V> smoothie, int delegateSize, K excludedKey,
-                int averageSegmentOrder) {
+                int segmentOrder, SmoothieMap<K, V> smoothie, int delegateSize, K excludedKey) {
             if (!hashCodeDistribution.isReportingTooLargeInflatedSegment()) {
                 return;
             }
@@ -6563,14 +6086,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         @DoNotCall
         @Deprecated
         @Override
-        final void copyHashTableFrom(Object oldSegment) {
+        final void clearHashTableAndAllocArea() {
             throw new UnsupportedOperationException();
         }
 
         @DoNotCall
         @Deprecated
         @Override
-        final void copyAllocAreaFrom(Object oldSegment, int oldSegmentCapacity) {
+        final void copyEntriesDuringInflate(SmoothieMap<K, V> map, InflatedSegment<K, V> intoSegment) {
             throw new UnsupportedOperationException();
         }
 
@@ -6625,6 +6148,62 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         }
 
         @Override
+        void forEachKey(Consumer<? super K> action) {
+            delegate.keySet().forEach(node -> action.accept(node.getKey()));
+        }
+
+        @Override
+        void forEachValue(Consumer<? super V> action) {
+            delegate.keySet().forEach(node -> action.accept(node.getValue()));
+        }
+
+        @Override
+        boolean forEachWhile(BiPredicate<? super K, ? super V> predicate) {
+            for (Node<K, V> node : delegate.keySet()) {
+                if (!predicate.test(node.getKey(), node.getValue())) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        @Override
+        void replaceAll(BiFunction<? super K, ? super V, ? extends V> function) {
+            delegate.keySet().forEach(
+                    node -> node.setValue(function.apply(node.getKey(), node.getValue()))
+            );
+        }
+
+        @Override
+        boolean containsValue(SmoothieMap<K, V> map, V queriedValue) {
+            return delegate.keySet().stream().allMatch(node -> {
+                V internalVal = node.getValue();
+                //noinspection ObjectEquality: identity comparision is intended
+                boolean valuesIdentical = queriedValue == internalVal;
+                return valuesIdentical || map.valuesEqual(queriedValue, internalVal);
+            });
+        }
+
+        @SuppressWarnings("RedundantThrows")
+        @Override
+        void writeAllEntries(ObjectOutputStream s) throws IOException {
+            delegate.keySet().forEach(node -> {
+                try {
+                    s.writeObject(node.getKey());
+                    s.writeObject(node.getValue());
+                } catch (IOException e) {
+                    rethrowUnchecked(e);
+                }
+            });
+        }
+
+        @Override
+        int removeIf(
+                SmoothieMap<K, V> map, BiPredicate<? super K, ? super V> filter, int modCount) {
+            throw new UnsupportedOperationException("TODO");
+        }
+
+        @Override
         void aggregateStats(SmoothieMap<K, V> map, OrdinarySegmentStats ordinarySegmentStats) {
             throw new IllegalStateException("must not be called on an inflated segment");
         }
@@ -6639,299 +6218,4 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             throw new IllegalStateException("must not be called on an inflated segment");
         }
     }
-
-    //region Segment17..Segment48 classes
-
-    private static final String segmentClassNameBase;
-    static {
-        String segment17ClassName = Segment17.class.getName();
-        segmentClassNameBase = segment17ClassName.substring(0, segment17ClassName.length() - 2);
-    }
-
-    /**
-     * Lazily initialized cache, containing classes from {@link Segment17} to {@link Segment48},
-     * accessible by index. The cache is not initialized eagerly because it's quite likely that
-     * only {@link Segment48} and, maybe, another one "intermediate" sized segment class are
-     * used.
-     */
-    private static final Class[] segmentClassCache = new Class[SEGMENT_MAX_ALLOC_CAPACITY + 1];
-
-    @SuppressWarnings("unchecked")
-    private static <K, V> Class<? extends Segment<K, V>> acquireClass(int allocCapacity) {
-        Class segmentClass = segmentClassCache[allocCapacity];
-        if (segmentClass != null)
-            return segmentClass;
-        return loadAndCacheSegmentClass(allocCapacity);
-    }
-
-    private static Class loadAndCacheSegmentClass(int allocCapacity) {
-        try {
-            String segmentClassName = segmentClassNameBase + allocCapacity;
-            Class<?> segmentClass = Class.forName(segmentClassName);
-            segmentClassCache[allocCapacity] = segmentClass;
-            return segmentClass;
-        } catch (ClassNotFoundException e) {
-            throw new AssertionError(e);
-        }
-    }
-
-    /**
-     * See {@link Segment} javadoc for more info about the following classes
-     */
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment17<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16;
-    }
-
-    /**
-     * Don't create a single long extension chain (e. g. {@link Segment18} extends {@link
-     * Segment17}, {@link Segment19} extends {@link Segment20}, etc), because it might cause more
-     * classes to be loaded (e. g. if only {@link Segment48} is ever used, that happens if {@link
-     * OptimizationObjective#ALLOCATION_RATE} is used and {@link SmoothieMap#shrinkAndTrimToSize()}
-     * is never called), and also might be more troublesome for some GC heap traversal
-     * implementations (?)
-     */
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment18<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment19<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment20<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-    }
-
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment21<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment22<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20, k21, v21;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment23<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20, k21, v21, k22, v22;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment24<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20, k21, v21, k22, v22, k23, v23;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment25<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment26<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment27<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment28<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment29<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment30<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment31<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
-        Object k30, v30;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment32<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
-        Object k30, v30, k31, v31;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment33<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
-        Object k30, v30, k31, v31, k32, v32;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment34<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
-        Object k30, v30, k31, v31, k32, v32, k33, v33;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment35<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
-        Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment36<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
-        Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment37<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
-        Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment38<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
-        Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment39<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
-        Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment40<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
-        Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment41<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
-        Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
-        Object k40, v40;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment42<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
-        Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
-        Object k40, v40, k41, v41;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment43<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
-        Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
-        Object k40, v40, k41, v41, k42, v42;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment44<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
-        Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
-        Object k40, v40, k41, v41, k42, v42, k43, v43;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment45<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
-        Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
-        Object k40, v40, k41, v41, k42, v42, k43, v43, k44, v44;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment46<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
-        Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
-        Object k40, v40, k41, v41, k42, v42, k43, v43, k44, v44, k45, v45;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment47<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
-        Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
-        Object k40, v40, k41, v41, k42, v42, k43, v43, k44, v44, k45, v45, k46, v46;
-    }
-
-    @SuppressWarnings({"unused", "NullableProblems"})
-    static class Segment48<K, V> extends Segment<K, V> {
-        Object k1, v1, k2, v2, k3, v3, k4, v4, k5, v5, k6, v6, k7, v7, k8, v8, k9, v9;
-        Object k10, v10, k11, v11, k12, v12, k13, v13, k14, v14, k15, v15, k16, v16, k17, v17, k18, v18, k19, v19;
-        Object k20, v20, k21, v21, k22, v22, k23, v23, k24, v24, k25, v25, k26, v26, k27, v27, k28, v28, k29, v29;
-        Object k30, v30, k31, v31, k32, v32, k33, v33, k34, v34, k35, v35, k36, v36, k37, v37, k38, v38, k39, v39;
-        Object k40, v40, k41, v41, k42, v42, k43, v43, k44, v44, k45, v45, k46, v46, k47, v47;
-    }
-
-    //endregion
 }

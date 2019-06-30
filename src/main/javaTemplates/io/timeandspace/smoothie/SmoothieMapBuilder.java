@@ -84,7 +84,7 @@ public final class SmoothieMapBuilder<K, V> {
     @Contract("_ -> this")
     public SmoothieMapBuilder<K, V> hashFunctionFactory(
             Supplier<ToLongFunction<K>> hashFunctionFactory) {
-        Utils.requireNonNull(hashFunctionFactory);
+        Utils.checkNonNull(hashFunctionFactory);
         this.hashFunctionFactory = hashFunctionFactory;
         return this;
     }
@@ -164,7 +164,7 @@ public final class SmoothieMapBuilder<K, V> {
     public SmoothieMapBuilder<K, V> reportPoorHashCodeDistribution(
             double maxProbabilityOfOccasionIfHashFunctionWasRandom,
             Consumer<PoorHashCodeDistributionOccasion<K, V>> reportingAction) {
-        Utils.requireNonNull(reportingAction);
+        Utils.checkNonNull(reportingAction);
         this.maxProbabilityOfOccasionIfHashFunctionWasRandom =
                 maxProbabilityOfOccasionIfHashFunctionWasRandom;
         this.reportingAction = reportingAction;

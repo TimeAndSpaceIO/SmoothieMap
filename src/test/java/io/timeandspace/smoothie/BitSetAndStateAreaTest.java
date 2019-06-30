@@ -16,18 +16,19 @@
 
 package io.timeandspace.smoothie;
 
-import io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.DebugBitSetAndState;
+import io.timeandspace.smoothie.BitSetAndState.DebugBitSetAndState;
 import org.junit.Test;
 
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.EMPTY_BIT_SET;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.updateDeletedSlotCountAndSetLowestAllocBit;
+import static io.timeandspace.smoothie.BitSetAndState.EMPTY_BIT_SET;
+import static io.timeandspace.smoothie.BitSetAndState.setLowestAllocBit;
+
 
 public final class BitSetAndStateAreaTest {
 
     @Test
-    public void testUpdateDeletedSlotCountAndSetLowestAllocBit() {
-        DebugBitSetAndState bitSetAndState = new DebugBitSetAndState(
-                updateDeletedSlotCountAndSetLowestAllocBit(EMPTY_BIT_SET, 0));
+    public void testSetLowestAllocBit() {
+        DebugBitSetAndState bitSetAndState =
+                new DebugBitSetAndState(setLowestAllocBit(EMPTY_BIT_SET));
 //        Assert.assertEquals(bitSetAndState.);
     }
 }

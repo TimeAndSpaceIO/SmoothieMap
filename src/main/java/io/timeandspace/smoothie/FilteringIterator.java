@@ -21,7 +21,7 @@ import java.util.Iterator;
 import java.util.NoSuchElementException;
 import java.util.function.Predicate;
 
-import static io.timeandspace.smoothie.Utils.assertNonNull;
+import static io.timeandspace.smoothie.Utils.verifyNonNull;
 
 /**
  * Based on https://github.com/google/guava/blob/838560034dfaa1afdf51a126afe6b8b8e6cce3dd/
@@ -80,7 +80,7 @@ class FilteringIterator<T> implements Iterator<T> {
                 state = State.DONE;
                 return false;
             }
-            next = assertNonNull(delegate.next());
+            next = verifyNonNull(delegate.next());
         } while (!filter.test(next));
         state = State.READY;
         this.next = next;
@@ -92,7 +92,7 @@ class FilteringIterator<T> implements Iterator<T> {
         if (!hasNext()) {
             throw new NoSuchElementException();
         }
-        T result = assertNonNull(next);
+        T result = verifyNonNull(next);
         state = State.NOT_READY;
         couldRemovePreviousElement = true;
         next = null;

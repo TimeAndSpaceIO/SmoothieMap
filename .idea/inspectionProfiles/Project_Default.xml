@@ -65,6 +65,8 @@
       </searchConfiguration>
     </inspection_tool>
     <inspection_tool class="UnnecessaryBoxing" enabled="true" level="ERROR" enabled_by_default="true" />
+    <inspection_tool class="UnnecessaryLabelOnBreakStatement" enabled="false" level="WARNING" enabled_by_default="false" />
     <inspection_tool class="UnnecessaryLabelOnContinueStatement" enabled="false" level="WARNING" enabled_by_default="false" />
+    <inspection_tool class="jol" enabled="false" level="WARNING" enabled_by_default="false" />
   </profile>
 </component>

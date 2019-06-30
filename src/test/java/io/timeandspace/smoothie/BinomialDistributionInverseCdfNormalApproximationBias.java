@@ -73,6 +73,7 @@ import java.util.stream.IntStream;
  * {@link Output#CORRECTIONS_PER_SKEW_PROB} are used in {@link
  * BinomialDistributionInverseCdfApproximation}.
  */
+@SuppressForbidden
 @SuppressWarnings({"AutoBoxing", "ImplicitNumericConversion"})
 final class BinomialDistributionInverseCdfNormalApproximationBias {
 

@@ -27,8 +27,9 @@ import java.util.HashMap;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 
-import static io.timeandspace.smoothie.Utils.assertNonNull;
-import static io.timeandspace.smoothie.Utils.assertThat;
+import static io.timeandspace.smoothie.Utils.checkNonNull;
+import static io.timeandspace.smoothie.Utils.verifyNonNull;
+import static io.timeandspace.smoothie.Utils.verifyThat;
 import static io.timeandspace.smoothie.Utils.nonNullOrThrowCme;
 
 /**
@@ -192,7 +193,8 @@ final class InflatedSegmentQueryContext<K, V> {
         return node;
     }
 
-    @SuppressWarnings("ObjectEquality") // identity comparisons are intended in this method
+    /** Identity comparisons are intended in this method */
+    @SuppressWarnings({"ObjectEquality", "ReferenceEquality"})
     private void dropInternedNodeFromCache(Node<K, V> node) {
         if (cachedNode == node) {
             cachedNode = null;
@@ -230,7 +232,7 @@ final class InflatedSegmentQueryContext<K, V> {
      * entry has been removed from the delegate map.
      *
      * This method has to have such rather unusual contract to allow the caller ({@link
-     * io.timeandspace.smoothie.SmoothieMap.InflatedSegment}) to distinguish between null result
+     * SmoothieMap.InflatedSegment}) to distinguish between null result
      * when the delegate has not been updated structurally and null result when an entry was removed
      * from the delegate and therefore it's possible to do segment structure modification: see
      * [Segment structure modification only after entry structure modification].
@@ -462,7 +464,7 @@ final class InflatedSegmentQueryContext<K, V> {
      * Returns the node which is stored in the delegate map as the result of this computeIfAbsent()
      * call. If the returned node is identical to the passed nodeWithKeyAndHash, it means that an
      * entry was inserted into the delegate map. The caller of this method ({@link
-     * io.timeandspace.smoothie.SmoothieMap.InflatedSegment}) uses this information to decide
+     * SmoothieMap.InflatedSegment}) uses this information to decide
      * whether it's possible to make segment structure modifications or not: see
      * [Segment structure modification only after entry structure modification].
      *
@@ -539,7 +541,7 @@ final class InflatedSegmentQueryContext<K, V> {
      * Returns the node which is stored in the delegate map as the result of this compute() call. If
      * the returned node is identical to the passed nodeWithKeyAndHash, it means that an entry was
      * inserted into the delegate map. The caller of this method ({@link
-     * io.timeandspace.smoothie.SmoothieMap.InflatedSegment}) uses this information to decide
+     * SmoothieMap.InflatedSegment}) uses this information to decide
      * whether it's possible to make segment structure modifications or not: see
      * [Segment structure modification only after entry structure modification].
      *
@@ -570,7 +572,7 @@ final class InflatedSegmentQueryContext<K, V> {
      */
     @Nullable Node<K, V> compute(HashMap<Node<K, V>, Node<K, V>> delegate,
             Node<K, V> nodeWithKeyAndHash,
-            BiFunction<? super K, ? super V, ? extends @Nullable V> remappingFunction) {
+            BiFunction<? super K, ? super @Nullable V, ? extends @Nullable V> remappingFunction) {
         ComputeLambda<K, V> computeLambda = this.computeLambda;
         computeLambda.remappingFunction = remappingFunction;
         try {
@@ -590,7 +592,8 @@ final class InflatedSegmentQueryContext<K, V> {
     private static class ComputeLambda<K, V>
             implements BiFunction<Node<K, V>, Node<K, V>, Node<K, V>> {
         private final InflatedSegmentQueryContext<K, V> context;
-        @Nullable BiFunction<? super K, ? super V, ? extends @Nullable V> remappingFunction;
+        @Nullable
+        BiFunction<? super K, ? super @Nullable V, ? extends @Nullable V> remappingFunction;
 
         private ComputeLambda(InflatedSegmentQueryContext<K, V> context) {
             this.context = context;
@@ -600,7 +603,7 @@ final class InflatedSegmentQueryContext<K, V> {
         public @Nullable Node<K, V> apply(Node<K, V> node, @Nullable Node<K, V> internalNode) {
             InflatedSegmentQueryContext<K, V> context = this.context;
             SmoothieMap<K, V> map = context.map;
-            BiFunction<? super K, ? super V, ? extends @Nullable V> remappingFunction =
+            BiFunction<? super K, ? super @Nullable V, ? extends @Nullable V> remappingFunction =
                     nonNullOrThrowCme(this.remappingFunction);
             // It's important to use node.key, not internalNode.key even when internalNode !=
             // null for consistency with HashMap's and SmoothieMap's compute() that apply the
@@ -647,7 +650,7 @@ final class InflatedSegmentQueryContext<K, V> {
      * Returns the node which is stored in the delegate map as the result of this merge() call. If
      * the returned node is identical to the passed nodeWithKeyAndHash, it means that an entry was
      * inserted into the delegate map. The caller of this method ({@link
-     * io.timeandspace.smoothie.SmoothieMap.InflatedSegment}) uses this information to decide
+     * SmoothieMap.InflatedSegment}) uses this information to decide
      * whether it's possible to make segment structure modifications or not: see
      * [Segment structure modification only after entry structure modification].
      *
@@ -740,21 +743,29 @@ final class InflatedSegmentQueryContext<K, V> {
 
         @Override
         public final K getKey() {
-            return Utils.nonNullOrThrowCme(key);
+            return nonNullOrThrowCme(key);
         }
 
         @Override
         public final V getValue() {
-            return Utils.nonNullOrThrowCme(value);
+            return nonNullOrThrowCme(value);
+        }
+
+        /**
+         * Method to be used in {@link SmoothieMap.InflatedSegment#replaceAll} implementation.
+         */
+        void setValue(V newValue) {
+            checkNonNull(newValue);
+            this.value = newValue;
         }
 
         @Override
         public boolean equals(@Nullable Object obj) {
-            assertNonNull(obj);
+            verifyNonNull(obj);
             Class<?> objClass = obj.getClass();
             // Comparing Node with other types of objects or null should be a error in
             // InflatedSegmentQueryContext's logic.
-            assertThat(objClass == Node.class || objClass == ComparableNode.class);
+            verifyThat(objClass == Node.class || objClass == ComparableNode.class);
             K thisKey = nonNullOrThrowCme(key);
             @SuppressWarnings("unchecked")
             K otherKey = nonNullOrThrowCme(((Node<K, ?>) obj).key);

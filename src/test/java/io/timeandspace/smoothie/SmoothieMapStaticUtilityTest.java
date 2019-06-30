@@ -3,7 +3,7 @@ package io.timeandspace.smoothie;
 import org.junit.Assert;
 import org.junit.Test;
 
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.SEGMENT_MAX_ALLOC_CAPACITY;
+import static io.timeandspace.smoothie.SmoothieMap.SEGMENT_MAX_ALLOC_CAPACITY;
 import static io.timeandspace.smoothie.SmoothieMap.MAX_SEGMENTS_ARRAY_ORDER;
 import static io.timeandspace.smoothie.SmoothieMap.doComputeAverageSegmentOrder;
 

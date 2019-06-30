@@ -25,10 +25,8 @@ import java.util.ConcurrentModificationException;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.SEGMENT_MAX_ALLOC_CAPACITY;
-import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.HASH_TABLE_SLOTS;
+import static io.timeandspace.smoothie.HashTable.HASH_TABLE_SLOTS;
 import static io.timeandspace.smoothie.SmoothieMap.maxSplittableSegmentOrder;
-import static io.timeandspace.smoothie.Statistics.BinomialDistribution;
 import static io.timeandspace.smoothie.Statistics.PoissonDistribution;
 import static java.lang.Math.max;
 
@@ -104,19 +102,6 @@ class HashCodeDistribution<K, V> {
      *  than limiting memory footprint of stats arrays (as in reason #2 for not accounting stats for
      *  28 or less keys). Specifically, since no more than 32 keys can fit a single half anyway,
      *  don't 33 or more keys add relatively less harm than 30->31, 31->32 keys? Check empirically?
-     *
-     * Adding up to SEGMENT_MAX_ALLOC_CAPACITY entries:
-     * The whole statistical model of segment splitting is based on the assumption that we always
-     * split segments of {@link Segment#SEGMENT_MAX_ALLOC_CAPACITY} (48) entries, so we always
-     * assume {@link BinomialDistribution} with 48 trials. Actually, this is not always the case:
-     * if entries are deleted from the segment, as little as {@link
-     * Segment#SEGMENT_MAX_NON_EMPTY_SLOTS} - {@link
-     * Segment#SEGMENT_MIN_DELETED_SLOTS_FOR_DROP_DELETES} + 1 = 46 entries may be split. Adjusting
-     * the model to account for this properly would be hard and the value is questionable (TODO,
-     * low priority: quantify these "hard" and "questionable"). Instead, we simply add 1 to the
-     * larger number of keys fallen into one of hash table's halves if there are 46 entries in
-     * total, and randomly add 0 or 1 if there are 47 entries, "making an impression" there were
-     * 48 entries. See code in {@link #accountSegmentSplit}.
      */
     static final
     double[] HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS =
@@ -145,11 +130,11 @@ class HashCodeDistribution<K, V> {
      * maxProbabilityOfOccasionIfHashFunctionWasRandom} passed into {@link
      * SmoothieMapBuilder#reportPoorHashCodeDistribution}.
      *
-     * There should be a bias in the {@link Segment#LOG_HASH_TABLE_SIZE}-th bit (i. e.
-     * the sixth bit, or the bit number 5 if zero-indexed) of hash codes, either global: most hash
-     * codes of keys in the SmoothieMap have either 0 or 1 in the sixth bit, or there is a
-     * correlation between the sixth bit and one of the bits that are used to determine to which
-     * segment a key with a hash code should go (see {@link SmoothieMap#segmentByHash} and {@link
+     * There should be a bias in the {@link Segment#HASH__BASE_GROUP_INDEX_BITS}-th bit (i. e. the
+     * third bit, or the bit number 2 if zero-indexed) of hash codes, either global: most hash codes
+     * of keys in the SmoothieMap have either 0 or 1 in the third bit, or there is a correlation
+     * between the third bit and one of the bits that are used to determine to which segment a key
+     * with a hash code should go (see {@link SmoothieMap#segmentByHash} and {@link
      * SmoothieMap#firstSegmentIndexByHashAndOrder}), i. e. a correlation with the {@link
      * SmoothieMap#SEGMENT_LOOKUP_HASH_SHIFT}-th bit or any higher bit, or a combination of some of
      * these bits.
@@ -467,24 +452,6 @@ class HashCodeDistribution<K, V> {
         int numKeysForHalfTwo = totalNumKeysBeforeSplit - numKeysForHalfOne;
         int maxKeysForHalf = max(numKeysForHalfOne, numKeysForHalfTwo);
 
-        // Cheaper alternative to `randomOne = ThreadLocalRandom.current().nextInt() & 1`
-        int numSegmentSplitsToCurrentAverageOrder = this.numSegmentSplitsToCurrentAverageOrder;
-        int numSegmentSplitsToNextAverageOrder = this.numSegmentSplitsToNextAverageOrder;
-        int interleavedOne =
-                (numSegmentSplitsToCurrentAverageOrder + numSegmentSplitsToNextAverageOrder) & 1;
-
-        // The following action is explained in [Adding up to SEGMENT_MAX_ALLOC_CAPACITY entries].
-        //
-        // `SEGMENT_MAX_ALLOC_CAPACITY - totalNumKeysBeforeSplit` may be 0, 1, or 2 (i. e. less than
-        // SEGMENT_MIN_DELETED_SLOTS_FOR_DROP_DELETES - SEGMENT_MAX_NON_EMPTY_SLOTS +
-        // SEGMENT_MAX_ALLOC_CAPACITY = 3). interleavedOne contains 0 or 1, more or less randomly.
-        // So `(SEGMENT_MAX_ALLOC_CAPACITY - totalNumKeysBeforeSplit + interleavedOne) >>> 1`
-        // results in always 0 when totalNumKeysBeforeSplit = 48, 0 or 1 when
-        // totalNumKeysBeforeSplit = 47, and always 1 when totalNumKeysBeforeSplit = 46.
-        // [Replacing division with shift]
-        maxKeysForHalf +=
-                (SEGMENT_MAX_ALLOC_CAPACITY - totalNumKeysBeforeSplit + interleavedOne) >>> 1;
-
         // ### Choose numSegmentSplitsToNewOrder and skewedSegment_splitStats.
         // Depending on priorSegmentOrder, determine whether the "current" or the "next"
         // numSegmentSplits and skewedSegment_splitStats should be used to account this split, or
@@ -615,8 +582,7 @@ class HashCodeDistribution<K, V> {
 
     @AmortizedPerSegment
     private static int computeMaxNonReportedSkewedSplitsLowerBound(int statIndex, int numSplits) {
-        double prob = HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS
-                [statIndex];
+        double prob = HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS[statIndex];
         return (int) (prob * (double) numSplits);
     }
 

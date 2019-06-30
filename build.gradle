@@ -115,11 +115,21 @@ tasks.withType(JavaCompile) {
 //}
 
 tasks.withType(io.timeandspace.jpsg.JpsgTask) {
-    with 'Enabled extraChecks'
+    with 'Disabled extraChecks'
+    with 'Disabled extraConcurrencyChecks'
     with 'Tracking hashCodeDistribution'
     with 'Flag doShrink'
     with 'Tracking segmentOrderStats'
     with 'Disabled moveToMapWithShrunkArray'
+    with 'Interleaved segments'
+    with 'NotSupported intermediateSegments'
+
+    exclude 'Continuous segments'
+}
+
+tasks.withType(Checkstyle) {
+    exclude '**/generated-src/**'
+    include '**/javaTemplates/**'
 }
 
 import net.ltgt.gradle.errorprone.CheckSeverity
@@ -133,6 +143,7 @@ tasks.withType(JavaCompile).configureEach {
 forbiddenApis {
     bundledSignatures = [ 'jdk-system-out', 'jdk-deprecated' ]
     signaturesFiles = files('config/forbidden-apis.txt')
+    suppressAnnotations = ['**.SuppressForbidden']
     ignoreFailures = false
 }
 

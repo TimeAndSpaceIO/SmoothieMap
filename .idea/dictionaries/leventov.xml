@@ -17,6 +17,7 @@
       <w>nulled</w>
       <w>nullness</w>
       <w>postcondition</w>
+      <w>priori</w>
       <w>probs</w>
       <w>reimplements</w>
       <w>reorderings</w>
@@ -24,10 +25,12 @@
       <w>safepoint</w>
       <w>skylake</w>
       <w>suboptimally</w>
+      <w>timeandspace</w>
       <w>treeified</w>
       <w>tzcnt</w>
       <w>undiscoverable</w>
       <w>unsplit</w>
+      <w>wikipedia</w>
       <w>μops</w>
     </words>
   </dictionary>

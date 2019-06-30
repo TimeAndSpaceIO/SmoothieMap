@@ -15,6 +15,7 @@ import java.util.stream.Collectors;
  * PrecomputedBinomialCdfValues#FIRST_TRACKED_NUM_SKEWED_SEGMENTS_PER_SPLITS}. and {@link
  * PrecomputedBinomialCdfValues#CDF_VALUES}
  */
+@SuppressForbidden
 @SuppressWarnings("AutoBoxing")
 final class ComputeBinomialCdfValues {
     private static final

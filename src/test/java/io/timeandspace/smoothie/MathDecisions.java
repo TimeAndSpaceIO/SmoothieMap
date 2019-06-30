@@ -22,7 +22,7 @@ import org.apache.commons.math3.distribution.PoissonDistribution;
 import java.util.DoubleSummaryStatistics;
 import java.util.stream.IntStream;
 
-
+@SuppressForbidden
 public class MathDecisions {
 
     /**

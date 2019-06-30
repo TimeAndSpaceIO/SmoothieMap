@@ -7,16 +7,15 @@ import java.util.function.IntConsumer;
 import java.util.function.IntToLongFunction;
 import java.util.stream.IntStream;
 
+import static io.timeandspace.smoothie.HashTable.GROUP_SLOTS;
+import static io.timeandspace.smoothie.HashTable.HASH_TABLE_GROUPS;
+import static io.timeandspace.smoothie.HashTable.HASH_TABLE_GROUPS_MASK;
 import static io.timeandspace.smoothie.LongMath.percentOf;
-import static io.timeandspace.smoothie.SmoothieMap.BitSetAndStateArea.SEGMENT_MAX_ALLOC_CAPACITY;
-import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.GROUP_SLOTS;
-import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.GROUP_SLOTS_DIVISION_SHIFT;
-import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.HASH_TABLE_GROUPS;
-import static io.timeandspace.smoothie.SmoothieMap.HashTableArea.SLOT_MASK;
+import static io.timeandspace.smoothie.SmoothieMap.SEGMENT_MAX_ALLOC_CAPACITY;
 import static java.util.Collections.singletonList;
 
 /**
- * Stats of collision chain lengths and deleted slot counts for ordinary segments (that are, not
+ * Stats of probing chain lengths for ordinary segments (that are, not
  * {@link io.timeandspace.smoothie.SmoothieMap.InflatedSegment}s).
  */
 final class OrdinarySegmentStats {
@@ -36,11 +35,12 @@ final class OrdinarySegmentStats {
 
     private int numAggregatedSegments = 0;
     private long numAggregatedFullSlots = 0;
-    private long numDeletedSlots = 0;
-    private final long[] numSlotsPerCollisionChainSlotLengths =
-            new long[SEGMENT_MAX_ALLOC_CAPACITY];
     private final long[] numSlotsPerCollisionChainGroupLengths =
             new long[SEGMENT_MAX_ALLOC_CAPACITY / GROUP_SLOTS];
+    private final long[] numSlotsPerNumCollisionKeyComparisons =
+            new long[SEGMENT_MAX_ALLOC_CAPACITY];
+    private final long[] numSlotsPerDistancesToAllocIndexBoundary =
+            new long[SEGMENT_MAX_ALLOC_CAPACITY];
 
     int getNumAggregatedSegments() {
         return numAggregatedSegments;
@@ -50,22 +50,23 @@ final class OrdinarySegmentStats {
         return numAggregatedFullSlots;
     }
 
-    void aggregateFullSlot(int slotIndexBase, int slotIndex) {
+    void aggregateFullSlot(long baseGroupIndex, long groupIndex, int numCollisionKeyComparisons
+            /* if Interleaved segments */, int allocIndex, int allocIndexBoundaryForGroup
+            /* endif */) {
         int quadraticProbingChainGroupIndex =
-                // [Replacing division with shift]
-                ((slotIndex - slotIndexBase) & SLOT_MASK) >>> GROUP_SLOTS_DIVISION_SHIFT;
+                (int) ((groupIndex - baseGroupIndex) & HASH_TABLE_GROUPS_MASK);
         int collisionChainGroupLength = QUADRATIC_PROBING_CHAIN_GROUP_INDEX_TO_CHAIN_LENGTH[
                 quadraticProbingChainGroupIndex];
         numSlotsPerCollisionChainGroupLengths[collisionChainGroupLength]++;
-        int collisionChainSlotRemainder = (slotIndex - slotIndexBase) & (GROUP_SLOTS - 1);
-        int collisionChainSlotLength =
-                GROUP_SLOTS * collisionChainGroupLength + collisionChainSlotRemainder;
-        numSlotsPerCollisionChainSlotLengths[collisionChainSlotLength]++;
+        numSlotsPerNumCollisionKeyComparisons[numCollisionKeyComparisons]++;
+        int distanceToAllocIndexBoundary;
+        if (allocIndex >= allocIndexBoundaryForGroup) {
+            distanceToAllocIndexBoundary = allocIndex - allocIndexBoundaryForGroup;
+        } else {
+            distanceToAllocIndexBoundary = allocIndexBoundaryForGroup - allocIndex - 1;
+        }
+        numSlotsPerDistancesToAllocIndexBoundary[distanceToAllocIndexBoundary]++;
         numAggregatedFullSlots++;
-    }
-
-    void aggregateDeletedSlot() {
-        numDeletedSlots++;
     }
 
     void incrementAggregatedSegments() {
@@ -75,14 +76,17 @@ final class OrdinarySegmentStats {
     void add(OrdinarySegmentStats other) {
         numAggregatedSegments += other.numAggregatedSegments;
         numAggregatedFullSlots += other.numAggregatedFullSlots;
-        numDeletedSlots += other.numDeletedSlots;
-        for (int i = 0; i < numSlotsPerCollisionChainSlotLengths.length; i++) {
-            numSlotsPerCollisionChainSlotLengths[i] +=
-                    other.numSlotsPerCollisionChainSlotLengths[i];
-        }
-        for (int i = 0; i < numSlotsPerCollisionChainGroupLengths.length; i++) {
-            numSlotsPerCollisionChainGroupLengths[i] +=
-                    other.numSlotsPerCollisionChainGroupLengths[i];
+        addMetricArrays(
+                numSlotsPerCollisionChainGroupLengths, other.numSlotsPerCollisionChainGroupLengths);
+        addMetricArrays(
+                numSlotsPerNumCollisionKeyComparisons, other.numSlotsPerNumCollisionKeyComparisons);
+        addMetricArrays(numSlotsPerDistancesToAllocIndexBoundary,
+                other.numSlotsPerDistancesToAllocIndexBoundary);
+    }
+
+    private static void addMetricArrays(long[] target, long[] source) {
+        for (int i = 0; i < target.length; i++) {
+            target[i] += source[i];
         }
     }
 
@@ -93,39 +97,32 @@ final class OrdinarySegmentStats {
         sb.append(String.format("Number of segments: %d%n", numAggregatedSegments));
 
         double averageFullSlots = (double) numAggregatedFullSlots / (double) numAggregatedSegments;
-        long totalFullAndDeletedSlots = numAggregatedFullSlots + numDeletedSlots;
-        double fullSlotsPercent = 100.0 *
-                (double) numAggregatedFullSlots / (double) totalFullAndDeletedSlots;
-        sb.append(String.format("Average full slots: %.2f (%3.2f%%)%n", averageFullSlots,
-                fullSlotsPercent));
-        double averageDeletedSlots = (double) numDeletedSlots / (double) numAggregatedSegments;
-        double deletedSlotsPercent = 100.0 - fullSlotsPercent;
-        sb.append(String.format("Average deleted slots: %.2f (%3.2f%%)%n", averageDeletedSlots,
-                deletedSlotsPercent));
+        sb.append(String.format("Average full slots: %.2f%n", averageFullSlots));
 
-        appendChainLengthStats(sb, numSlotsPerCollisionChainGroupLengths, "group");
-        appendChainLengthStats(sb, numSlotsPerCollisionChainSlotLengths, "slot");
+        appendSlotMetricStats(
+                sb, numSlotsPerCollisionChainGroupLengths, "collision chain group length");
+        appendSlotMetricStats(
+                sb, numSlotsPerNumCollisionKeyComparisons, "num collision key comparisons");
+        appendSlotMetricStats(
+                sb, numSlotsPerDistancesToAllocIndexBoundary, "distance to alloc index boundary");
         return sb.toString();
     }
 
     @SuppressWarnings("AutoBoxing")
-    private void appendChainLengthStats(
-            StringBuilder sb, long[] numSlotsPerChainLengths, String chainLengthType) {
-        long totalChainLength = 0;
-        for (int chainLength = 0; chainLength < numSlotsPerChainLengths.length; chainLength++) {
-            long numSlotsWithLength = numSlotsPerChainLengths[chainLength];
-            totalChainLength += numSlotsWithLength * (long) chainLength;
+    private void appendSlotMetricStats(
+            StringBuilder sb, long[] numSlotsPerMetric, String metricName) {
+        long totalMetricSum = 0;
+        for (int metricValue = 0; metricValue < numSlotsPerMetric.length; metricValue++) {
+            long numSlotsWithMetricValue = numSlotsPerMetric[metricValue];
+            totalMetricSum += numSlotsWithMetricValue * (long) metricValue;
         }
-        double averageChainLength = (double) totalChainLength / (double) numAggregatedFullSlots;
-        sb.append(String.format("Average collision chain %s length: %.2f%n", chainLengthType,
-                averageChainLength));
+        double averageMetricValue = (double) totalMetricSum / (double) numAggregatedFullSlots;
+        sb.append(String.format("Average %s: %.2f%n", metricName, averageMetricValue));
 
         appendNonZeroOrderedCountsWithPercentiles(
-                sb, "chain length =", numSlotsPerChainLengths.length,
-                singletonList(
-                        new Count("slots", chainLength -> numSlotsPerChainLengths[chainLength])
-                ),
-                chainLength -> {});
+                sb, metricName + " =", numSlotsPerMetric.length,
+                singletonList(new Count("slots", metricValue -> numSlotsPerMetric[metricValue])),
+                metricValue -> {});
     }
 
     static class Count {
@@ -162,8 +159,10 @@ final class OrdinarySegmentStats {
         long[] currentAggregatedCounts = new long[counts.size()];
         for (int order = 0; order < maxOrderExclusive; order++) {
             int finalOrder = order;
-            long[] countsForOrder =  counts
-                    .stream().mapToLong(count -> count.countFunction.applyAsLong(finalOrder)).toArray();
+            long[] countsForOrder = counts
+                    .stream()
+                    .mapToLong(count -> count.countFunction.applyAsLong(finalOrder))
+                    .toArray();
             if (Arrays.stream(countsForOrder).allMatch(c -> c == 0)) {
                 continue; // skip all-zero columns zeros
             }
