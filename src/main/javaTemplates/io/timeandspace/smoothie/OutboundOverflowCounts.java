@@ -155,9 +155,6 @@ final class OutboundOverflowCounts {
             dataGroup |= DATA_GROUP__OUTBOUND_OVERFLOW_MASK;
             writeDataGroupAtOffset(segment, dataGroupOffset, dataGroup);
         }
-        checkOutboundOverflowCounts(segment
-                /* if Interleaved segments Supported intermediateSegments */, isFullCapacitySegment
-                /* endif */);
     }
 
     /**
@@ -209,9 +206,6 @@ final class OutboundOverflowCounts {
             dataGroup |= DATA_GROUP__OUTBOUND_OVERFLOW_MASK * outboundOverflowCountIsPositive;
             writeDataGroupAtOffset(segment, dataGroupOffset, dataGroup);
         }
-        checkOutboundOverflowCounts(segment
-                /* if Interleaved segments Supported intermediateSegments */, isFullCapacitySegment
-                /* endif */);
     }
 
     /**
@@ -248,9 +242,6 @@ final class OutboundOverflowCounts {
             dataGroup &= ~DATA_GROUP__OUTBOUND_OVERFLOW_MASK;
             writeDataGroupAtOffset(segment, dataGroupOffset, dataGroup);
         }
-        checkOutboundOverflowCounts(segment
-                /* if Interleaved segments Supported intermediateSegments */, isFullCapacitySegment
-                /* endif */);
     }
 
     /**
@@ -268,6 +259,8 @@ final class OutboundOverflowCounts {
                 & MOST_SIGNIFICANT_BYTE_BITS;
     }
 
+    /** This method could be used during debugging. */
+    @SuppressWarnings("unused")
     private static void checkOutboundOverflowCounts(Object segment
             /* if Interleaved segments Supported intermediateSegments */, int isFullCapacitySegment
             /* endif */) {
