@@ -1808,8 +1808,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         verifyNonNull(segment);
         verifyNonNull(key);
 
-        final long hash_segmentLookupBits = segmentLookupBits(hash);
         /* if Interleaved segments Supported intermediateSegments */
+        final long hash_segmentLookupBits = segmentLookupBits(hash);
         final int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
         /* endif */
 
