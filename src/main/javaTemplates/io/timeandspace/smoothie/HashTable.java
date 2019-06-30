@@ -115,10 +115,8 @@ final class HashTable {
     private static final long LEAST_SIGNIFICANT_SLOT_BITS = 0x0101010101010101L;
 
     static {
-        @SuppressWarnings({"NumericOverflow", "ConstantOverflow"})
-        long dataFullnessBits = LEAST_SIGNIFICANT_SLOT_BITS * DATA__FULLNESS_BIT;
         // It needs to be so for matchFull() to work (see the comment for this method).
-        verifyEqual(MOST_SIGNIFICANT_SLOT_BITS, dataFullnessBits);
+        verifyEqual(MOST_SIGNIFICANT_SLOT_BITS, fullDataGroupForTesting());
         verifyEqual(DATA__ALLOC_INDEX_MASK, 63);
     }
 
@@ -164,20 +162,24 @@ final class HashTable {
      * Example:
      *   tagGroup = 0x1716151413121110
      *   tagBitsToMatch = 0x12
-     *   dataGroup = all {@link #DATA__FULLNESS_BIT} are set, some alloc index values (unimportant)
      *   xor result
      *     = 0000_0101__0000_0100__0000_0111__0000_0110__0000_0001__0000_0000__0000_0011__0000_0010
-     *   return (x - LEAST_SIGNIFICANT_SLOT_BITS) & dataGroup & MOST_SIGNIFICANT_SLOT_BITS
+     *   (x - LEAST_SIGNIFICANT_SLOT_BITS) & (~x & MOST_SIGNIFICANT_SLOT_BITS)
      *     = 0x0000000080800000
      *
      * This method is adapted from https://github.com/abseil/abseil-cpp/blob/
-     * 3088e76c597e068479e82508b1770a7ad0c806b6/absl/container/internal/raw_hash_set.h#L428-L446
+     * 3088e76c597e068479e82508b1770a7ad0c806b6/absl/container/internal/raw_hash_set.h#L428-L446.
+     * In Abseil, the `(~x & MOST_SIGNIFICANT_SLOT_BITS)` part of the haszero() algorithm (see
+     * http://graphics.stanford.edu/~seander/bithacks.html#ZeroInWord) is omitted because there are
+     * just 7 control bits (vs. 8 tag bits in SmoothieMap) so the highest bit of `x` is always zero
+     * anyway.
      */
     static long match(long tagGroup, long tagBitsToMatch, long dataGroup) {
         long x = tagGroup ^ (LEAST_SIGNIFICANT_SLOT_BITS * tagBitsToMatch);
         // Similar to ContinuousSegment_BitSetAndStateArea.incrementOutboundOverflowCountsPerGroup()
         // and decrementOutboundOverflowCountsPerGroup().
-        return (x - LEAST_SIGNIFICANT_SLOT_BITS) & matchFull(dataGroup);
+        long matchZeroSlots = (x - LEAST_SIGNIFICANT_SLOT_BITS) & (~x & MOST_SIGNIFICANT_SLOT_BITS);
+        return matchZeroSlots & matchFull(dataGroup);
     }
 
     static boolean shouldStopProbing(long dataGroup) {
@@ -304,6 +306,12 @@ final class HashTable {
         return (byte) (allocIndex | DATA__FULLNESS_BIT |
                 // Copy DATA__OUTBOUND_OVERFLOW_BIT from the first slot in the group.
                 (dataGroup & DATA__OUTBOUND_OVERFLOW_BIT));
+    }
+
+    @VisibleForTesting
+    @SuppressWarnings({"NumericOverflow", "ConstantOverflow"})
+    static long fullDataGroupForTesting() {
+        return DATA__FULLNESS_BIT * LEAST_SIGNIFICANT_SLOT_BITS;
     }
 
     private HashTable() {}
