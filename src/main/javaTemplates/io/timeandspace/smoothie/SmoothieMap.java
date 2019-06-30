@@ -3658,7 +3658,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
      *  (and leave a to-do to compare perf in that case)
      */
     @HotPath
-    private long removeAtSlotNoShrink(long bitSetAndState, Object segment,
+    final long removeAtSlotNoShrink(long bitSetAndState, Object segment,
             /* if Interleaved segments Supported intermediateSegments */int isFullCapacitySegment,
             /* endif */
             long outboundOverflowCount_perGroupDecrements, long dataGroupOffset,
@@ -4938,7 +4938,9 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         }
 
         private K nextKeyInOrdinarySegment(int allocIndex) {
-            K key = readKeyCheckedAtIndex(currentSegment, (long) allocIndex);
+            K key = readKeyCheckedAtIndex(currentSegment, (long) allocIndex
+                    /* if Interleaved segments Supported intermediateSegments */
+                    , (long) currentSegment_isFullCapacity/* endif */);
             advanceOrdinarySegmentIteration(this.bitSet, allocIndex);
             return key;
         }
@@ -4977,7 +4979,9 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         }
 
         private V nextValueInOrdinarySegment(int allocIndex) {
-            V value = readValueCheckedAtIndex(currentSegment, (long) allocIndex);
+            V value = readValueCheckedAtIndex(currentSegment, (long) allocIndex
+                    /* if Interleaved segments Supported intermediateSegments */
+                    , (long) currentSegment_isFullCapacity/* endif */);
             advanceOrdinarySegmentIteration(this.bitSet, allocIndex);
             return value;
         }
@@ -5207,10 +5211,15 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             }
         }
 
-        static <K> K readKeyCheckedAtIndex(Object segment, @NonNegative long allocIndex) {
+        static <K> K readKeyCheckedAtIndex(Object segment, @NonNegative long allocIndex
+                /* if Interleaved segments Supported intermediateSegments */
+                , long isFullCapacitySegment/* endif */) {
             checkAllocIndex(segment, allocIndex);
+            long allocOffset = allocOffset(allocIndex
+                    /* if Interleaved segments Supported intermediateSegments */
+                    , isFullCapacitySegment/* endif */);
             //noinspection unchecked
-            K key = (K) U.getObject(segment, allocOffset(allocIndex));
+            K key = (K) U.getObject(segment, allocOffset);
             /* if Enabled extraConcurrencyChecks */
             // [Protecting null comparisons]
             if (key == null) {
@@ -5238,10 +5247,15 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             return value;
         }
 
-        static <V> V readValueCheckedAtIndex(Object segment, @NonNegative long allocIndex) {
+        static <V> V readValueCheckedAtIndex(Object segment, @NonNegative long allocIndex
+                /* if Interleaved segments Supported intermediateSegments */
+                , long isFullCapacitySegment/* endif */) {
             checkAllocIndex(segment, allocIndex);
+            long allocOffset = allocOffset(allocIndex
+                    /* if Interleaved segments Supported intermediateSegments */
+                    , isFullCapacitySegment/* endif */);
             //noinspection unchecked
-            V value = (V) U.getObject(segment, valueOffsetFromAllocOffset(allocOffset(allocIndex)));
+            V value = (V) U.getObject(segment, valueOffsetFromAllocOffset(allocOffset));
             /* if Enabled extraConcurrencyChecks */
             // [Protecting null comparisons]
             if (value == null) {
@@ -5592,6 +5606,11 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         }
         /* endif */
 
+        /* if !(Interleaved segments Supported intermediateSegments) */
+        /**
+         * Mirror of {@link InterleavedSegments.FullCapacitySegment#removeIf} and
+         * {@link InterleavedSegments.IntermediateCapacitySegment#removeIf}.
+         */
         @Override
         int removeIf(
                 SmoothieMap<K, V> map, BiPredicate<? super K, ? super V> filter, int modCount) {
@@ -5599,14 +5618,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             long bitSetAndState = this.bitSetAndState;
             int initialModCount = modCount;
             try {
-                // [Branchless hash table iteration]. Unlike [Branchless hash table iteration] in
-                // compactEntriesDuringSegmentSwap() the branchless iteration here is more likely to
-                // be a better choice than byte-by-byte checking approach because the segment is
-                // expected to be averagely filled during removeIf() (more specifically, expected
-                // number of full slots is about (SEGMENT_MAX_ALLOC_CAPACITY +
-                // (SEGMENT_MAX_ALLOC_CAPACITY / 2)) / 2 = 36 out of HASH_TABLE_SLOTS = 64, or 56%),
-                // so byte-by-byte checking branch would be even less predictable in removeIf() than
-                // in compactEntriesDuringSegmentSwap().
+                // Branchless hash table iteration in removeIf(): unlike
+                // [Branchless hash table iteration] in compactEntriesDuringSegmentSwap() the
+                // branchless iteration here is more likely to be a better choice than byte-by-byte
+                // checking approach because the segment is expected to be averagely filled during
+                // removeIf() (more specifically, expected number of full slots is about
+                // (SEGMENT_MAX_ALLOC_CAPACITY + (SEGMENT_MAX_ALLOC_CAPACITY / 2)) / 2 = 36 out of
+                // HASH_TABLE_SLOTS = 64, or 56%), so byte-by-byte checking branch would be even
+                // less predictable in removeIf() than in compactEntriesDuringSegmentSwap().
                 // TODO compare the approaches, separately from compactEntriesDuringSegmentSwap()
                 //  and split() because the branch probability is different.
 
@@ -5651,16 +5670,18 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                     }
                 }
             } finally {
-                // Writing bitSetAndState in a finally block because we want the segment to remain
-                // in a consistent state if an exception was thrown from filter.test(), or in a
-                // more up-to-date, debuggable state if a ConcurrentModificationException was thrown
-                // from readKeyAtOffset() or readValueAtOffset().
+                // Writing bitSetAndState in a finally block: this is done because we want the
+                // segment to remain in a consistent state if an exception was thrown from
+                // filter.test(), or in a more up-to-date, debuggable state if a
+                // ConcurrentModificationException was thrown from readKeyAtOffset() or
+                // readValueAtOffset().
                 if (modCount != initialModCount) {
                     setBitSetAndState(this, bitSetAndState);
                 }
             }
             return modCount;
         }
+        /* endif */
 
         //endregion
 

@@ -47,10 +47,6 @@ public class GrowTest {
 
     @Test
     public void growTest() {
-        SmoothieMapStats smoothieMapStats = new SmoothieMapStats();
-        map.aggregateStats(smoothieMapStats);
-        System.out.println(smoothieMapStats);
-        System.out.println(smoothieMapStats.computeTotalOrdinarySegmentStats());
         for (int i = 0; i < keys.size(); i++) {
             Integer key = keys.get(i);
             assertEquals((Integer) 0, map.get(key));

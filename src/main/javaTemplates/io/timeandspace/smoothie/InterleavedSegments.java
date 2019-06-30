@@ -47,8 +47,10 @@ import static io.timeandspace.smoothie.HashTable.lowestMatchingSlotIndexFromTrai
 import static io.timeandspace.smoothie.HashTable.makeData;
 import static io.timeandspace.smoothie.HashTable.makeDataWithZeroOutboundOverflowBit;
 import static io.timeandspace.smoothie.HashTable.matchFull;
+import static io.timeandspace.smoothie.HashTable.setSlotEmpty;
 import static io.timeandspace.smoothie.HashTable.slotByteOffset;
 import static io.timeandspace.smoothie.LongMath.clearLowestSetBit;
+import static io.timeandspace.smoothie.OutboundOverflowCounts.computeOutboundOverflowCount_perGroupChanges;
 import static io.timeandspace.smoothie.Segments.valueOffsetFromAllocOffset;
 import static io.timeandspace.smoothie.SmoothieMap.SEGMENT_INTERMEDIATE_ALLOC_CAPACITY;
 import static io.timeandspace.smoothie.SmoothieMap.SEGMENT_MAX_ALLOC_CAPACITY;
@@ -1230,6 +1232,85 @@ final class InterleavedSegments {
             }
         }
 
+        /**
+         * Mirror of {@link SmoothieMap.Segment#removeIf}.
+         *
+         * Unlike other similar methods above belonging to the category
+         * [Method cloned in FullCapacitySegment and IntermediateCapacitySegment], this method is
+         * very similar but not an exact clone of {@link IntermediateCapacitySegment#removeIf}:
+         * isFullCapacitySegment local variable is initialized differently and there is a
+         * difference in comments.
+         */
+        @Override
+        int removeIf(
+                SmoothieMap<K, V> map, BiPredicate<? super K, ? super V> filter, int modCount) {
+            // TODO update according to other bulk methods above
+            long bitSetAndState = this.bitSetAndState;
+            int initialModCount = modCount;
+            try {
+                // [Branchless hash table iteration in removeIf()]
+                // [Int-indexed loop to avoid a safepoint poll]
+                for (int iterGroupIndex = 0; iterGroupIndex < HASH_TABLE_GROUPS; iterGroupIndex++) {
+                    long iterDataGroupOffset = dataGroupOffset((long) iterGroupIndex);
+                    long dataGroup = readDataGroupAtOffset(this, iterDataGroupOffset);
+
+                    groupIteration:
+                    for (long bitMask = matchFull(dataGroup);
+                         bitMask != 0L;
+                         bitMask = clearLowestSetBit(bitMask)) {
+
+                        // [Inlined lowestMatchingSlotIndex]
+                        int trailingZeros = Long.numberOfTrailingZeros(bitMask);
+                        long allocIndex = extractAllocIndex(dataGroup, trailingZeros);
+                        long allocOffset = allocOffset(allocIndex);
+
+                        K key = readKeyAtOffset(this, allocOffset);
+                        V value = readValueAtOffset(this, allocOffset);
+
+                        if (!filter.test(key, value)) {
+                            continue groupIteration;
+                        }
+
+                        // TODO use hosted overflow mask (when implemented; inspired by
+                        //  hostedOverflowCounts in F14) to avoid a potentially expensive
+                        //  keyHashCode() call here.
+                        long baseGroupIndex = baseGroupIndex(map.keyHashCode(key));
+                        long outboundOverflowCount_perGroupDecrements =
+                                computeOutboundOverflowCount_perGroupChanges(
+                                        baseGroupIndex, (long) iterGroupIndex);
+                        /* if Supported intermediateSegments */
+                        int isFullCapacitySegment = 1;
+                        /* endif */
+                        // TODO research if it's possible to do something better than just call
+                        //  removeAtSlotNoShrink() in a loop, which may result in calling expensive
+                        //  operations a lot of times if nearly all entries are removed from the
+                        //  segment during this loop.
+                        bitSetAndState = map.removeAtSlotNoShrink(bitSetAndState, this,
+                                // Not specializing removeAtSlotNoShrink(): it doesn't provide much
+                                // performance benefit to specialize removeAtSlotNoShrink() for
+                                // full-capacity segments because isFullCapacitySegment is rarely
+                                // used inside that method, while having a copy of
+                                // removeAtSlotNoShrink() is an additional maintenance burden. JVM's
+                                // code cache and instruction cache are unlikely to be important
+                                // performance factors here because this removeAtSlotNoShrink() call
+                                // is expected to be inlined into this method.
+                                /* if Supported intermediateSegments */isFullCapacitySegment,
+                                /* endif */
+                                outboundOverflowCount_perGroupDecrements, iterDataGroupOffset,
+                                setSlotEmpty(dataGroup, trailingZeros), allocIndex, allocOffset);
+                        // Matches the modCount field increment performed in removeAtSlotNoShrink().
+                        modCount++;
+                    }
+                }
+            } finally {
+                // [Writing bitSetAndState in a finally block]
+                if (modCount != initialModCount) {
+                    setBitSetAndState(this, bitSetAndState);
+                }
+            }
+            return modCount;
+        }
+
         //endregion
     }
 
@@ -1947,6 +2028,77 @@ final class InterleavedSegments {
                 s.writeObject(key);
                 s.writeObject(value);
             }
+        }
+
+        /**
+         * Mirror of {@link SmoothieMap.Segment#removeIf}.
+         *
+         * Unlike other similar methods above belonging to the category
+         * [Method cloned in FullCapacitySegment and IntermediateCapacitySegment], this method is
+         * very similar but not an exact clone of {@link FullCapacitySegment#removeIf}:
+         * isFullCapacitySegment local variable is initialized differently and there is a
+         * difference in comments.
+         */
+        @Override
+        int removeIf(
+                SmoothieMap<K, V> map, BiPredicate<? super K, ? super V> filter, int modCount) {
+            long bitSetAndState = this.bitSetAndState;
+            int initialModCount = modCount;
+            try {
+                // [Branchless hash table iteration in removeIf()]
+                // [Int-indexed loop to avoid a safepoint poll]
+                for (int iterGroupIndex = 0; iterGroupIndex < HASH_TABLE_GROUPS; iterGroupIndex++) {
+                    long iterDataGroupOffset = dataGroupOffset((long) iterGroupIndex);
+                    long dataGroup = readDataGroupAtOffset(this, iterDataGroupOffset);
+
+                    groupIteration:
+                    for (long bitMask = matchFull(dataGroup);
+                         bitMask != 0L;
+                         bitMask = clearLowestSetBit(bitMask)) {
+
+                        // [Inlined lowestMatchingSlotIndex]
+                        int trailingZeros = Long.numberOfTrailingZeros(bitMask);
+                        long allocIndex = extractAllocIndex(dataGroup, trailingZeros);
+                        long allocOffset = allocOffset(allocIndex);
+
+                        K key = readKeyAtOffset(this, allocOffset);
+                        V value = readValueAtOffset(this, allocOffset);
+
+                        if (!filter.test(key, value)) {
+                            continue groupIteration;
+                        }
+
+                        // TODO use hosted overflow mask (when implemented; inspired by
+                        //  hostedOverflowCounts in F14) to avoid a potentially expensive
+                        //  keyHashCode() call here.
+                        long baseGroupIndex = baseGroupIndex(map.keyHashCode(key));
+                        long outboundOverflowCount_perGroupDecrements =
+                                computeOutboundOverflowCount_perGroupChanges(
+                                        baseGroupIndex, (long) iterGroupIndex);
+                        /* if Supported intermediateSegments */
+                        int isFullCapacitySegment = 0;
+                        /* endif */
+                        // TODO research if it's possible to do something better than just call
+                        //  removeAtSlotNoShrink() in a loop, which may result in calling expensive
+                        //  operations a lot of times if nearly all entries are removed from the
+                        //  segment during this loop.
+                        bitSetAndState = map.removeAtSlotNoShrink(bitSetAndState, this,
+                                // [Not specializing removeAtSlotNoShrink()]
+                                /* if Supported intermediateSegments */isFullCapacitySegment,
+                                /* endif */
+                                outboundOverflowCount_perGroupDecrements, iterDataGroupOffset,
+                                setSlotEmpty(dataGroup, trailingZeros), allocIndex, allocOffset);
+                        // Matches the modCount field increment performed in removeAtSlotNoShrink().
+                        modCount++;
+                    }
+                }
+            } finally {
+                // [Writing bitSetAndState in a finally block]
+                if (modCount != initialModCount) {
+                    setBitSetAndState(this, bitSetAndState);
+                }
+            }
+            return modCount;
         }
 
         //endregion

@@ -122,7 +122,7 @@ tasks.withType(io.timeandspace.jpsg.JpsgTask) {
     with 'Tracking segmentOrderStats'
     with 'Disabled moveToMapWithShrunkArray'
     with 'Interleaved segments'
-    with 'NotSupported intermediateSegments'
+    with 'Supported intermediateSegments'
 
     exclude 'Continuous segments'
 }
