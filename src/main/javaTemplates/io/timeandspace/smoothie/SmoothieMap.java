@@ -1824,8 +1824,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             long tagGroup = readTagGroupAtOffset(segment, tagGroupOffset);
             long dataGroupOffset = dataGroupFromTagGroupOffset(tagGroupOffset);
             long dataGroup = readDataGroupAtOffset(segment, dataGroupOffset);
-            // bitMask loop:
-            // TODO compare with int-indexed loop with bitCount(bitMask) limit
+            // [bitMask loop]
             for (long bitMask = match(tagGroup, hashTagBits, dataGroup);
                  bitMask != 0L;
                  bitMask = clearLowestSetBit(bitMask)) {
