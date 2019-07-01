@@ -222,8 +222,17 @@ final class BitSetAndState {
      *         alloc indexes 2 and 3), or a value equal to or greater than {@link #allocCapacity}
      *         if the segment is full.
      * @see InterleavedSegments#allocIndexBoundaryForLocalAllocation
+     *
+     * @implNote TODO document pass allocCapacity vs. compute it from bitSetAndState tradeoff.
      */
-    static int freeAllocIndexClosestTo(long bitSetAndState, int allocIndexBoundary) {
+    static int freeAllocIndexClosestTo(long bitSetAndState, int allocIndexBoundary
+            /* if Supported intermediateSegments */, int allocCapacity/* endif */) {
+
+        /* if NotSupported intermediateSegments */
+        long bitSetMask = BIT_SET_MASK;
+        /* elif Supported intermediateSegments */
+        long bitSetMask = BIT_SET_MASK >>> (SEGMENT_MAX_ALLOC_CAPACITY - allocCapacity);
+        /* endif */
         // If there are no free alloc indexes beyond allocIndexBoundary
         // distanceToClosestNextFreeAllocIndex must be at least BIT_SET_BITS so that it will be
         // greater than distanceToClosestPrevFreeAllocIndex if the latter points to a free alloc
@@ -234,7 +243,7 @@ final class BitSetAndState {
         // distanceToClosestNextFreeAllocIndex computed to 64 if there are no free alloc indexes
         // beyond allocIndexBoundary.
         int distanceToClosestNextFreeAllocIndex =
-                Long.numberOfTrailingZeros((bitSetAndState & BIT_SET_MASK) >>> allocIndexBoundary);
+                Long.numberOfTrailingZeros((bitSetAndState & bitSetMask) >>> allocIndexBoundary);
         // If all alloc indexes before the boundary are occupied (that is, the corresponding bits
         // are zero), the left shift just extends the bitSetAndState's values with zeros so that it
         // is all zeros and numberOfLeadingZeros() returns 64. distanceToClosestNextFreeAllocIndex
@@ -278,7 +287,6 @@ final class BitSetAndState {
         // closestPrevFreeAllocIndex altogether.
         return closestNextFreeAllocIndex + ((closestPrevFreeAllocIndex - closestNextFreeAllocIndex)
                 & distanceToPrevIsLessThanDistanceToPrev);
-
     }
 
     private static int signExtend(int v) {

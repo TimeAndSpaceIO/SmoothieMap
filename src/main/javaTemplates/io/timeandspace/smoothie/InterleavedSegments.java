@@ -233,12 +233,17 @@ final class InterleavedSegments {
      * IntermediateCapacitySegment} to not accidentally call a wrong static method (there are
      * static methods with same names in both).
      *
-     * @return the updated intermediateCapSegment_bitSetAndState, not yet written into
-     *         intermediateCapacitySegment; Note that the updated fullCapSegment_bitSetAndState is
-     *         written into fullCapacitySegment's {@link
-     *         ContinuousSegment_BitSetAndStateArea#bitSetAndState} inside this method.
+     * @return the updated fullCapacitySegment_bitSetAndState, not yet written into
+     *         fullCapacitySegment; Note that the updated intermediateCapacitySegment_bitSetAndState
+     *         is written into intermediateCapacitySegment's {@link
+     *         ContinuousSegment_BitSetAndStateArea#bitSetAndState} inside this method. Note that
+     *         it's opposite of the contract of the parallel {@link
+     *         ContinuousSegments.SegmentBase#swapContentsDuringSplit} method. It needs to be so
+     *         because fullCapacitySegment's bitSetAndState is expected to be set to {@link
+     *         BitSetAndState#BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE} when this method is
+     *         called and should remain so.
      *
-     * @implNote this method operates by fist copying intermediateCapacitySegment's hash table
+     * @implNote this method operates by first copying intermediateCapacitySegment's hash table
      * groups and entries to temporary arrays, then copying fullCapacitySegment's contents into
      * intermediateCapacitySegment, then copying intermediateCapacitySegment's contents from the
      * temporary arrays to fullCapacitySegment. So this method is not garbage-free: it allocates
@@ -251,9 +256,8 @@ final class InterleavedSegments {
      * allocations in this method are an insignificant contribution to the total garbage produce.
      *
      * Conceptually, swapping hash tables and alloc areas in InterleavedSegments is more complicated
-     * than in {@link // with Continuous segments //ContinuousSegments// endwith //} because the
-     * need to preserve "affinity" between hash table's groups and alloc indexes of entries stored
-     * in the corresponding groups: see {@link
+     * than in {@link ContinuousSegments} because the need to preserve "affinity" between hash
+     * table's groups and alloc indexes of entries stored in the corresponding groups: see {@link
      * FullCapacitySegment#allocIndexBoundaryForLocalAllocation}, {@link
      * FullCapacitySegment#insertDuringContentsMove}, and the parallel methods in {@link
      * IntermediateCapacitySegment}.
@@ -273,11 +277,12 @@ final class InterleavedSegments {
                 intermediateCapSegment.copyEntriesToArrayDuringSegmentSwap();
         long intermediateCapSegment_outboundOverflowCountsPerGroup =
                 getOutboundOverflowCountsPerGroup(intermediateCapSegment);
-        // This method expects intermediateCapacitySegment's outbound overflow counts to be zero for
-        // all groups. This is because swapContentsDuringSplit() is called from SmoothieMap.split()
-        // where intermediateCapacitySegment is created privately (so no other thread can possibly
-        // modify it in parallel) and in the logic of SmoothieMap.split() itself outbound overflow
-        // counts are not written until the end of the method (after the call to
+        // Zero intermediateCapSegment_outboundOverflowCountsPerGroup: this method expects
+        // intermediateCapacitySegment's outbound overflow counts to be zero for all groups. This is
+        // because swapContentsDuringSplit() is called from SmoothieMap.split() where
+        // intermediateCapacitySegment is created privately (so no other thread can possibly modify
+        // it in parallel) and in the logic of SmoothieMap.split() itself outbound overflow counts
+        // are not written until the end of the method (after the call to
         // swapContentsDuringSplit()).
         //
         // However, FullCapacitySegment.copyContentsFromArrays() which is called below doesn't
@@ -293,17 +298,23 @@ final class InterleavedSegments {
         // SEGMENT_INTERMEDIATE_ALLOC_CAPACITY (32) > SEGMENT_MAX_ALLOC_CAPACITY / 2 (24)) so
         // moveContentsFromFullToIntermediateCapacitySegment() won't overwrite all indexes in
         // intermediateCapSegment's alloc area.
-        intermediateCapSegment.clearAllocArea();
-        intermediateCapSegment_bitSetAndState = clearBitSet(intermediateCapSegment_bitSetAndState);
-        intermediateCapSegment_bitSetAndState =
-                moveContentsFromFullToIntermediateCapacitySegment(fullCapSegment,
-                        intermediateCapSegment, intermediateCapSegment_bitSetAndState);
+        intermediateCapSegment.clearHashTableAndAllocArea();
+        moveContentsFromFullToIntermediateCapacitySegment(
+                fullCapSegment, intermediateCapSegment, intermediateCapSegment_bitSetAndState);
 
-        fullCapSegment.copyContentsFromArrays(fullCapSegment_bitSetAndState,
-                intermediateCapSegment_hashTable, intermediateCapSegment_entries,
+        // Need to clear fullCapSegment's alloc area because although the number of entries used to
+        // reside it is smaller than the number of entries in intermediateCapSegment_entries (see
+        // the explanation in the comment for intermediateCapSegment.clearHashTableAndAllocArea())
+        // the capacity of fullCapSegment (SEGMENT_MAX_ALLOC_CAPACITY) allows the old entries to be
+        // distributed in alloc indexes that are not going to be overwritten with
+        // intermediateCapSegment_entries.
+        fullCapSegment.clearHashTableAndAllocArea();
+        fullCapSegment_bitSetAndState = fullCapSegment.copyContentsFromArrays(
+                fullCapSegment_bitSetAndState, intermediateCapSegment_hashTable,
+                intermediateCapSegment_entries,
                 intermediateCapSegment_outboundOverflowCountsPerGroup);
 
-        return intermediateCapSegment_bitSetAndState;
+        return fullCapSegment_bitSetAndState;
     }
 
     /**
@@ -311,18 +322,14 @@ final class InterleavedSegments {
      * #moveContentsFromIntermediateToFullCapacitySegment} and has a similar structure with {@link
      * FullCapacitySegment#copyContentsFromArrays}. These methods should all be updated in parallel.
      *
-     * @param intermediateCapSegment_bitSetAndState must have all bits clear in the bit set,
-     *        identifying that all alloc indexes are clear
-     * @return the updated intermediateCapSegment_bitSetAndState, not yet written into
-     *         intermediateCapSegment
+     * This method writes the updated intermediateCapSegment_bitSetAndState into
+     * intermediateCapSegment's {@link ContinuousSegment_BitSetAndStateArea#bitSetAndState}.
      */
     @RarelyCalledAmortizedPerSegment
-    private static long moveContentsFromFullToIntermediateCapacitySegment(
+    private static void moveContentsFromFullToIntermediateCapacitySegment(
             FullCapacitySegment fullCapSegment, IntermediateCapacitySegment intermediateCapSegment,
             long intermediateCapSegment_bitSetAndState) {
-        /* if Enabled extraChecks */
-        verifyEqual(segmentSize(intermediateCapSegment_bitSetAndState), 0);
-        /* endif */
+        intermediateCapSegment_bitSetAndState = clearBitSet(intermediateCapSegment_bitSetAndState);
 
         // Same hash table iteration mode in symmetric methods: the performance considerations of
         // branchless vs. byte-by-byte hash table iteration (see the description of
@@ -364,9 +371,8 @@ final class InterleavedSegments {
                     groupIndex, fullCapSegment_dataGroup);
         }
 
+        setBitSetAndState(intermediateCapSegment, intermediateCapSegment_bitSetAndState);
         copyOutboundOverflowCountsPerGroup(fullCapSegment, intermediateCapSegment);
-
-        return intermediateCapSegment_bitSetAndState;
     }
 
     /**
@@ -755,8 +761,11 @@ final class InterleavedSegments {
          */
         private long insertDuringContentsMove(long bitSetAndState,
                 long groupIndex, int slotIndexWithinGroup, Object key, Object value) {
+            // TODO check if specialization of freeAllocIndexClosestTo() makes any difference here
+            //  or JIT compiler scalarizes the SEGMENT_MAX_ALLOC_CAPACITY argument cleanly.
             int insertionAllocIndex = freeAllocIndexClosestTo(bitSetAndState,
-                    allocIndexBoundaryForLocalAllocation((int) groupIndex));
+                    allocIndexBoundaryForLocalAllocation((int) groupIndex)
+                    /* if Supported intermediateSegments */, SEGMENT_MAX_ALLOC_CAPACITY/* endif */);
             /* if Enabled extraChecks */
             // Copying entries from a intermediate-capacity segment into a full-capacity segment
             // cannot result in an alloc area overflow.
@@ -785,17 +794,17 @@ final class InterleavedSegments {
          * #moveContentsFromFullToIntermediateCapacitySegment}. These two methods should be updated
          * in parallel.
          *
-         * This method writes the updated bitSetAndState into this segment's {@link
-         * ContinuousSegment_BitSetAndStateArea#bitSetAndState} and zeros into
-         * {@link ContinuousSegment_BitSetAndStateArea#outboundOverflowCountsPerGroup} (see the
-         * documentation for {@link #swapContentsDuringSplit} from where this method is called).
+         * This method writes zeros into this segment's {@link
+         * ContinuousSegment_BitSetAndStateArea#outboundOverflowCountsPerGroup}: see
+         * [Zero intermediateCapSegment_outboundOverflowCountsPerGroup].
          *
          * @param entries an array produced by {@link
          *        IntermediateCapacitySegment#copyEntriesToArrayDuringSegmentSwap} (see the
          *        structure of the array in the documentation for that method).
+         * @return the updated bitSetAndState, not yet written into this segment's memory
          */
         @RarelyCalledAmortizedPerSegment
-        private void copyContentsFromArrays(long bitSetAndState, long[] hashTable, Object[] entries,
+        private long copyContentsFromArrays(long bitSetAndState, long[] hashTable, Object[] entries,
                 long outboundOverflowCountsPerGroup) {
             bitSetAndState = clearBitSet(bitSetAndState);
 
@@ -827,8 +836,9 @@ final class InterleavedSegments {
                 copyOutboundOverflowBitsFrom((long) groupIndex, dataGroupToCopy);
             }
 
-            setBitSetAndState(this, bitSetAndState);
             setOutboundOverflowCountsPerGroup(this, outboundOverflowCountsPerGroup);
+
+            return bitSetAndState;
         }
 
         @Override
@@ -940,7 +950,7 @@ final class InterleavedSegments {
          */
         @Override
         void aggregateStats(SmoothieMap<K, V> map, OrdinarySegmentStats ordinarySegmentStats) {
-            ordinarySegmentStats.incrementAggregatedSegments();
+            ordinarySegmentStats.incrementAggregatedSegments(bitSetAndState);
             // Sticking to [Branchless hash table iteration] in a cold method: the performance
             // considerations of branchless vs. byte-by-byte hash table iteration (see the
             // description of [Branchless hash table iteration] for details) are not important in
@@ -1597,8 +1607,12 @@ final class InterleavedSegments {
          */
         private long insertDuringContentsMove(long bitSetAndState,
                 long groupIndex, int slotIndexWithinGroup, Object key, Object value) {
+            // TODO check if specialization of freeAllocIndexClosestTo() makes any difference here
+            //  or JIT compiler scalarizes the SEGMENT_INTERMEDIATE_ALLOC_CAPACITY argument cleanly.
             int insertionAllocIndex = freeAllocIndexClosestTo(bitSetAndState,
-                    allocIndexBoundaryForLocalAllocation((int) groupIndex));
+                    allocIndexBoundaryForLocalAllocation((int) groupIndex)
+                    /* if Supported intermediateSegments */, SEGMENT_INTERMEDIATE_ALLOC_CAPACITY
+                    /* endif */);
             if (insertionAllocIndex >= SEGMENT_INTERMEDIATE_ALLOC_CAPACITY) {
                 // Can happen if entries are inserted into fullCapacitySegment (see the code of
                 // swapContentsDuringSplit()) concurrently with split(), including
@@ -1738,7 +1752,7 @@ final class InterleavedSegments {
         /** [Method cloned in FullCapacitySegment and IntermediateCapacitySegment] */
         @Override
         void aggregateStats(SmoothieMap<K, V> map, OrdinarySegmentStats ordinarySegmentStats) {
-            ordinarySegmentStats.incrementAggregatedSegments();
+            ordinarySegmentStats.incrementAggregatedSegments(bitSetAndState);
             // Sticking to [Branchless hash table iteration] in a cold method: the performance
             // considerations of branchless vs. byte-by-byte hash table iteration (see the
             // description of [Branchless hash table iteration] for details) are not important in

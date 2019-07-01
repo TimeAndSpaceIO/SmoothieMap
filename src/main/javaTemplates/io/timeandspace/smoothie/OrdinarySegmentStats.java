@@ -7,6 +7,7 @@ import java.util.function.IntConsumer;
 import java.util.function.IntToLongFunction;
 import java.util.stream.IntStream;
 
+import static io.timeandspace.smoothie.BitSetAndState.allocCapacity;
 import static io.timeandspace.smoothie.HashTable.GROUP_SLOTS;
 import static io.timeandspace.smoothie.HashTable.HASH_TABLE_GROUPS;
 import static io.timeandspace.smoothie.HashTable.HASH_TABLE_GROUPS_MASK;
@@ -35,6 +36,8 @@ final class OrdinarySegmentStats {
 
     private int numAggregatedSegments = 0;
     private long numAggregatedFullSlots = 0;
+    private final long[] numAggregatedSegmentsPerAllocCapacity =
+            new long[SEGMENT_MAX_ALLOC_CAPACITY + 1];
     private final long[] numSlotsPerCollisionChainGroupLengths =
             new long[SEGMENT_MAX_ALLOC_CAPACITY / GROUP_SLOTS];
     private final long[] numSlotsPerNumCollisionKeyComparisons =
@@ -69,12 +72,15 @@ final class OrdinarySegmentStats {
         numAggregatedFullSlots++;
     }
 
-    void incrementAggregatedSegments() {
+    void incrementAggregatedSegments(long bitSetAndState) {
         numAggregatedSegments++;
+        numAggregatedSegmentsPerAllocCapacity[allocCapacity(bitSetAndState)]++;
     }
 
     void add(OrdinarySegmentStats other) {
         numAggregatedSegments += other.numAggregatedSegments;
+        addMetricArrays(
+                numAggregatedSegmentsPerAllocCapacity, other.numAggregatedSegmentsPerAllocCapacity);
         numAggregatedFullSlots += other.numAggregatedFullSlots;
         addMetricArrays(
                 numSlotsPerCollisionChainGroupLengths, other.numSlotsPerCollisionChainGroupLengths);
@@ -95,6 +101,12 @@ final class OrdinarySegmentStats {
     public String toString() {
         StringBuilder sb = new StringBuilder();
         sb.append(String.format("Number of segments: %d%n", numAggregatedSegments));
+
+        Count segments = new Count("segments",
+                allocCapacity -> numAggregatedSegmentsPerAllocCapacity[allocCapacity]);
+        appendNonZeroOrderedCountsWithPercentiles(
+                sb, "segments with alloc capacity =", numAggregatedSegmentsPerAllocCapacity.length,
+                singletonList(segments), allocCapacity -> {});
 
         double averageFullSlots = (double) numAggregatedFullSlots / (double) numAggregatedSegments;
         sb.append(String.format("Average full slots: %.2f%n", averageFullSlots));
@@ -164,7 +176,7 @@ final class OrdinarySegmentStats {
                     .mapToLong(count -> count.countFunction.applyAsLong(finalOrder))
                     .toArray();
             if (Arrays.stream(countsForOrder).allMatch(c -> c == 0)) {
-                continue; // skip all-zero columns zeros
+                continue; // skip all-zero columns
             }
             Arrays.setAll(
                     currentAggregatedCounts, i -> currentAggregatedCounts[i] + countsForOrder[i]);

@@ -747,6 +747,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
      * Creates a new, empty {@code SmoothieMap}.
      */
     SmoothieMap(SmoothieMapBuilder<K, V> builder) {
+        this.allocateIntermediateSegments = builder.allocateIntermediateSegments();
+
         SegmentsArrayLengthAndNumSegments initialSegmentsArrayLengthAndNumSegments =
                 chooseInitialSegmentsArrayLength(builder);
 
@@ -2868,14 +2870,15 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             long outboundOverflowCounts_perGroupIncrements, K key, long hash, V value,
             long groupIndex, long dataGroup, int insertionSlotIndexWithinGroup) {
         long bitSetAndState = getBitSetAndState(segment);
+        int allocCapacity = allocCapacity(bitSetAndState);
         /* if Continuous segments */
         int allocIndex = lowestFreeAllocIndex(bitSetAndState);
         // elif Interleaved segments */
         int allocIndex = freeAllocIndexClosestTo(bitSetAndState,
                 allocIndexBoundaryForLocalAllocation((int) groupIndex
-                /* if Supported intermediateSegments */, isFullCapacitySegment/* endif */));
+                /* if Supported intermediateSegments */, isFullCapacitySegment/* endif */)
+                /* if Supported intermediateSegments */, allocCapacity/* endif */);
         /* endif */
-        int allocCapacity = allocCapacity(bitSetAndState);
         if (allocIndex < allocCapacity) { // [Positive likely branch]
             doInsert(segment,
                     /* if Interleaved segments Supported intermediateSegments */
@@ -3035,7 +3038,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         int allocIndex = oldAllocCapacity;
         /* elif Interleaved segments */
         int allocIndex = freeAllocIndexClosestTo(bitSetAndState,
-                FullCapacitySegment.allocIndexBoundaryForLocalAllocation((int) groupIndex));
+                FullCapacitySegment.allocIndexBoundaryForLocalAllocation((int) groupIndex)
+                /* if Supported intermediateSegments */, newAllocCapacity/* endif */);
         /* endif */
         /* if Interleaved segments Supported intermediateSegments */
         int newSegment_isFullCapacity = 1;
@@ -3357,6 +3361,24 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 else {
                     // ### The entry is moved to intoSegment.
 
+                    // Read the value and purge the entry from fromSegment before [Swap segments]
+                    // because fromSegment_allocIndex and fromSegment_allocOffset will be invalid
+                    // after segment swap. Also, the entry must not be swapped into intoSegment
+                    // because it is put separately in [Put the entry into intoSegment]. Therefore,
+                    // the entry must be purged from fromSegment beforehand.
+                    V value = readValueAtOffset(fromSegment, fromSegment_allocOffset);
+
+                    // #### Purge the entry from fromSegment.
+                    {
+                        eraseKeyAndValueAtOffset(fromSegment, fromSegment_allocOffset);
+                        fromSegment_bitSetAndState =
+                                clearAllocBit(fromSegment_bitSetAndState, fromSegment_allocIndex);
+                        // Empty the iteration slot:
+                        iterDataGroup = setSlotEmpty(iterDataGroup, iterTrailingZeros);
+                        // Not doing anything with the corresponding tag group, i. e. leaving
+                        // "garbage" in the tag byte of the emptied slot.
+                    }
+
                     /* if Supported intermediateSegments */
                     // Swap segments:
                     // #### Swap fromSegment's and intoSegment's contents if the intoSegment is
@@ -3430,20 +3452,22 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                                         fromSegment_allocCapacity, fromSegment_bitSetAndState,
                                         intoSegment, intoSegment_allocCapacity);
                         /* elif Interleaved segments */
-                        intoSegment_bitSetAndState =
+                        fromSegment_bitSetAndState =
                                 InterleavedSegments.swapContentsDuringSplit(
                                         fromSegment, fromSegment_bitSetAndState,
                                         intoSegment, intoSegment_bitSetAndState);
                         /* endif */
                         // Swap fromSegment and intoSegment variables.
                         {
+                            /* if Continuous segments */
                             fromSegment_bitSetAndState = intoSegment_bitSetAndState;
-                            /* if Interleaved segments */
+                            /* elif Interleaved segments */
+                            intoSegment_bitSetAndState = fromSegment_bitSetAndState;
                             // The updated fromSegment_bitSetAndState is written into bitSetAndState
                             // field of fromSegment in the call to
                             // InterleavedSegments.swapContentsDuringSplit() above.
                             // See the documentation to that method.
-                            intoSegment_bitSetAndState = getBitSetAndState(fromSegment);
+                            fromSegment_bitSetAndState = getBitSetAndState(intoSegment);
                             /* endif */
 
                             Object tmpSegment = intoSegment;
@@ -3452,7 +3476,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
                             intoSegment_allocCapacity = fromSegment_allocCapacity;
 
-                            fromSegment_isFullCapacity = intoSegment_isFullCapacity;
+                            fromSegment_isFullCapacity = 0;
                             intoSegment_isFullCapacity = 1;
                         }
 
@@ -3471,8 +3495,6 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                     }
                     // end of [Swap segments]
                     /* endif */
-
-                    V value = readValueAtOffset(fromSegment, fromSegment_allocOffset);
 
                     // ### Put the entry into intoSegment:
                     {
@@ -3509,7 +3531,9 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                                         intoSegment_bitSetAndState,
                                         allocIndexBoundaryForLocalAllocation((int) groupIndex
                                             /* if Supported intermediateSegments */
-                                            , intoSegment_isFullCapacity/* endif */));
+                                            , intoSegment_isFullCapacity/* endif */)
+                                        /* if Supported intermediateSegments */
+                                        , intoSegment_allocCapacity/* endif */);
                                 intoSegment_bitSetAndState = setAllocBit(
                                         intoSegment_bitSetAndState, intoSegment_allocIndex);
                                 /* endif */
@@ -3529,17 +3553,6 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                             groupIndex = addGroupIndex(groupIndex, groupIndexStep);
                             // [No break condition in a loop searching for an empty slot]
                         }
-                    }
-
-                    // #### Purge the entry from fromSegment.
-                    {
-                        eraseKeyAndValueAtOffset(fromSegment, fromSegment_allocOffset);
-                        fromSegment_bitSetAndState =
-                                clearAllocBit(fromSegment_bitSetAndState, fromSegment_allocIndex);
-                        // Empty the iteration slot:
-                        iterDataGroup = setSlotEmpty(iterDataGroup, iterTrailingZeros);
-                        // Not doing anything with the corresponding tag group, i. e. leaving
-                        // "garbage" in the tag byte of the emptied slot.
                     }
                     continue groupIteration;
                 }
@@ -3567,22 +3580,25 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         //  intoSegment). The threshold may be a field of SmoothieMap dependent on the
         //  OptimizationFactors chosen for the map.
 
-        // ### Update fromSegment's bitSetAndState and outbound overflow counts.
-        setBitSetAndStateAfterBulkOperation(fromSegment, fromSegment_bitSetAndState);
-        // Need to update all groups rather than only those where the outbound overflow count is
-        // decremented to zero to overwrite potentially incorrect bits which may have been written
-        // to slots in [Writing incorrect outbound overflow data bits].
-        subtractOutboundOverflowCountsPerGroupAndUpdateAllGroups(fromSegment,
-                /* if Interleaved segments Supported intermediateSegments */
-                fromSegment_isFullCapacity,/* endif */
-                fromSegment_outboundOverflowCount_perGroupDeductions);
-
-        // ### Write out intoSegment's bitSetAndState and outbound overflow counts.
+        // ### Write out bitSetAndStates and outbound overflow counts.
         /* if Continuous segments */
         long intoSegment_bitSetAndState = makeBitSetAndStateForPrivatelyPopulatedContinuousSegment(
                 intoSegment_allocCapacity, newSegmentOrder, intoSegment_currentSize);
         /* endif */
-        setBitSetAndState(intoSegment, intoSegment_bitSetAndState);
+        // Using "swappedSegmentsInsideLoop" meaning of the
+        // swappedSegmentsInsideLoopAndFromSegmentIsHigher variable in this
+        // expression.
+        if (swappedSegmentsInsideLoopAndFromSegmentIsHigher == 0) {
+            setBitSetAndStateAfterBulkOperation(fromSegment, fromSegment_bitSetAndState);
+            setBitSetAndState(intoSegment, intoSegment_bitSetAndState);
+        } else {
+            setBitSetAndState(fromSegment, fromSegment_bitSetAndState);
+            setBitSetAndStateAfterBulkOperation(intoSegment, intoSegment_bitSetAndState);
+        }
+        subtractOutboundOverflowCountsPerGroupAndUpdateAllGroups(fromSegment,
+                /* if Interleaved segments Supported intermediateSegments */
+                fromSegment_isFullCapacity,/* endif */
+                fromSegment_outboundOverflowCount_perGroupDeductions);
         addOutboundOverflowCountsPerGroup(intoSegment,
                 /* if Interleaved segments Supported intermediateSegments */
                 intoSegment_isFullCapacity,/* endif */
@@ -3897,6 +3913,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         int intoSegment_allocCapacity = allocCapacity(intoSegment_bitSetAndState);
         /* if Interleaved segments Supported intermediateSegments */
+        // TODO check that Hotspot compiles this expression into branchless code.
         long fromSegment_isFullCapacity =
                 isFullCapacity(fromSegment_bitSetAndState) ? 1L : 0L;
         // TODO check that Hotspot compiles this expression into branchless code.
@@ -3965,7 +3982,9 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                             intoSegment_bitSetAndState,
                             allocIndexBoundaryForLocalAllocation((int) groupIndex
                                     /* if Supported intermediateSegments */
-                                    , intoSegment_isFullCapacity/* endif */));
+                                    , intoSegment_isFullCapacity/* endif */)
+                            /* if Supported intermediateSegments */, intoSegment_allocCapacity
+                            /* endif */);
                     intoSegment_bitSetAndState = setAllocBit(
                             intoSegment_bitSetAndState, intoSegment_allocIndex);
                     /* endif */
@@ -4094,7 +4113,9 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                             // guaranteed to be a full-capacity segment. See a check in the
                             // beginning of this method.
                             /* if Interleaved segments */FullCapacitySegment./* endif */
-                                    allocIndexBoundaryForLocalAllocation((int) groupIndex));
+                                    allocIndexBoundaryForLocalAllocation((int) groupIndex)
+                            /* if Supported intermediateSegments */, intoSegment_allocCapacity
+                            /* endif */);
                     intoSegment_bitSetAndState = setAllocBit(
                             intoSegment_bitSetAndState, intoSegment_allocIndex);
                     /* endif */
@@ -5714,7 +5735,10 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 this.dataByte = (byte) dataByte;
                 this.allocIndex = allocIndex;
                 /* if Interleaved segments Supported intermediateSegments */
-                long isFullCapacitySegment = isFullCapacity(getBitSetAndState(segment)) ? 1L : 0L;
+                // Using `instanceof FullCapacitySegment` rather than
+                // `isFullCapacity(getBitSetAndState())` because segment's bitSetAndState may be set
+                // to BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE at the moment.
+                long isFullCapacitySegment = segment instanceof FullCapacitySegment ? 1L : 0L;
                 /* endif */
                 long allocOffset = allocOffset((long) allocIndex
                         /* if Interleaved segments Supported intermediateSegments */
