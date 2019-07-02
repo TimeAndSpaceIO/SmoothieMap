@@ -38,11 +38,11 @@ public class GrowTest {
         for (int i = 0; i < 20_000_000; i++) {
             int key = random.nextInt();
             keys.add(key);
-            Integer res = map.put(key, 0);
+            Integer res = map.put(key, key);
             if (map.size() > keys.size()) {
                 throw new AssertionError();
             }
-            assertTrue(res == null || res == 0);
+            assertTrue(res == null || res == key);
         }
     }
 
@@ -50,7 +50,9 @@ public class GrowTest {
     public void growTest() {
         for (int i = 0; i < keys.size(); i++) {
             Integer key = keys.get(i);
-            assertEquals((Integer) 0, map.get(key));
+            if (!key.equals(map.get(key))) {
+                throw new AssertionError("" + i);
+            }
         }
     }
 
