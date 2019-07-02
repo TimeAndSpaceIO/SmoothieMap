@@ -229,6 +229,14 @@ final class InterleavedSegments {
      *    ContinuousSegment_BitSetAndStateArea#outboundOverflowCountsPerGroup})
      *  - Bit set parts of bitSetAndStates (see {@link BitSetAndState})
      *
+     * Conceptually, swapping hash tables and alloc areas in InterleavedSegments is more complicated
+     * than in {@link ContinuousSegments} because the need to preserve "affinity" between hash
+     * table's groups and alloc indexes of entries stored in the corresponding groups: see {@link
+     * FullCapacitySegment#allocIndexBoundaryForLocalAllocation}, {@link
+     * FullCapacitySegment#insertDuringContentsMove}, and the parallel methods in {@link
+     * IntermediateCapacitySegment}. This method changes the layout of entries in the allocation
+     * areas of both segments.
+     *
      * This method is placed outside of both {@link FullCapacitySegment} and {@link
      * IntermediateCapacitySegment} to not accidentally call a wrong static method (there are
      * static methods with same names in both).
@@ -254,13 +262,6 @@ final class InterleavedSegments {
      * [Swap segments] in {@link SmoothieMap#split}) and since intermediate-capacity segments are
      * used at all, the garbage produce of the SmoothieMap is much higher already so temporary array
      * allocations in this method are an insignificant contribution to the total garbage produce.
-     *
-     * Conceptually, swapping hash tables and alloc areas in InterleavedSegments is more complicated
-     * than in {@link ContinuousSegments} because the need to preserve "affinity" between hash
-     * table's groups and alloc indexes of entries stored in the corresponding groups: see {@link
-     * FullCapacitySegment#allocIndexBoundaryForLocalAllocation}, {@link
-     * FullCapacitySegment#insertDuringContentsMove}, and the parallel methods in {@link
-     * IntermediateCapacitySegment}.
      */
     @RarelyCalledAmortizedPerSegment
     static long swapContentsDuringSplit(Object fullCapacitySegment,

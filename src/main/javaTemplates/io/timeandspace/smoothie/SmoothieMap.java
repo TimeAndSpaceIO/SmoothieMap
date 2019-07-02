@@ -2993,6 +2993,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         if (acceptableOrderAfterSplitting &&
                 (modCountAddition =
                         tryEnsureSegmentsArrayCapacityForSplit(segmentOrder)) >= 0) {
+            // Matches the modCount field increment performed in
+            // tryEnsureSegmentsArrayCapacityForSplit().
             modCount += modCountAddition;
             splitAndInsert(modCount, segment, key, hash, value, bitSetAndState, segmentOrder);
         } else {
@@ -3013,9 +3015,10 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         setBitSetAndState(oldSegment, BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE);
 
         // ### Create a new segment.
+        /* if Continuous segments */
         //noinspection UnnecessaryLocalVariable
         int oldAllocCapacity = SEGMENT_INTERMEDIATE_ALLOC_CAPACITY;
-        //noinspection UnnecessaryLocalVariable
+        /* endif */
         int newAllocCapacity = SEGMENT_MAX_ALLOC_CAPACITY;
         Segment<?, ?> newSegment = grow(oldSegment, bitSetAndState, newAllocCapacity);
         // Reusing local variable: it's better to reuse an existing local variable than to introduce
@@ -3139,10 +3142,11 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
      * Segment#bitSetAndState}. intoSegment's bitSetAndState is also valid after this method
      * returns.
      *
-     * @return [boolean as long], 0 if fromSegment is the lower-index one of the two sibling
-     * segments after the split, or `1 << siblingSegmentsQualificationBitIndex` if fromSegment is
-     * the higher-index one. See the definition of swappedSegmentsInsideLoopAndFromSegmentIsHigher
-     * variable inside the method.
+     * @return [boolean as long], 0 if fromSegment (as a Java object rather than a conceptual
+     * SmoothieMap's segment: these two things differ after [Swap segments] inside this method) is
+     * the lower-index one of the two sibling segments after the split, or
+     * `1 << siblingSegmentsQualificationBitIndex` if fromSegment object is the higher-index
+     * segment. See the definition of swappedSegmentsInsideLoop variable inside the method.
      *
      * @apiNote siblingSegmentsQualificationBitIndex can be re-computed inside the method from
      * newSegmentOrder instead of being passed as a parameter. There is the same "pass-or-recompute"
@@ -3181,17 +3185,17 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         /* endif */
         long fromSegment_outboundOverflowCount_perGroupDeductions = 0;
         long intoSegment_outboundOverflowCount_perGroupAdditions = 0;
-        // boolean as long: reusing a variable for two purposes, as a sanity boolean flag
-        // ("swappedSegmentsInsideLoop") and as a bit indicating that fromSegment is the
-        // higher-index segment ("fromSegmentIsHigher") to minimize the number of variables in this
-        // giant method and thus reduce register pressure. This variable is of long type rather than
-        // int to avoid conversion inside [fromSegment iteration] loop, where
-        // entryShouldRemainInFromSegment is computed. "True" value of "swappedSegmentsInsideLoop"
-        // part of this variable corresponds to siblingSegmentsQualificationBit =
-        // 1 << siblingSegmentsQualificationBitIndex rather than just 1.
-        long swappedSegmentsInsideLoopAndFromSegmentIsHigher = 0;
-        // If this bit in a hash of some key is "fromSegmentIsHigher", then the entry should stay in
-        // fromSegment rather than move to intoSegment.
+        // boolean as long: this method splits the entries between fromSegment and intoSegment so
+        // that entries that should go into the lower-index conceptual SmoothieMap's segment (that
+        // is, their hash codes have 0 in siblingSegmentsQualificationBitIndex bit) remain in
+        // fromSegment and intoSegment corresponds to the higher-index conceptual segment. After
+        // [Swap segments], "Java object shells" of the two sibling segments swap. This is the
+        // information which should  be returned from this method: see its Javadoc. Instead of
+        // having `boolean swappedSegmentsInsideLoop` and returning
+        // `swappedSegmentsInsideLoop ? siblingSegmentsQualificationBit : 0L` this variable stores
+        // siblingSegmentsQualificationBit directly (which means "true"; 0 means "false") to avoid
+        // a branch in the return statement.
+        long swappedSegmentsInsideLoop = 0;
         long siblingSegmentsQualificationBit = 1L << siblingSegmentsQualificationBitIndex;
         /* if Interleaved segments Supported intermediateSegments */
         // TODO check that Hotspot compiles this expression into branchless code.
@@ -3282,11 +3286,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
                 long baseGroupIndex = baseGroupIndex(hash);
 
-                // Using "fromSegmentIsHigher" meaning of the
-                // swappedSegmentsInsideLoopAndFromSegmentIsHigher variable in this expression.
                 final boolean entryShouldRemainInFromSegment =
-                        (hash & siblingSegmentsQualificationBit) ==
-                                swappedSegmentsInsideLoopAndFromSegmentIsHigher;
+                        (hash & siblingSegmentsQualificationBit) == 0;
 
                 if (entryShouldRemainInFromSegment) { // 50-50 unpredictable branch
                     // ### The entry remains in fromSegment.
@@ -3363,9 +3364,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
                     // Read the value and purge the entry from fromSegment before [Swap segments]
                     // because fromSegment_allocIndex and fromSegment_allocOffset will be invalid
-                    // after segment swap. Also, the entry must not be swapped into intoSegment
-                    // because it is put separately in [Put the entry into intoSegment]. Therefore,
-                    // the entry must be purged from fromSegment beforehand.
+                    // after segment swap for Interleaved segments: see the documentation for
+                    // InterleavedSegments.swapContentsDuringSplit().
                     V value = readValueAtOffset(fromSegment, fromSegment_allocOffset);
 
                     // #### Purge the entry from fromSegment.
@@ -3417,17 +3417,13 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                         // SmoothieMap's operation), more methods to compile, poorer utilization of
                         // instruction cache. The disadvantages seem to outweigh the advantages.
 
-                        // Using "swappedSegmentsInsideLoop" meaning of the
-                        // swappedSegmentsInsideLoopAndFromSegmentIsHigher variable in this
-                        // expression.
-                        if (swappedSegmentsInsideLoopAndFromSegmentIsHigher != 0) {
+                        if (swappedSegmentsInsideLoop != 0) {
                             // Already swapped segments inside the splitting loop once. This might
                             // only happen if entries are inserted into fromSegment concurrently
                             // with the splitting loop.
                             throw new ConcurrentModificationException();
                         }
-                        swappedSegmentsInsideLoopAndFromSegmentIsHigher =
-                                siblingSegmentsQualificationBit;
+                        swappedSegmentsInsideLoop = siblingSegmentsQualificationBit;
 
                         // Write out the iterDataGroup as it may have been updated at
                         // [Empty the iteration slot].
@@ -3492,6 +3488,9 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                         iterBitMask = matchFull(iterDataGroup);
                         // Clear the already iterated bits to continue the loop correctly.
                         iterBitMask = clearLowestNBits(iterBitMask, iterTrailingZeros);
+                        // To be cleared on the next iteration step
+                        // `iterBitMask = clearLowestSetBit(iterBitMask)` of [groupIteration].
+                        iterBitMask |= 1L << iterTrailingZeros;
                     }
                     // end of [Swap segments]
                     /* endif */
@@ -3585,10 +3584,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         long intoSegment_bitSetAndState = makeBitSetAndStateForPrivatelyPopulatedContinuousSegment(
                 intoSegment_allocCapacity, newSegmentOrder, intoSegment_currentSize);
         /* endif */
-        // Using "swappedSegmentsInsideLoop" meaning of the
-        // swappedSegmentsInsideLoopAndFromSegmentIsHigher variable in this
-        // expression.
-        if (swappedSegmentsInsideLoopAndFromSegmentIsHigher == 0) {
+        if (swappedSegmentsInsideLoop == 0) {
             setBitSetAndStateAfterBulkOperation(fromSegment, fromSegment_bitSetAndState);
             setBitSetAndState(intoSegment, intoSegment_bitSetAndState);
         } else {
@@ -3616,7 +3612,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         }
         /* endif */
 
-        return swappedSegmentsInsideLoopAndFromSegmentIsHigher;
+        return swappedSegmentsInsideLoop;
     }
 
     /** Invariant before calling this method: oldSegment's size is equal to the capacity. */
