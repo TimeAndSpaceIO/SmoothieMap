@@ -260,7 +260,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
      * When alloc area of the particular segment is exhausted, on {@link #put} or similar op,
      *
      * 1) if there are several (2, 4.. ) references to the segment in the {@link #segmentsArray} array -
-     * half of them are replaced with refs to a newly created segment; entries from overflowed
+     * half of them are replaced with refs to a newly created segment; entries from overflown
      * segment are spread to this new segment.
      *
      * E. g. if segments array was
@@ -3404,7 +3404,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                     // because it would require to add a dummy loop and organize code in a
                     // very unnatural way.
                     if (intoSegment_currentSize == intoSegment_allocCapacity) {
-                        // ### Swapping segments if intermediate-capacity intoSegment is overflowed.
+                        // ### Swapping segments if intermediate-capacity intoSegment is overflown.
                         // Alternative to swapping segments inline the [fromSegment iteration] and
                         // swapping fromSegment and intoSegment variables is finishing iteration in
                         // a separate method like "finishSplitAfterSwap()". The advantage of this
