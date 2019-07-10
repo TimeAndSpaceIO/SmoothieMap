@@ -22,6 +22,8 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.util.stream.Stream;
 
+import static io.timeandspace.smoothie.Utils.verifyEqual;
+
 final class UnsafeUtils {
     static final Unsafe U;
 
@@ -40,6 +42,10 @@ final class UnsafeUtils {
      * constant in OpenJDK.
      */
     static final long ARRAY_INT_INDEX_SCALE_AS_LONG = Integer.BYTES;
+
+    static {
+        verifyEqual(ARRAY_INT_INDEX_SCALE_AS_LONG, (long) Unsafe.ARRAY_INT_INDEX_SCALE);
+    }
 
     static {
         try {
@@ -69,6 +75,21 @@ final class UnsafeUtils {
         } catch (NoSuchFieldException e) {
             throw new AssertionError(e);
         }
+    }
+
+    /** Polyfill implementation of Java 9's {@code VarHandle.releaseFence()}. */
+    static void releaseFence() {
+        U.storeFence();
+    }
+
+    /** Polyfill implementation of Java 9's {@code VarHandle.storeStoreFence()}. */
+    static void storeStoreFence() {
+        U.storeFence();
+    }
+
+    /** Polyfill implementation of Java 9's {@code VarHandle.acquireFence()}. */
+    static void acquireFence() {
+        U.loadFence();
     }
 
     private UnsafeUtils() {

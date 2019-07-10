@@ -17,6 +17,7 @@
 package io.timeandspace.smoothie;
 
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -56,6 +57,7 @@ public class GrowTest {
         }
     }
 
+    @Ignore
     @Test
     public void testClone() {
         SmoothieMap<Integer, Integer> clone = map.clone();

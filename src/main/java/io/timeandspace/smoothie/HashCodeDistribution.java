@@ -134,7 +134,7 @@ class HashCodeDistribution<K, V> {
      * third bit, or the bit number 2 if zero-indexed) of hash codes, either global: most hash codes
      * of keys in the SmoothieMap have either 0 or 1 in the third bit, or there is a correlation
      * between the third bit and one of the bits that are used to determine to which segment a key
-     * with a hash code should go (see {@link SmoothieMap#segmentByHash} and {@link
+     * with a hash code should go (see {@link SmoothieMap#segmentLookupBits} and {@link
      * SmoothieMap#firstSegmentIndexByHashAndOrder}), i. e. a correlation with the {@link
      * SmoothieMap#SEGMENT_LOOKUP_HASH_SHIFT}-th bit or any higher bit, or a combination of some of
      * these bits.
@@ -250,7 +250,7 @@ class HashCodeDistribution<K, V> {
      * Determines whether a segment of the given size with the given order is an example of poor
      * inter-segment hash distribution, i. e. distribution of bits of hash codes that are used
      * to compute indexes in {@link SmoothieMap#segmentsArray} (see {@link
-     * SmoothieMap#segmentByHash}), considering {@link
+     * SmoothieMap#segmentLookupBits}), considering {@link
      * #poorHashCodeDistrib_badOccasion_minReportingProb}.
      *
      * The given averageSegmentOrder must be equal to the result of {@link

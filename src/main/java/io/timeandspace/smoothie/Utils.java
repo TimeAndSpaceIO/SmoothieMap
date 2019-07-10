@@ -112,5 +112,13 @@ final class Utils {
         throw (T) t;
     }
 
+    @SuppressWarnings("SuspiciousSystemArraycopy")
+    static void duplicateArray(Object array, int arrayLength, int filledLowPartLength) {
+        for (; filledLowPartLength < arrayLength; filledLowPartLength *= 2) {
+            System.arraycopy(array, 0, array, filledLowPartLength,
+                    filledLowPartLength);
+        }
+    }
+
     private Utils() {}
 }

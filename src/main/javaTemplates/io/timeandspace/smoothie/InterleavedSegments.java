@@ -247,9 +247,9 @@ final class InterleavedSegments {
      *         ContinuousSegment_BitSetAndStateArea#bitSetAndState} inside this method. Note that
      *         it's opposite of the contract of the parallel {@link
      *         ContinuousSegments.SegmentBase#swapContentsDuringSplit} method. It needs to be so
-     *         because fullCapacitySegment's bitSetAndState is expected to be set to {@link
-     *         BitSetAndState#BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE} when this method is
-     *         called and should remain so.
+     *         because fullCapacitySegment's bitSetAndState is expected to be a bulk operation
+     *         placeholder (see {@link BitSetAndState#makeBulkOperationPlaceholderBitSetAndState})
+     *         when this method is called and should remain so.
      *
      * @implNote this method operates by first copying intermediateCapacitySegment's hash table
      * groups and entries to temporary arrays, then copying fullCapacitySegment's contents into

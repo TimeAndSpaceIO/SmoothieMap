@@ -22,6 +22,7 @@ import io.timeandspace.collect.Equivalence;
 import io.timeandspace.collect.map.KeyValue;
 import io.timeandspace.collect.map.ObjObjMap;
 import io.timeandspace.smoothie.InterleavedSegments.FullCapacitySegment;
+import io.timeandspace.smoothie.InterleavedSegments.IntermediateCapacitySegment;
 import org.checkerframework.checker.index.qual.NonNegative;
 import org.checkerframework.checker.index.qual.Positive;
 import org.checkerframework.checker.nullness.qual.EnsuresNonNull;
@@ -29,8 +30,10 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 import org.checkerframework.checker.nullness.qual.Nullable;
 import org.checkerframework.common.value.qual.IntRange;
 import org.jetbrains.annotations.Contract;
+import org.jetbrains.annotations.NotNull;
 
 import java.io.IOException;
+import java.io.InvalidObjectException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.Serializable;
@@ -47,7 +50,6 @@ import java.util.Iterator;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
@@ -56,7 +58,6 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.ToLongFunction;
 
-import static io.timeandspace.smoothie.BitSetAndState.BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE;
 import static io.timeandspace.smoothie.BitSetAndState.SEGMENT_ORDER_UNIT;
 import static io.timeandspace.smoothie.BitSetAndState.allocCapacity;
 import static io.timeandspace.smoothie.BitSetAndState.clearAllocBit;
@@ -65,11 +66,13 @@ import static io.timeandspace.smoothie.BitSetAndState.extractBitSetForIteration;
 import static io.timeandspace.smoothie.BitSetAndState.freeAllocIndexClosestTo;
 import static io.timeandspace.smoothie.BitSetAndState.incrementSegmentOrder;
 /* if Interleaved segments Supported intermediateSegments */
+import static io.timeandspace.smoothie.BitSetAndState.isBulkOperationPlaceholderBitSetAndState;
 import static io.timeandspace.smoothie.BitSetAndState.isFullCapacity;
 /* endif */
 import static io.timeandspace.smoothie.BitSetAndState.isInflatedBitSetAndState;
 import static io.timeandspace.smoothie.BitSetAndState.lowestFreeAllocIndex;
 import static io.timeandspace.smoothie.BitSetAndState.makeBitSetAndStateForPrivatelyPopulatedContinuousSegment;
+import static io.timeandspace.smoothie.BitSetAndState.makeBulkOperationPlaceholderBitSetAndState;
 import static io.timeandspace.smoothie.BitSetAndState.makeInflatedBitSetAndState;
 import static io.timeandspace.smoothie.BitSetAndState.makeNewBitSetAndState;
 import static io.timeandspace.smoothie.BitSetAndState.segmentOrder;
@@ -137,6 +140,7 @@ import static io.timeandspace.smoothie.OutboundOverflowCounts.incrementOutboundO
 import static io.timeandspace.smoothie.OutboundOverflowCounts.outboundOverflowCount_groupForChange;
 import static io.timeandspace.smoothie.OutboundOverflowCounts.outboundOverflowCount_markGroupForChange;
 import static io.timeandspace.smoothie.OutboundOverflowCounts.subtractOutboundOverflowCountsPerGroupAndUpdateAllGroups;
+import static io.timeandspace.smoothie.IsFullCapacitySegmentBitSet.bitSetArrayLengthFromSegmentsArrayLength;
 import static io.timeandspace.smoothie.Segments.valueOffsetFromAllocOffset;
 import static io.timeandspace.smoothie.SmoothieMap.Segment.HASH__BASE_GROUP_INDEX_BITS;
 import static io.timeandspace.smoothie.SmoothieMap.Segment.TAG_HASH_BITS;
@@ -155,7 +159,11 @@ import static io.timeandspace.smoothie.UnsafeUtils.ARRAY_INT_INDEX_SCALE_AS_LONG
 import static io.timeandspace.smoothie.UnsafeUtils.ARRAY_OBJECT_BASE_OFFSET_AS_LONG;
 import static io.timeandspace.smoothie.UnsafeUtils.ARRAY_OBJECT_INDEX_SHIFT;
 import static io.timeandspace.smoothie.UnsafeUtils.U;
+import static io.timeandspace.smoothie.UnsafeUtils.acquireFence;
+import static io.timeandspace.smoothie.UnsafeUtils.getFieldOffset;
+import static io.timeandspace.smoothie.UnsafeUtils.storeStoreFence;
 import static io.timeandspace.smoothie.Utils.checkNonNull;
+import static io.timeandspace.smoothie.Utils.duplicateArray;
 import static io.timeandspace.smoothie.Utils.rethrowUnchecked;
 import static io.timeandspace.smoothie.Utils.verifyEqual;
 import static io.timeandspace.smoothie.Utils.verifyIsPowerOfTwo;
@@ -237,197 +245,6 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     }
 
     /**
-     * SmoothieMap implementation discussion
-     *
-     *
-     * In three lines
-     * ==============
-     *
-     * Segmented, N segments - power of 2, each segment has hash table area and allocation area,
-     * hash table slot: part of key's hash code -> index in alloc area, segment hash table size -
-     * constantly 128, alloc area - 35-63 places for entries, but same for segments within a map
-     *
-     *
-     * Algorithm Details (computer science POV)
-     * ========================================
-     *
-     * {@link #segmentsArray} array is typically larger than number of actual distinct segment objects.
-     * Normally, on Map construction it is twice larger (see {@link #chooseUpFrontScale}), e. g:
-     * [seg#0, seg#1, seg#2, seg#3, seg#0, seg#1, seg#2, seg#3]
-     *
-     * ~~~
-     *
-     * When alloc area of the particular segment is exhausted, on {@link #put} or similar op,
-     *
-     * 1) if there are several (2, 4.. ) references to the segment in the {@link #segmentsArray} array -
-     * half of them are replaced with refs to a newly created segment; entries from overflown
-     * segment are spread to this new segment.
-     *
-     * E. g. if segments array was
-     * [seg#0, seg#1, seg#0, seg#2, seg#0, seg#1, seg#0, seg#2]
-     *
-     * And seg#0 alloc area, is exhausted, a new seg#3 is allocated, and occurrences at indexes
-     * 2 and 6 of seg#0 are replaced with seg#3:
-     *
-     * [seg#0, seg#1, seg#3, seg#2, seg#0, seg#1, seg#3, seg#2]
-     *
-     * [call it minor hiccup],
-     * see {@link Segment#splitSegmentAndPut}
-     *
-     * 2) if there is already only 1 ref to the segment in the array, first the whole
-     * {@link #segmentsArray} array is doubled, then point 1) performed.
-     *
-     * E. g. is the array was
-     * [seg#0, seg#1, seg#0, seg#2]
-     *
-     * And seg#1 alloc area is exhausted, since there is only one occurrence of seg#1 in the array,
-     * it is doubled:
-     *
-     * [seg#0, seg#1, seg#0, seg#2, seg#0, seg#1, seg#0, seg#2]
-     *
-     * Then a new seg#3 is allocated, occurrence of seg#1 is replaced with seg#3 at index 5:
-     *
-     * [seg#0, seg#1, seg#0, seg#2, seg#0, seg#3, seg#0, seg#2]
-     *
-     * [call it major hiccup]
-     * see {@link #tryDoubleSegmentsArray()}
-     *
-     * Minor hiccup is new Segment allocation + some operations with at most 63 entries (incl.
-     * hash code computation, though), so this is O(1)
-     *
-     * Major hiccup is allocation a new array +
-     * System.arrayCopy of ~ ([map size] / 32-63 [average entries per segment] * 2-4 [array scale])
-     * + Minor hiccup,
-     * so this is O(N), but with very low constant, (~200 times smaller constant that O(N) of
-     * ordinary rehash in hash tables)
-     *
-     * ~~~
-     *
-     * Lowest log({@code segments.length}) bits of keys' hash code are used to choose segment,
-     * see {@link #segmentIndex(long)}
-     *
-     * Segment's hash table is open-addressing, linear hashing. "Keys" are 10-bit, "values"
-     * are 6-bit indices in alloc area, hash table slot size - 16 bits (2 bytes)
-     *
-     * Bits from 53rd to 62nd (10 bits) of keys' hash code used as "keys" in segment's hash table
-     * area (see {@link Segment#storedHash(long)}), hence this is meaningful for hash code to be
-     * well-distributed in high bits too, see {@link #keyHashCode}
-     *
-     * Bits from 57th to 63th of keys' hash code used to locate the slot in segment's hash table.
-     * I. e. they overlap by 6 bits (57th to 62nd) with bits, stored in this hash table themselves.
-     *
-     * Storing 4 "freeEntrySlot" bits (53rd to 56th) of key's hash codes in hash table reduce probability
-     * of:
-     * - actual comparison on non-equal keys
-     * - actual touch of alloc area when querying absent key
-     *
-     * by factor of 16, though already not very probably with 32-63 entries per segment on average.
-     *
-     * ~~~
-     *
-     * [Some theory just for ref]
-     * Linear hash table has the following probs, if load factor is alpha:
-     * average number of slots checked on successful search =
-     *   1/2 + 1/(2 * (1 - alpha))
-     * average number of slots checked on unsuccessful search =
-     *   1/2 + 1/(2 * (1 - alpha)^2)
-     *
-     * For our ranges of load factor:
-     *  average entries/segment: - load factor - av. success checks - av. unsuccess. checks
-     * 32 - 0.25 - 1.17 - 1.39
-     * 63 - 0.49 - 1.48 - 2.43
-     *
-     * ~~~
-     *
-     * Why that 32 - 63 average entries per segment?
-     *
-     * When average entries per segment is N, actual distribution of entries per segment is
-     * Poisson(N). Allocation capacity of segment is chosen to minimize expected footprint,
-     * accounting probability the segment to oversize capacity -> need to split in two segments. See
-     * See MathDecisions#chooseOptimalCap().
-     *
-     * We need to support a range of average entries/segment [x, y] where x = y/2 because
-     * segment's array sizes are granular to powers of 2.
-     *
-     * [32, 63] is the optimal [roundUp(y/2), y] frame in terms of average footprint, when
-     * allocation capacity is limited by 63.
-     *
-     * ~~~
-     *
-     * Why want allocation capacity to be at most 63? To keep the whole allocation state in a single
-     * {@code long} and find free places with cheap bitwise ops. This also explains why segments
-     * are generally not larger than just a few dozens of entries. Also, at most 63 entries in
-     * a segment allow to stored hash to overlap with hash bits, used to compute initial slot
-     * index, only by 6 lower bits (57th - 62nd bits), still without need to recompute hash code
-     * during {@link Segment#shiftRemove(long)}, see {@link Segment#shiftDistance(long, long)}.
-     *
-     * ~~~
-     *
-     * Why not 64 or 32 hash table slots, and accordingly less average entries per segment?
-     * - Poisson variance higher
-     * - Segment object header + segments array overhead is spread between lesser entries -> higher
-     * - The only advantage of smaller segments is smaller minor hiccups, but when map become really
-     * large major hiccup (doubling the segments array) dominates minor hiccup cost.
-     *
-     * So we want to make a segment as large as possible. But with limits:
-     * -- allocation addressing bits + stored hash bits <= 16, to make segment hash slot of 2 bytes
-     * -- the whole segment goes to a single 4K page to avoid several page faults per query
-     * -- handle allocations with simple operations with a single {@code long}
-     * -- well, still want minor hiccup to be not very large
-     *
-     * 256 slots / up to 127 allocation capacity is considerable, but 512+ is too much.
-     * My tests don't show clear winner between 128 and 256 slots, but implementing 128 is simpler,
-     * and minor hiccups are smaller
-     *
-     *
-     * Hardware and runtime details
-     * ============================
-     *
-     * Access {@link #segmentsArray} array via Unsafe in order not to touch segments array header
-     * cache line/page, see {@link #segmentByHash(long)}
-     *
-     * ~~~
-     *
-     * Segment is a single object with hash table area (see {@link Segment#t0}) as long fields
-     * and variable sized (object array like) allocation area, this requires to generate Segment
-     * subclasses for all all distinct capacities, see {@link SegmentClasses}. There might be some
-     * negative consequences. Class cache pollution?
-     *
-     * ~~~
-     *
-     * All primitives (hash codes, indices) are widened to {@code long} as early as possible,
-     * proceed and transmitted in long type, and shortened as late as possible. There is an
-     * observation that Hotspot (at least 8u60) generates clearer assembly from this, than from
-     * code when primitives are proceed in {@code int} type.
-     *
-     * ~~~
-     *
-     * Some ritual techniques are used after classes from {@link java.util} without analysis,
-     * examples include:
-     *  - assignment-with-use instead of separate assignment and first use
-     *  - inlined Utils.checkNonNull in {@link #compute} and similar methods
-     *  - the specific layout of key(value) comparison, namely k == key || key != null && key.eq(k)
-     *
-     * ~~~
-     *
-     * Iteration is done over allocation bits, not hash table slots (how e. g. in ChronicleMap).
-     * Advantages are:
-     *  - if iterator.remove() is not called, hash table area (it's cache lines) is not touched
-     *    at all
-     *  - access allocation area sequentially (with iteration over hash table slots, it jumps over
-     *    allocation area randomly)
-     *  - don't need to account shift deletion corner cases like repetitive visit of some entries,
-     *  that is probably not a big performance cost, but head ache and extra code. See e. g.
-     *  how this problem is addressed in {@link Segment#removeIf(SmoothieMap, BiPredicate, int)}
-     *
-     * On the other hand, when iterating over allocation area, iterator.remove(), requires
-     * re-computation of the key's hash code, that might be expensive, that is why {@link
-     * #removeIf(BiPredicate)}, {@link io.timeandspace.smoothie.SmoothieMap.KeySet#removeAll
-     * } and similar operations on collections, that are going to remove entries during iteration
-     * with good probability, are implemented via more traditional hash table slot traversal.
-     */
-
-    /**
      * {@link #segmentsArray} is always power of two sized. An array in Java couldn't have length
      * 2^31 because it's greater than {@link Integer#MAX_VALUE}, so 30 is the maximum.
      */
@@ -449,7 +266,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     /**
      * Using 30 for {@link ContinuousSegments} because statistically it leads to lower expected
      * SmoothieMap's memory footprint. Using 32 for {@link InterleavedSegments} because it's only
-     * very marginally worse than 30, but {@link InterleavedSegments.IntermediateCapacitySegment}
+     * very marginally worse than 30, but {@link IntermediateCapacitySegment}
      * can be fully symmetric with 4 allocation slots surrounding each hash table group. Also,
      * the probability of calling {@link
      * FullCapacitySegment#swapContentsDuringSplit} is lower
@@ -541,6 +358,11 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         if (minExpectedSize == SmoothieMapBuilder.UNKNOWN_SIZE) {
             return new SegmentsArrayLengthAndNumSegments(1, 1);
         }
+        return chooseInitialSegmentsArrayLengthInternal(minExpectedSize);
+    }
+
+    private static SegmentsArrayLengthAndNumSegments chooseInitialSegmentsArrayLengthInternal(
+            long minExpectedSize) {
         verifyThat(minExpectedSize >= 0);
         if (minExpectedSize <= SEGMENT_MAX_ALLOC_CAPACITY) {
             return new SegmentsArrayLengthAndNumSegments(1, 1);
@@ -640,12 +462,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
     /**
      * The number of the lowest bit in hash codes that is used (along with all the higher bits) to
-     * locate a segment (in {@link #segmentsArray}) for a key (see {@link #segmentByHash}).
+     * locate a segment (in {@link #segmentsArray}) for a key (see {@link #segmentLookupBits} and
+     * {@link #segmentBySegmentLookupBits}).
      *
      * The lowest {@link Segment#HASH__BASE_GROUP_INDEX_BITS} bits are used to locate the
      * first lookup group within a segment, the following {@link Segment#TAG_HASH_BITS} bits are
      * stored in the tag groups.
      */
+    @CompileTimeConstant
     static final int SEGMENT_LOOKUP_HASH_SHIFT = HASH__BASE_GROUP_INDEX_BITS + TAG_HASH_BITS;
 
     /**
@@ -655,24 +479,35 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     private static final int SEGMENT_ARRAY_OFFSET_HASH_SHIFT =
             SEGMENT_LOOKUP_HASH_SHIFT - ARRAY_OBJECT_INDEX_SHIFT;
 
-    private static final AtomicIntegerFieldUpdater<SmoothieMap> GROW_SEGMENTS_ARRAY_LOCK_UPDATER =
-            AtomicIntegerFieldUpdater.newUpdater(SmoothieMap.class, "growSegmentsArrayLock");
-    private static final int GROW_SEGMENTS_ARRAY_LOCK_UNLOCKED = 0;
-    private static final int GROW_SEGMENTS_ARRAY_LOCK_LOCKED = 1;
+    private static final
+    AtomicIntegerFieldUpdater<SmoothieMap> SEGMENT_STRUCTURE_MODIFICATION_STAMP_UPDATER =
+            AtomicIntegerFieldUpdater.newUpdater(
+                    SmoothieMap.class, "segmentStructureModStamp");
 
     private static final long MOD_COUNT_FIELD_OFFSET;
 
     static {
-        MOD_COUNT_FIELD_OFFSET = UnsafeUtils.getFieldOffset(SmoothieMap.class, "modCount");
+        MOD_COUNT_FIELD_OFFSET = getFieldOffset(SmoothieMap.class, "modCount");
     }
 
     protected static final long LONG_PHI_MAGIC = -7046029254386353131L;
 
     /**
-     * This field is used as a lock via {@link #GROW_SEGMENTS_ARRAY_LOCK_UPDATER} in {@link
-     * #growSegmentsArray}.
+     * This field is a {@link java.util.concurrent.locks.StampedLock}-inspired stamp which protects
+     * a SmoothieMap from concurrent modifications to the segment structure (in {@link
+     * #growSegmentsArray} and {@link #replaceInSegmentsArray}) which may lead to wrong memory
+     * access and corruption or a JVM crash.
+     *
+     * This field is used via {@link #SEGMENT_STRUCTURE_MODIFICATION_STAMP_UPDATER}.
+     *
+     * Unlike {@link java.util.concurrent.locks.StampedLock} where "locked" stamps are odd and
+     * unlocked stamps are even, a locked segmentStructureModStamp is negative and an unlocked
+     * segmentStructureModStamp is positive. This is done to allow {@link
+     * #acquireSegmentStructureModStamp()} called in hot methods while
+     * [Reading consistent segment and isFullCapacitySegment values] to compile in fewer machine
+     * instructions (or fused uops; see je/jz/jne).
      */
-    private volatile int growSegmentsArrayLock = GROW_SEGMENTS_ARRAY_LOCK_UNLOCKED;
+    private volatile int segmentStructureModStamp = 0;
 
     private volatile long segmentLookupMask;
     @Nullable Object segmentsArray;
@@ -698,10 +533,34 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
      */
     byte lastComputedAverageSegmentOrder;
 
-    /**
-     *
-     */
+    /* if Supported intermediateSegments */
     private boolean allocateIntermediateSegments;
+
+    /* if Interleaved segments */
+    /**
+     * An int[] array which is a {@link IsFullCapacitySegmentBitSet}. Value 1 at any index in
+     * the bit set identifies that the segment at the same index in {@link #segmentsArray} is a
+     * {@link FullCapacitySegment}, or {@link IntermediateCapacitySegment} if the corresponding
+     * value in the bit set is 0.
+     *
+     * The type of this field is Object rather than int[] to avoid class checks when
+     * [Avoid normal array access].
+     *
+     * No scalarization of this field is applied when the number of segments in the SmoothieMap is
+     * small (like it is done for {@link #segmentCountsByOrder}) because {@link
+     * IsFullCapacitySegmentBitSet#getValue} is on the hot point access path via {@link
+     * #isFullCapacitySegment} and it must be branchless.
+     *
+     * This field might be set to null if {@link #allocateIntermediateSegments} is false for a
+     * SmoothieMap. This would reduce SmoothieMap's memory footprint by a little and the number of
+     * memory accesses on the read path (which are likely to be in L1). On the other hand, it would
+     * require an extra null check on the read path and a branch which would have a potential to
+     * be unpredictable if there are several frequently used SmoothieMaps in the JVM with different
+     * {@link #allocateIntermediateSegments} setting. TODO compare the approaches
+     */
+    private Object isFullCapacitySegmentBitSet;
+    /* endif */
+    /* endif */
 
     /* if Flag doShrink */
     private boolean doShrink;
@@ -747,11 +606,18 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
      * Creates a new, empty {@code SmoothieMap}.
      */
     SmoothieMap(SmoothieMapBuilder<K, V> builder) {
+        /* if Supported intermediateSegments */
         this.allocateIntermediateSegments = builder.allocateIntermediateSegments();
+        /* endif */
 
         SegmentsArrayLengthAndNumSegments initialSegmentsArrayLengthAndNumSegments =
                 chooseInitialSegmentsArrayLength(builder);
 
+        initArrays(initialSegmentsArrayLengthAndNumSegments);
+    }
+
+    private void initArrays(
+            SegmentsArrayLengthAndNumSegments initialSegmentsArrayLengthAndNumSegments) {
         Object[] segmentsArray = initSegmentsArray(initialSegmentsArrayLengthAndNumSegments);
         updateSegmentLookupMask(segmentsArray.length);
         // Ensure that no thread sees null in the segmentsArray field and nulls as segmentsArray's
@@ -929,11 +795,15 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     }
 
     private int getInitialSegmentAllocCapacity(int segmentOrder) {
+        /* if Supported intermediateSegments */
         if (allocateIntermediateSegments) {
             return SEGMENT_INTERMEDIATE_ALLOC_CAPACITY;
         } else {
             return SEGMENT_MAX_ALLOC_CAPACITY;
         }
+        /* elif NotSupported intermediateSegments //
+        return SEGMENT_MAX_ALLOC_CAPACITY;
+        // endif */
     }
 
     //region segmentOrderStats-related methods
@@ -1129,8 +999,15 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         for (int i = 0; i < numCreatedSegments; i++) {
             segmentsArray[i] = createNewSegment(segmentAllocCapacity, segmentsOrder);
         }
-        duplicateSegments(segmentsArray, numCreatedSegments);
+        duplicateArray(segmentsArray, segmentsArray.length, numCreatedSegments);
         this.segmentsArray = segmentsArray;
+        /* if Interleaved segments Supported intermediateSegments */
+        int[] isFullCapacityBitSet = IsFullCapacitySegmentBitSet.allocate(segmentsArray.length);
+        if (segmentAllocCapacity == SEGMENT_MAX_ALLOC_CAPACITY) {
+            IsFullCapacitySegmentBitSet.setAll(isFullCapacityBitSet);
+        }
+        this.isFullCapacitySegmentBitSet = isFullCapacityBitSet;
+        /* endif */
         /* if Tracking segmentOrderStats */
         addToSegmentCountWithOrder(segmentsOrder, numCreatedSegments);
         /* endif */
@@ -1140,14 +1017,6 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     private void updateSegmentLookupMask(int segmentsArrayLength) {
         verifyIsPowerOfTwo(segmentsArrayLength, "segments array length");
         segmentLookupMask = ((long) segmentsArrayLength - 1) << SEGMENT_LOOKUP_HASH_SHIFT;
-    }
-
-    private static void duplicateSegments(Object[] segmentsArray, int filledLowPartLength) {
-        int segmentsArrayLength = segmentsArray.length;
-        for (; filledLowPartLength < segmentsArrayLength; filledLowPartLength *= 2) {
-            System.arraycopy(segmentsArray, 0, segmentsArray, filledLowPartLength,
-                    filledLowPartLength);
-        }
     }
 
     /**
@@ -1161,23 +1030,23 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
      *
      * Negative integer return contract: this method documents to return a negative value rather
      * than exactly -1 to enforce clients to use comparision with zero (< 0, or >= 0) rather than
-     * exact comparision with -1 (== -1, != -1), because the former requires less machine
+     * exact comparision with -1 (== -1, != -1) because the former requires less machine
      * instructions (see jz/je/jne).
      */
     @AmortizedPerSegment
-    final int tryEnsureSegmentsArrayCapacityForSplit(int priorSegmentOrder) {
+    private int tryEnsureSegmentsArrayCapacityForSplit(int priorSegmentOrder) {
         // Computing the current segmentsArray length from segmentLookupMask (a volatile variable)
         // to ensure that if this method returns early in [The current capacity is sufficient]
         // branch below, later reads of segmentsArray will observe a segmentsArray of at least the
-        // ensured capacity. This is not strictly required to avoid memory corruption, because in
+        // ensured capacity. This is not strictly required to avoid memory corruption because in
         // replaceInSegmentsArray() (the only method where writes to segmentsArray happen after
         // calling to tryEnsureSegmentsArrayCapacityForSplit()) the length of the array is used as
         // the loop bound anyway, but provides a little more confidence. Also reading the length of
         // segmentsArray directly is not guaranteed to be faster than computing it from
-        // segmentLookupMask, because the former incurs an extra data dependency. While reading
+        // segmentLookupMask because the former incurs an extra data dependency. While reading
         // segmentsArray field just once and passing it into both
         // tryEnsureSegmentsArrayCapacityForSplit() and (through a chain of methods) to
-        // replaceInSegmentsArray() is possible, it means adding a parameter to a number of methods,
+        // replaceInSegmentsArray() is possible, it means adding a parameter to a number of methods
         // that is cumbersome (for a method annotated @AmortizedPerSegment, i. e. shouldn't be
         // optimized _that_ hard) and has it's cost too, which is not guaranteed to be lower than
         // the cost of reading from the segmentsArray field twice.
@@ -1187,7 +1056,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         // requiredSegmentsArrayLength = 2^31 will overflow as an int.
         long requiredSegmentsArrayLength = 1L << (priorSegmentOrder + 1);
         if (visibleSegmentsArrayLength >= requiredSegmentsArrayLength) { // [Positive likely branch]
-            // The current capacity is sufficient.
+            // The current capacity is sufficient:
             return 0; // Didn't increment modCount in the course of this method call.
         } else {
             // [Positive likely branch]
@@ -1207,38 +1076,60 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
     @AmortizedPerOrder
     private void growSegmentsArray(int requiredSegmentsArrayLength) {
-        // Protecting growSegmentsArray() with a lock not only to detect concurrent modifications,
-        // but also because it's very hard to prove that no race between concurrent
-        // tryEnsureSegmentsArrayCapacityForSplit() calls (which could lead to accessing array
-        // elements beyond the array's length in segmentByHash()) is possible.
-        if (!GROW_SEGMENTS_ARRAY_LOCK_UPDATER.compareAndSet(this,
-                GROW_SEGMENTS_ARRAY_LOCK_UNLOCKED, GROW_SEGMENTS_ARRAY_LOCK_LOCKED)) {
-            throw new ConcurrentModificationException("Concurrent map update is in progress");
-        }
+        // Protecting growSegmentsArray() with
+        // beginSegmentStructureModification..endSegmentStructureModification not only to detect
+        // concurrent modifications but also because it's very hard to prove that no race between
+        // concurrent tryEnsureSegmentsArrayCapacityForSplit() calls (which may lead to accessing
+        // segmentsArray's elements beyond the array's length at [Avoid normal array access] in
+        // segmentBySegmentLookupBits()) is possible. For this reason and, additionally, since this
+        // method is AmortizedPerOrder (hence isn't performance-critical) the protection is always
+        // on rather than only when Interleaved segments with Supported intermediateSegments are
+        // used.
+        int lockedStamp = beginSegmentStructureModification();
         try {
             Object[] oldSegments = getNonNullSegmentsArrayOrThrowCme();
             // Check the length again, after an equivalent check in
             // tryEnsureSegmentsArrayCapacityForSplit(). Sort of double-checked locking.
             if (oldSegments.length < requiredSegmentsArrayLength) {
                 modCount++;
+
+                // [Unimportant order of isFullCapacitySegmentBitSet and segmentsArray updates].
+                // Here, isFullCapacitySegmentBitSet is updated before segmentsArray only for
+                // consistency with replaceInSegmentsArray().
+                /* if Interleaved segments Supported intermediateSegments */
+                int[] oldIsFullCapacitySegmentBitSet = (int[]) this.isFullCapacitySegmentBitSet;
+                this.isFullCapacitySegmentBitSet = IsFullCapacitySegmentBitSet.duplicate(
+                        oldIsFullCapacitySegmentBitSet, oldSegments.length,
+                        requiredSegmentsArrayLength);
+                /* endif */
+
                 Object[] newSegments = Arrays.copyOf(oldSegments, requiredSegmentsArrayLength);
-                duplicateSegments(newSegments, oldSegments.length);
-                // Ensures that no thread could see nulls as segmentsArray's elements.
+                duplicateArray(newSegments, newSegments.length, oldSegments.length);
+                // Ensures that no thread can see nulls as segmentsArray's elements. This fence is
+                // not needed when Interleaved segments with Supported intermediateSegments are used
+                // because [Reading consistent segment and isFullCapacitySegment values] guarantees
+                // against reading inconsistent values from segmentsArray (such as nulls) already.
+                /* if !(Interleaved segments Supported intermediateSegments) */
                 U.storeFence();
+                /* endif */
                 this.segmentsArray = newSegments;
-                // It's critical to update segmentLookupMask after assigning the new
-                // segments array into the segmentsArray field (the previous statement) to
-                // provide a happens-before (segmentLookupMask is volatile) with the code
-                // in segmentByHash() and thus guarantee impossibility of an illegal out of
-                // bounds access to an array. See the corresponding comment in
-                // segmentByHash().
+
+                // It's critical to update segmentLookupMask after assigning the new segments array
+                // into segmentsArray field and the new isFullCapacitySegment bit set into
+                // isFullCapacitySegmentBitSet field (see the code right above) to provide a
+                // happens-before (segmentLookupMask is volatile) with the code in
+                // segmentBySegmentLookupBits() and isFullCapacitySegment() via segmentLookupBits()
+                // (both segmentBySegmentLookupBits() and isFullCapacitySegment() accept
+                // hash_segmentLookupBits as a parameter that should be computed in
+                // segmentLookupBits()) and thus guarantee impossibility of an illegal out of bounds
+                // access to an array.
                 updateSegmentLookupMask(newSegments.length);
             } else {
                 throw new ConcurrentModificationException();
             }
         }
         finally {
-            growSegmentsArrayLock = GROW_SEGMENTS_ARRAY_LOCK_UNLOCKED;
+            endSegmentStructureModification(lockedStamp);
         }
     }
 
@@ -1247,22 +1138,9 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         return hash & segmentLookupMask;
     }
 
-    /** TODO update Javadoc links to this method and remove it because it's not used in real code */
-    @HotPath
-    final Object segmentByHash(long hash) {
-        // Reading segmentLookupMask before segmentsArray: it's critical here that segmentLookupMask
-        // field is read (in segmentLookupBits()) before segmentsArray field (in
-        // segmentBySegmentLookupBits()). This order provides a happens-before edge
-        // (segmentLookupMask is volatile) with the code in growSegmentsArray() and thus guarantees
-        // impossibility of an illegal (and crash- and memory corruption-prone because of Unsafe)
-        // out of bounds access to an array if some thread accesses a SmoothieMap concurrently with
-        // another thread growing it in growSegmentsArray().
-        return segmentBySegmentLookupBits(segmentLookupBits(hash));
-    }
-
     @HotPath
     private Object segmentBySegmentLookupBits(long hash_segmentLookupBits) {
-        long segmentArrayOffset = hash_segmentLookupBits >> SEGMENT_ARRAY_OFFSET_HASH_SHIFT;
+        long segmentArrayOffset = hash_segmentLookupBits >>> SEGMENT_ARRAY_OFFSET_HASH_SHIFT;
         @Nullable Object segmentsArray = this.segmentsArray;
         /* if Enabled moveToMapWithShrunkArray */
         // [segmentsArray non-null checks]
@@ -1282,17 +1160,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
     /* if Interleaved segments Supported intermediateSegments */
     @HotPath
-    private int isFullCapacitySegment(long hash_segmentLookupBits, Object segment) {
-        // TODO implement a bit set that allows to avoid accessing segment object's header on the
-        //  hot path of point accesses.
-        return segment instanceof FullCapacitySegment ? 1 : 0;
+    private int isFullCapacitySegment(long hash_segmentLookupBits) {
+        return IsFullCapacitySegmentBitSet.getValue(isFullCapacitySegmentBitSet,
+                hash_segmentLookupBits >>> SEGMENT_LOOKUP_HASH_SHIFT);
     }
 
     @AmortizedPerSegment
-    private int isFullCapacitySegmentByIndex(int segmentIndex, Object segment) {
-        // TODO implement a bit set that allows to avoid accessing segment object's header on the
-        //  hot path of point accesses.
-        return segment instanceof FullCapacitySegment ? 1 : 0;
+    private int isFullCapacitySegmentByIndex(int segmentIndex) {
+        return IsFullCapacitySegmentBitSet.getValue(isFullCapacitySegmentBitSet, (long) segmentIndex);
     }
     /* endif */
 
@@ -1371,30 +1246,107 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
      */
     @AmortizedPerSegment
     private void replaceInSegmentsArray(Object[] segmentsArray,
-            int firstReplacedSegmentIndex, int replacementSegmentOrder, Object replacementSegment) {
+            int firstReplacedSegmentIndex, int replacementSegmentOrder, Object replacementSegment
+            /* if Interleaved segments Supported intermediateSegments */
+            , boolean replacedSegment_isFullCapacity/* endif */) {
         modCount++;
         int step = 1 << replacementSegmentOrder;
-        for (int segmentIndex = firstReplacedSegmentIndex; segmentIndex < segmentsArray.length;
-             segmentIndex += step) {
-            // Not avoiding normal array access: couldn't [Avoid normal array access], because
-            // unless segmentsArray is read just once across all paths in put(), remove() etc.
-            // methods and passed all the way down as local parameter to replaceInSegmentsArray()
-            // (which is called in split(), tryShrink2(), and methods), that is likely not practical
-            // because it contributes to bytecode size and machine operations on the hot paths of
-            // methods like put() and remove(), a memory corrupting race is possible, because
-            // segmentsArray is not volatile and the second read of this field (e. g. the one
-            // performed in getNonNullSegmentsArrayOrThrowCme() to obtain an array version to be
-            // passed into this method) might see an _earlier_ version of the array with smaller
-            // length. See
-            // https://shipilev.net/blog/2016/close-encounters-of-jmm-kind/#wishful-hb-actual
-            // explaining how that is possible.
-            segmentsArray[segmentIndex] = replacementSegment;
+
+        /* if Interleaved segments Supported intermediateSegments */
+        // beginSegmentStructureModification..endSegmentStructureModification are fairly expensive
+        // (CAS operations and barriers), so avoiding them whenever only segmentsArray, but not
+        // isFullCapacitySegmentBitSet should be updated, including when Interleaved segments with
+        // Supported intermediateSegments are used. In particular, we avoids doing
+        // beginSegmentStructureModification..endSegmentStructureModification when intermediate
+        // segments are supported but allocateIntermediateSegments is false for a SmoothieMap in
+        // which case isFullCapacitySegmentBitSet is never updated in replaceInSegmentsArray().
+        //
+        // lockedStamp = 0 is not a valid "locked stamp" value (see
+        // isLockedSegmentStructureModStamp()), so it can be used as the default value to check
+        // against in the finally block below.
+        int lockedStamp = 0;
+        try {
+            // Updating isFullCapacitySegmentBitSet if needed.
+            // Unimportant order of isFullCapacitySegmentBitSet and segmentsArray updates: the order
+            // in which isFullCapacitySegmentBitSet and segmentsArray are updated isn't important
+            // since they are both protected with
+            // beginSegmentStructureModification..endSegmentStructureModification and both reads
+            // are verified while [Reading consistent segment and isFullCapacitySegment values].
+            // In replaceInSegmentsArray() isFullCapacitySegmentBitSet is updated first because it
+            // is more convenient: a single `if (isFullCapacitySegmentValue_needFlip) {}` branch is
+            // needed.
+            int[] isFullCapacitySegmentBitSet = (int[]) this.isFullCapacitySegmentBitSet;
+            if (isFullCapacitySegmentBitSet.length !=
+                    bitSetArrayLengthFromSegmentsArrayLength(segmentsArray.length)) {
+                // There should be growSegmentsArray() happening concurrently.
+                throwGenericCme();
+            }
+            // There is no specific reason why `instanceof FullCapacitySegment` is used rather than
+            // `BitSetAndState.isFullCapacity(getBitSetAndState(replacementSegment))` here. Both
+            // ways should work because replacementSegment's bitSetAndState is expected to be
+            // properly initialized already.
+            boolean replacementSegment_isFullCapacity =
+                    replacementSegment instanceof FullCapacitySegment;
+            boolean isFullCapacitySegmentValue_needFlip =
+                    replacedSegment_isFullCapacity ^ replacementSegment_isFullCapacity;
+            if (isFullCapacitySegmentValue_needFlip) {
+                lockedStamp = beginSegmentStructureModification();
+                for (int segmentIndex = firstReplacedSegmentIndex;
+                     segmentIndex < segmentsArray.length;
+                     segmentIndex += step) {
+                    // Cannot just flip a bit in isFullCapacitySegmentBitSet which would not require
+                    // `value` variable and would be computationally simpler than setValue() because
+                    // due to potential concurrent modifications the replaced segment (and changed
+                    // values in isFullCapacitySegmentBitSet) may not correspond to
+                    // replacedSegment_isFullCapacity by the time
+                    // beginSegmentStructureModification() is called. So flipping bits may result in
+                    // inconsistency between segmentsArray and isFullCapacitySegmentBitSet.
+                    int value = replacementSegment_isFullCapacity ? 1 : 0;
+                    IsFullCapacitySegmentBitSet.setValue(
+                            isFullCapacitySegmentBitSet, segmentIndex, value);
+                }
+            }
+            /* endif */
+
+            // Updating segmentsArray.
+            for (int segmentIndex = firstReplacedSegmentIndex; segmentIndex < segmentsArray.length;
+                 segmentIndex += step) {
+                // Not avoiding normal array access: couldn't [Avoid normal array access] because
+                // unless segmentsArray (and isFullCapacitySegmentBitSet) is read just once across
+                // all paths in put(), remove() etc. methods and passed all the way down as local
+                // parameter to replaceInSegmentsArray() (which is called in splitAndInsert(),
+                // tryShrink2(), and other methods) which is likely not practical because it
+                // contributes to bytecode size and machine operations on the hot paths of methods
+                // like put() and remove() then a memory corrupting race is possible because
+                // segmentsArray is not volatile and the second read of this field (e. g. the one
+                // performed in getNonNullSegmentsArrayOrThrowCme() to obtain an array version to be
+                // passed into this method) might see an _earlier_ version of the array with smaller
+                // length. See
+                // https://shipilev.net/blog/2016/close-encounters-of-jmm-kind/#wishful-hb-actual
+                // explaining how that is possible.
+                //
+                // When Interleaved segments with Supported intermediateSegments are used the
+                // condition explained above is not possible because there is a loadLoad fence
+                // imposed in validateSegmentStructureModStamp() between the reads of segmentsArray
+                // variable, however, we don't avoid normal array access in this case either for
+                // simplicity, consistency between of the cases and a little extra "backup"
+                // confidence in the safety of this code, also considering that this is an
+                // @AmortizedPerSegment method.
+                segmentsArray[segmentIndex] = replacementSegment;
+            }
+        /* if Interleaved segments Supported intermediateSegments */
         }
+        finally {
+            if (lockedStamp != 0) {
+                endSegmentStructureModification(lockedStamp);
+            }
+        }
+        /* endif */
     }
 
     /**
      * Should be called in point access and segment transformation methods, except in {@link
-     * #segmentByHash} (see the comment for {@link #throwIseSegmentsArrayNull}).
+     * #segmentBySegmentLookupBits} (see the comment for {@link #throwIseSegmentsArrayNull}).
      *
      * Must annotate with @Nullable when https://youtrack.jetbrains.com/issue/IDEA-210087 is fixed.
      */
@@ -1431,16 +1383,17 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
     /**
      * Reducing bytecode size of a hot method: extracting exception construction and throwing as
-     * a method in order to reduce the bytecode size of a hot method ({@link #segmentByHash} here),
-     * ultimately making SmoothieMap friendlier for inlining, because inlining thresholds and limits
-     * are defined in terms of the numbers of bytecodes in Hotspot JVM.
+     * a method in order to reduce the bytecode size of a hot method ({@link
+     * #segmentBySegmentLookupBits} here), ultimately making SmoothieMap friendlier for inlining,
+     * because inlining thresholds and limits are defined in terms of the numbers of bytecodes in
+     * Hotspot JVM.
      *
      * When {@link #segmentsArray} is found to be null, this method should be called only from
-     * {@link #segmentByHash} (among point access and segment transformation methods) because
-     * segmentByHash() is first called on all map query paths, so that if a SmoothieMap is
-     * mistakenly accessed after calling {@link #moveToMapWithShrunkArray()}, an
+     * {@link #segmentBySegmentLookupBits} (among point access and segment transformation methods)
+     * because {@link #segmentBySegmentLookupBits} is first called on all map query paths, so that
+     * if a SmoothieMap is mistakenly accessed after calling {@link #moveToMapWithShrunkArray()} an
      * IllegalStateException is thrown. In other methods {@link #getNonNullSegmentsArrayOrThrowCme()
-     * } should be called instead to throw a ConcurrentModificationException, because {@link
+     * } should be called instead to throw a ConcurrentModificationException because {@link
      * #segmentsArray} might be found to be null in other point access and segment transformation
      * methods only if the map is accessed concurrently.
      */
@@ -1458,6 +1411,12 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 "Explicit shrinking is done concurrently with other some " +
                         "modification operations on a map"
         );
+    }
+
+    /** [Reducing bytecode size of a hot method] */
+    @Contract(" -> fail")
+    private static void throwGenericCme() {
+        throw new ConcurrentModificationException("Concurrent map update is in progress");
     }
 
     final void incrementSize() {
@@ -1487,6 +1446,56 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         int actualModCount = getModCountOpaque();
         if (expectedModCount != actualModCount) {
             throw new ConcurrentModificationException();
+        }
+    }
+
+    private static boolean isLockedSegmentStructureModStamp(int stamp) {
+        return stamp < 0;
+    }
+
+    private int beginSegmentStructureModification() {
+        int stamp = segmentStructureModStamp;
+        int lockedStamp = Integer.MIN_VALUE | stamp;
+        if (isLockedSegmentStructureModStamp(stamp) ||
+                !SEGMENT_STRUCTURE_MODIFICATION_STAMP_UPDATER.compareAndSet(
+                        this, stamp, lockedStamp)) {
+            throwGenericCme();
+        }
+        // CAS above has the memory semantics of volatile read + volatile write (see
+        // VarHandle.compareAndSet() specification, referred from the Javadocs for
+        // AtomicIntegerFieldUpdater). Volatile read is an equivalent of a read + an acquire fence
+        // after the read, which is a LoadLoad + a LoadStore fence (see VarHandle.acquireFence()).
+        // Adding StoreStore fence here adds up to a _release_ fence (see VarHandle.releaseFence())
+        // between beginSegmentStructureModification() and the subsequent modifications to segment
+        // structure (segmentsArray or isFullCapacitySegmentBitSet) in growSegmentsArray() or
+        // replaceInSegmentsArray(). This means that if a partially-updated segment structure state
+        // is observed on the read path TODO insert link to read path
+        // than validateSegmentStructureModStamp() must observe the locked stamp in
+        // segmentStructureModStamp field in validateSegmentStructureModStamp() method.
+        // See also the "Algorithmic notes" in j.u.c.l.StampedLock source code in OpenJDK 9.
+        storeStoreFence();
+        return lockedStamp;
+    }
+
+    private void endSegmentStructureModification(int lockedStamp) {
+        verifyThat(isLockedSegmentStructureModStamp(lockedStamp));
+        segmentStructureModStamp = (lockedStamp + 1) & Integer.MAX_VALUE;
+    }
+
+    private int acquireSegmentStructureModStamp() {
+        int stamp = segmentStructureModStamp;
+        if (isLockedSegmentStructureModStamp(stamp)) {
+            throwGenericCme();
+        }
+        return stamp;
+    }
+
+    private void validateSegmentStructureModStamp(int stamp) {
+        // Using acquireFence() following j.u.c.l.StampedLock.validate() code in OpenJDK 9 although
+        // it's not clear why loadLoadFence() wouldn't suffice.
+        acquireFence();
+        if (stamp != segmentStructureModStamp) {
+            throwGenericCme();
         }
     }
 
@@ -1580,9 +1589,16 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         long hash = keyHashCode(key);
         long hash_segmentLookupBits = segmentLookupBits(hash);
+        /* if Interleaved segments Supported intermediateSegments */
+        // Reading consistent segment and isFullCapacitySegment values: they reside in different
+        // arrays, so to read consistent values the reads are confined between a stamp acquisition
+        // and validation, a-la j.u.c.l.StampedLock idiom.
+        int segmentStructureModStamp = acquireSegmentStructureModStamp();
+        /* endif */
         Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
         /* if Interleaved segments Supported intermediateSegments */
-        int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+        int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits);
+        validateSegmentStructureModStamp(segmentStructureModStamp);
         /* endif */
 
         return removeImpl(segment,
@@ -1598,9 +1614,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         long hash = keyHashCode(key);
         long hash_segmentLookupBits = segmentLookupBits(hash);
+        /* if Interleaved segments Supported intermediateSegments */
+        // [Reading consistent segment and isFullCapacitySegment values]
+        int segmentStructureModStamp = acquireSegmentStructureModStamp();
+        /* endif */
         Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
         /* if Interleaved segments Supported intermediateSegments */
-        int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+        int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits);
+        validateSegmentStructureModStamp(segmentStructureModStamp);
         /* endif */
 
         // TODO `== value` may be better than `!= null` (if the method also returns the
@@ -1619,9 +1640,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         long hash = keyHashCode(key);
         long hash_segmentLookupBits = segmentLookupBits(hash);
+        /* if Interleaved segments Supported intermediateSegments */
+        // [Reading consistent segment and isFullCapacitySegment values]
+        int segmentStructureModStamp = acquireSegmentStructureModStamp();
+        /* endif */
         Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
         /* if Interleaved segments Supported intermediateSegments */
-        int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+        int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits);
+        validateSegmentStructureModStamp(segmentStructureModStamp);
         /* endif */
 
         return replaceImpl(segment,
@@ -1638,9 +1664,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         long hash = keyHashCode(key);
         long hash_segmentLookupBits = segmentLookupBits(hash);
+        /* if Interleaved segments Supported intermediateSegments */
+        // [Reading consistent segment and isFullCapacitySegment values]
+        int segmentStructureModStamp = acquireSegmentStructureModStamp();
+        /* endif */
         Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
         /* if Interleaved segments Supported intermediateSegments */
-        int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+        int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits);
+        validateSegmentStructureModStamp(segmentStructureModStamp);
         /* endif */
 
         // TODO `== oldValue` may be better than `!= null` (if the method also returns the
@@ -1660,9 +1691,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         long hash = keyHashCode(key);
         long hash_segmentLookupBits = segmentLookupBits(hash);
+        /* if Interleaved segments Supported intermediateSegments */
+        // [Reading consistent segment and isFullCapacitySegment values]
+        int segmentStructureModStamp = acquireSegmentStructureModStamp();
+        /* endif */
         Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
         /* if Interleaved segments Supported intermediateSegments */
-        int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+        int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits);
+        validateSegmentStructureModStamp(segmentStructureModStamp);
         /* endif */
 
         return putImpl(segment,
@@ -1683,9 +1719,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     @HotPath
     private @Nullable V internalPutIfAbsent(K key, long hash, V value) {
         final long hash_segmentLookupBits = segmentLookupBits(hash);
-        final Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
         /* if Interleaved segments Supported intermediateSegments */
-        final int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+        // [Reading consistent segment and isFullCapacitySegment values]
+        int segmentStructureModStamp = acquireSegmentStructureModStamp();
+        /* endif */
+        Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
+        /* if Interleaved segments Supported intermediateSegments */
+        int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits);
+        validateSegmentStructureModStamp(segmentStructureModStamp);
         /* endif */
 
         return putImpl(segment,
@@ -1704,9 +1745,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         final long hash = keyHashCode(key);
         final long hash_segmentLookupBits = segmentLookupBits(hash);
+        /* if Interleaved segments Supported intermediateSegments */
+        // [Reading consistent segment and isFullCapacitySegment values]
+        final int segmentStructureModStamp = acquireSegmentStructureModStamp();
+        /* endif */
         final Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
         /* if Interleaved segments Supported intermediateSegments */
-        final int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+        final int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits);
+        validateSegmentStructureModStamp(segmentStructureModStamp);
         /* endif */
 
         final long baseGroupIndex = baseGroupIndex(hash);
@@ -1811,8 +1857,10 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         verifyNonNull(key);
 
         /* if Interleaved segments Supported intermediateSegments */
-        final long hash_segmentLookupBits = segmentLookupBits(hash);
-        final int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+        // Can't use branchless isFullCapacitySegment(segmentLookupBits(hash)) here because segment
+        // object is already given and there is no segmentStructureModStamp to validate with, as in
+        // [Reading consistent segment and isFullCapacitySegment values].
+        final int isFullCapacitySegment = segment instanceof FullCapacitySegment ? 1 : 0;
         /* endif */
 
         int numCollisionKeyComparisons = 0;
@@ -1877,9 +1925,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         final long hash = keyHashCode(key);
         final long hash_segmentLookupBits = segmentLookupBits(hash);
+        /* if Interleaved segments Supported intermediateSegments */
+        // [Reading consistent segment and isFullCapacitySegment values]
+        final int segmentStructureModStamp = acquireSegmentStructureModStamp();
+        /* endif */
         final Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
         /* if Interleaved segments Supported intermediateSegments */
-        final int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+        final int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits);
+        validateSegmentStructureModStamp(segmentStructureModStamp);
         /* endif */
 
         final long baseGroupIndex = baseGroupIndex(hash);
@@ -1937,9 +1990,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         final long hash = keyHashCode(key);
         final long hash_segmentLookupBits = segmentLookupBits(hash);
+        /* if Interleaved segments Supported intermediateSegments */
+        // [Reading consistent segment and isFullCapacitySegment values]
+        final int segmentStructureModStamp = acquireSegmentStructureModStamp();
+        /* endif */
         final Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
         /* if Interleaved segments Supported intermediateSegments */
-        final int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+        final int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits);
+        validateSegmentStructureModStamp(segmentStructureModStamp);
         /* endif */
 
         final long baseGroupIndex = baseGroupIndex(hash);
@@ -2433,9 +2491,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         final long hash = keyHashCode(key);
         final long hash_segmentLookupBits = segmentLookupBits(hash);
+        /* if Interleaved segments Supported intermediateSegments */
+        // [Reading consistent segment and isFullCapacitySegment values]
+        final int segmentStructureModStamp = acquireSegmentStructureModStamp();
+        /* endif */
         final Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
         /* if Interleaved segments Supported intermediateSegments */
-        final int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+        final int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits);
+        validateSegmentStructureModStamp(segmentStructureModStamp);
         /* endif */
 
         final long baseGroupIndex = baseGroupIndex(hash);
@@ -2567,9 +2630,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         final long hash = keyHashCode(key);
         final long hash_segmentLookupBits = segmentLookupBits(hash);
+        /* if Interleaved segments Supported intermediateSegments */
+        // [Reading consistent segment and isFullCapacitySegment values]
+        final int segmentStructureModStamp = acquireSegmentStructureModStamp();
+        /* endif */
         final Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
         /* if Interleaved segments Supported intermediateSegments */
-        final int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+        final int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits);
+        validateSegmentStructureModStamp(segmentStructureModStamp);
         /* endif */
 
         final long baseGroupIndex = baseGroupIndex(hash);
@@ -2724,9 +2792,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         final long hash = keyHashCode(key);
         final long hash_segmentLookupBits = segmentLookupBits(hash);
+        /* if Interleaved segments Supported intermediateSegments */
+        // [Reading consistent segment and isFullCapacitySegment values]
+        final int segmentStructureModStamp = acquireSegmentStructureModStamp();
+        /* endif */
         final Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
         /* if Interleaved segments Supported intermediateSegments */
-        final int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+        final int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits);
+        validateSegmentStructureModStamp(segmentStructureModStamp);
         /* endif */
 
         final long baseGroupIndex = baseGroupIndex(hash);
@@ -2954,20 +3027,22 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             long outboundOverflowCounts_perGroupIncrements, K key, long hash, V value,
             long groupIndex, long dataGroup, int insertionSlotIndexWithinGroup,
             long bitSetAndState) {
-        if (bitSetAndState == BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE) {
+        if (isBulkOperationPlaceholderBitSetAndState(bitSetAndState)) {
             throw new ConcurrentModificationException();
         }
 
+        /* if Supported intermediateSegments */
         // ### First route: check if the segment is intermediate-capacity and should be grown to
         // ### full size.
         // This branch could more naturally be placed in insert() (and then allocCapacity shouldn't
         // be passed into makeSpaceAndInsert()) but there is an objective to make bytecode size of
         // insert() as small as possible, see [Reducing bytecode size of a hot method]. TODO compare
-        if (allocCapacity == SEGMENT_INTERMEDIATE_ALLOC_CAPACITY) {
+        if (allocCapacity < SEGMENT_MAX_ALLOC_CAPACITY) {
             growCapacityAndInsert(segment, outboundOverflowCounts_perGroupIncrements, key, hash,
                     value, groupIndex, dataGroup, insertionSlotIndexWithinGroup, bitSetAndState);
             return;
         }
+        /* endif */
 
         // Need to read modCount here rather than inside methods splitAndInsert() and
         // inflateAndInsert() so that it is done before calling to
@@ -3012,7 +3087,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         // The old segment's bitSetAndState is never reset back to an operational value after this
         // statement.
-        setBitSetAndState(oldSegment, BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE);
+        setBitSetAndState(oldSegment, makeBulkOperationPlaceholderBitSetAndState(bitSetAndState));
 
         // ### Create a new segment.
         /* if Continuous segments */
@@ -3028,8 +3103,13 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         // ### Replace references from oldSegment to newSegment in segmentsArray.
         int segmentOrder = segmentOrder(bitSetAndState);
         int firstSegmentIndex = firstSegmentIndexByHashAndOrder(hash, segmentOrder);
+        /* if Interleaved segments Supported intermediateSegments */
+        boolean oldSegment_isFullCapacity = false;
+        /* endif */
         replaceInSegmentsArray(
-                getNonNullSegmentsArrayOrThrowCme(), firstSegmentIndex, segmentOrder, newSegment);
+                getNonNullSegmentsArrayOrThrowCme(), firstSegmentIndex, segmentOrder, newSegment
+                /* if Interleaved segments Supported intermediateSegments */
+                , oldSegment_isFullCapacity/* endif */);
         modCount++; // Matches the modCount field increment performed in replaceInSegmentsArray().
 
         // ### Insert the new entry.
@@ -3071,7 +3151,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         // The bitSetAndState of fromSegment is reset back to an operational value inside split(),
         // closer to the end of the method.
-        setBitSetAndState(fromSegment, BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE);
+        setBitSetAndState(fromSegment,
+                makeBulkOperationPlaceholderBitSetAndState(fromSegment_bitSetAndState));
 
         int siblingSegmentsOrder = priorSegmentOrder + 1;
 
@@ -3096,8 +3177,15 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 firstSegmentIndexByHashAndOrder(hash, priorSegmentOrder);
         int firstIntoSegmentIndex = chooseFirstSiblingSegmentIndex(
                 firstSiblingSegmentsIndex, siblingSegmentsOrder, intoSegmentIsLower);
+        /* if Interleaved segments Supported intermediateSegments */
+        // The logic of makeSpaceAndInsert() guarantees that splitAndInsert() is called only with
+        // full-capacity segments.
+        boolean fromSegment_isFullCapacity = true;
+        /* endif */
         replaceInSegmentsArray(getNonNullSegmentsArrayOrThrowCme(), firstIntoSegmentIndex,
-                siblingSegmentsOrder, intoSegment);
+                siblingSegmentsOrder, intoSegment
+                /* if Interleaved segments Supported intermediateSegments */
+                , fromSegment_isFullCapacity/* endif */);
         modCount++; // Matches the modCount field increment performed in replaceInSegmentsArray().
 
         /* if Tracking segmentOrderStats */
@@ -3622,7 +3710,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         // The old segment's bitSetAndState is never reset back to an operational value after this
         // statement.
-        setBitSetAndState(oldSegment, BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE);
+        setBitSetAndState(oldSegment, makeBulkOperationPlaceholderBitSetAndState(bitSetAndState));
 
         /* if Enabled extraChecks */
         // Checking preconditions for copyEntriesDuringInflate()
@@ -3635,8 +3723,15 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         ((Segment<K, V>) oldSegment).copyEntriesDuringInflate(this, inflatedSegment);
 
         int firstSegmentIndex = firstSegmentIndexByHashAndOrder(hash, segmentOrder);
+        /* if Interleaved segments Supported intermediateSegments */
+        // The logic of makeSpaceAndInsert() guarantees that inflateAndInsert() is called only with
+        // full-capacity segments.
+        boolean oldSegment_isFullCapacity = true;
+        /* endif */
         replaceInSegmentsArray(getNonNullSegmentsArrayOrThrowCme(),
-                firstSegmentIndex, segmentOrder, inflatedSegment);
+                firstSegmentIndex, segmentOrder, inflatedSegment
+                /* if Interleaved segments Supported intermediateSegments */
+                , oldSegment_isFullCapacity/* endif */);
         modCount++; // Matches the modCount field increment performed in replaceInSegmentsArray().
 
         if (inflatedSegment.put(this, key, hash, value, true /* onlyIfAbsent */) != null) {
@@ -3779,27 +3874,26 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
      */
     @AmortizedPerSegment
     private void tryShrink2(Object segmentOne, long segmentOne_bitSetAndState, long hash) {
+        if (isBulkOperationPlaceholderBitSetAndState(segmentOne_bitSetAndState)) {
+            // This segment is already being shrunk from a racing thread.
+            throw new ConcurrentModificationException();
+        }
+
         int segmentOneOrder = segmentOrder(segmentOne_bitSetAndState);
         // Guard in a non-HotPath method: the following branch is unlikely, but it is made
         // positive to reduce nesting in the rest of the method, contrary to the
         // [Positive likely branch] principle, since performance is not that critically important in
-        // tryShrink2(), because it is called only @AmortizedPerSegment, not @HotPath.
+        // tryShrink2(), because it is only @AmortizedPerSegment, not @HotPath.
         if (segmentOneOrder == 0) { // Unlikely branch
-            if (segmentOne_bitSetAndState != BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE) {
-                // Not shrinking the sole segment: if the segment has the order 0, it's the sole
-                // segment in the SmoothieMap, so it doesn't have a sibling to be merged with.
-                // Making this check in tryShrink2() is better for the case when it is false (that
-                // is, there are more than one segment in a SmoothieMap), because the hot
-                // tryShrink1() method therefore contains less code, and worse when this check is
-                // actually true, i. e. there is just one segment in a SmoothieMap, because
-                // tryShrink2() could then potentially be called frequently (unless inlined into
-                // tryShrink2()). It is chosen to favor the first case, because SmoothieMap's target
-                // optimization case is when it has more than one segment.
-                return;
-            } else {
-                // This segment is already being shrunk from a racing thread.
-                throw new ConcurrentModificationException();
-            }
+            // Not shrinking the sole segment: if the segment has the order 0, it's the sole segment
+            // in the SmoothieMap, so it doesn't have a sibling to be merged with. Making this check
+            // in tryShrink2() is better for the case when it is false (that is, there are more than
+            // one segment in a SmoothieMap), because the hot tryShrink1() method therefore contains
+            // less code, and worse when this check is actually true, i. e. there is just one
+            // segment in a SmoothieMap, because tryShrink2() could then potentially be called
+            // frequently (unless inlined into tryShrink2()). It is chosen to favor the first case,
+            // because SmoothieMap's target optimization case is when it has more than one segment.
+            return;
         }
 
         int modCount = getModCountOpaque();
@@ -3858,9 +3952,12 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 }
                 // The bitSetAndState is reset back to an operational value in the epilogue of the
                 // doShrinkInto() method.
-                setBitSetAndState(intoSegment, BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE);
+                setBitSetAndState(intoSegment,
+                        makeBulkOperationPlaceholderBitSetAndState(intoSegment_bitSetAndState));
                 replaceInSegmentsArray(
-                        segmentsArray, fromSegment_firstIndex, segmentOneOrder, intoSegment);
+                        segmentsArray, fromSegment_firstIndex, segmentOneOrder, intoSegment
+                        /* if Interleaved segments Supported intermediateSegments */
+                        , fromSegment instanceof FullCapacitySegment/* endif */);
                 // Matches the modCount field increment performed in replaceInSegmentsArray().
                 modCount++;
                 doShrinkInto(fromSegment, fromSegment_bitSetAndState, intoSegment,
@@ -3891,10 +3988,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             return;
         } else {
             // If the order of segmentTwo is observed to be lower than the order of segmentOne,
-            // it should be already shrinking in a racing thread. During shrinking, intoSegment's
-            // bitSetAndState is set to BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE that includes
-            // segment order of 0, i. e. less than segmentOne's order. When shrinking is complete,
-            // intoSegment's order is decremented, making it less than segmentOne's order too.
+            // it should be already shrinking in a racing thread.
             throw new ConcurrentModificationException();
         }
     }
@@ -4044,8 +4138,13 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         // safe.
 
         int firstSegmentIndex = firstSegmentIndexByHashAndOrder(hash, segmentOrder);
+        /* if Interleaved segments Supported intermediateSegments */
+        boolean inflatedSegment_isFullCapacitySegment = false;
+        /* endif */
         replaceInSegmentsArray(getNonNullSegmentsArrayOrThrowCme(), firstSegmentIndex, segmentOrder,
-                deflatedSegment);
+                deflatedSegment
+                /* if Interleaved segments Supported intermediateSegments */
+                , inflatedSegment_isFullCapacitySegment/* endif */);
         modCount++; // Matches the modCount field increment performed in replaceInSegmentsArray().
 
         checkModCountOrThrowCme(modCount);
@@ -4167,9 +4266,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         Segment<Object, Object> ordinarySegment =
                 createNewSegment(ordinarySegmentAllocCapacity, segmentOrder);
         int firstSegmentIndex = firstSegmentIndexByIndexAndOrder(segmentIndex, segmentOrder);
+        /* if Interleaved segments Supported intermediateSegments */
+        boolean inflatedSegment_isFullCapacitySegment = false;
+        /* endif */
         // replaceInSegmentsArray() increments modCount.
         replaceInSegmentsArray(getNonNullSegmentsArrayOrThrowCme(),
-                firstSegmentIndex, segmentOrder, ordinarySegment);
+                firstSegmentIndex, segmentOrder, ordinarySegment
+                /* if Interleaved segments Supported intermediateSegments */
+                , inflatedSegment_isFullCapacitySegment/* endif */);
     }
 
     /**
@@ -4226,8 +4330,13 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         Segment<K, V> resultSegmentOne =
                 createNewSegment(resultSegmentsAllocCapacity, resultSegmentsOrder);
         Object[] segmentsArray = getNonNullSegmentsArrayOrThrowCme();
+        /* if Interleaved segments Supported intermediateSegments */
+        boolean inflatedSegment_isFullCapacitySegment = false;
+        /* endif */
         replaceInSegmentsArray(
-                segmentsArray, firstIndexOfResultSegmentOne, resultSegmentsOrder, resultSegmentOne);
+                segmentsArray, firstIndexOfResultSegmentOne, resultSegmentsOrder, resultSegmentOne
+                /* if Interleaved segments Supported intermediateSegments */
+                , inflatedSegment_isFullCapacitySegment/* endif */);
         modCount++; // Matches the modCount field increment performed in replaceInSegmentsArray().
 
         int firstIndexOfResultSegmentTwo =
@@ -4235,7 +4344,9 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         Segment<K, V> resultSegmentTwo =
                 createNewSegment(resultSegmentsAllocCapacity, resultSegmentsOrder);
         replaceInSegmentsArray(
-                segmentsArray, firstIndexOfResultSegmentTwo, resultSegmentsOrder, resultSegmentTwo);
+                segmentsArray, firstIndexOfResultSegmentTwo, resultSegmentsOrder, resultSegmentTwo
+                /* if Interleaved segments Supported intermediateSegments */
+                , inflatedSegment_isFullCapacitySegment/* endif */);
         modCount++; // Matches the modCount field increment performed in replaceInSegmentsArray().
 
         /* if Tracking segmentOrderStats */
@@ -4260,11 +4371,18 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             V value = node.getValue();
             // [Possibly wrong hash from InflatedSegment's node]
             long hash = node.hash;
+
             long hash_segmentLookupBits = segmentLookupBits(hash);
-            Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
             /* if Interleaved segments Supported intermediateSegments */
-            int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits, segment);
+            // [Reading consistent segment and isFullCapacitySegment values]
+            final int segmentStructureModStamp = acquireSegmentStructureModStamp();
             /* endif */
+            final Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
+            /* if Interleaved segments Supported intermediateSegments */
+            final int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits);
+            validateSegmentStructureModStamp(segmentStructureModStamp);
+            /* endif */
+
             // [Publishing result segments before population in splitInflated] explains why we are
             // using "public" putImpl() method here. (1)
             if (putImpl(segment,
@@ -4437,43 +4555,53 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
     @Override
     public final SmoothieMap<K, V> clone() {
-        int modCount = getModCountOpaque();
-        Object[] segmentsArray = getNonNullSegmentsArrayOrThrowIse();
-        int segmentArrayLength = segmentsArray.length;
-        int segmentsArrayOrder = order(segmentArrayLength);
-        SmoothieMap<K, V> result;
-        try {
-            //noinspection unchecked
-            result = (SmoothieMap<K, V>) super.clone();
-        } catch (CloneNotSupportedException e) {
-            throw new AssertionError(e);
-        }
-        result.keySet = null;
-        result.values = null;
-        result.entrySet = null;
-        // TODO review concurrency of this method
-        Object[] resultSegmentsArray = segmentsArray.clone();
-        result.segmentsArray = resultSegmentsArray;
-        Segment<K, V> segment;
-        for (int segmentIndex = 0; segmentIndex >= 0;
-             segmentIndex = nextSegmentIndex(
-                     segmentArrayLength, segmentsArrayOrder, segmentIndex, segment)) {
-            segment = segmentByIndexDuringBulkOperations(segmentsArray, segmentIndex);
-            int segmentOrder = segmentOrder(getBitSetAndState(segment));
-            Segment<K, V> segmentClone = segment.clone();
-            // TODO check if segmentIndex is really the first index as required by
-            //  replaceInSegmentsArray()?
-            result.replaceInSegmentsArray(
-                    resultSegmentsArray, segmentIndex, segmentOrder, segmentClone);
-        }
-        checkModCountOrThrowCme(modCount);
-        // Safe publication of result.
-        U.storeFence();
-        return result;
+        throw new UnsupportedOperationException("TODO");
+        // TODO clone object fields: isFullCapacitySegmentBitSet, hashCodeDistribution,
+        //  segmentCountsByOrder, keySet, values, entrySet, (something else?)
+//        int modCount = getModCountOpaque();
+//        Object[] segmentsArray = getNonNullSegmentsArrayOrThrowIse();
+//        int segmentArrayLength = segmentsArray.length;
+//        int segmentsArrayOrder = order(segmentArrayLength);
+//        SmoothieMap<K, V> result;
+//        try {
+//            //noinspection unchecked
+//            result = (SmoothieMap<K, V>) super.clone();
+//        } catch (CloneNotSupportedException e) {
+//            throw new AssertionError(e);
+//        }
+//        result.keySet = null;
+//        result.values = null;
+//        result.entrySet = null;
+//        // TODO review concurrency of this method
+//        Object[] resultSegmentsArray = segmentsArray.clone();
+//        result.segmentsArray = resultSegmentsArray;
+//        Segment<K, V> segment;
+//        for (int segmentIndex = 0; segmentIndex >= 0;
+//             segmentIndex = nextSegmentIndex(
+//                     segmentArrayLength, segmentsArrayOrder, segmentIndex, segment)) {
+//            segment = segmentByIndexDuringBulkOperations(segmentsArray, segmentIndex);
+//            int segmentOrder = segmentOrder(getBitSetAndState(segment));
+//            Segment<K, V> segmentClone = segment.clone();
+//            // TODO check if segmentIndex is really the first index as required by
+//            //  replaceInSegmentsArray()?
+//            result.replaceInSegmentsArray(
+//                    resultSegmentsArray, segmentIndex, segmentOrder, segmentClone);
+//        }
+//        checkModCountOrThrowCme(modCount);
+//        // Safe publication of result.
+//        U.storeFence();
+//        return result;
     }
 
     private void writeObject(ObjectOutputStream s) throws IOException {
-        throw new UnsupportedOperationException("TODO");
+        /* if Supported intermediateSegments */
+        s.writeBoolean(allocateIntermediateSegments);
+        /* endif */
+        /* if Flag doShrink */
+        s.writeBoolean(doShrink);
+        /* endif */
+        s.writeLong(size);
+        writeAllEntries(s);
     }
 
     /** To be called from {@link #writeObject}. */
@@ -4494,7 +4622,22 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     }
 
     private void readObject(ObjectInputStream s) throws IOException, ClassNotFoundException {
-        throw new UnsupportedOperationException("TODO");
+        /* if Supported intermediateSegments */
+        allocateIntermediateSegments = s.readBoolean();
+        /* endif */
+        /* if Flag doShrink */
+        doShrink = s.readBoolean();
+        /* endif */
+        long numMappings = s.readLong();
+        if (numMappings < 0) {
+            throw new InvalidObjectException("Illegal mappings count: " + numMappings);
+        }
+        initArrays(chooseInitialSegmentsArrayLengthInternal(numMappings));
+        for (long i = 0; i < numMappings; i++) {
+            @SuppressWarnings("unchecked") K key = (K) s.readObject();
+            @SuppressWarnings("unchecked") V value = (V) s.readObject();
+            put(key, value);
+        }
     }
 
     @Override
@@ -4801,7 +4944,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             this.currentSegment = currentSegment;
             /* if Interleaved segments Supported intermediateSegments */
             this.currentSegment_isFullCapacity =
-                    smoothie.isFullCapacitySegmentByIndex(currentSegmentIndex, currentSegment);
+                    smoothie.isFullCapacitySegmentByIndex(currentSegmentIndex);
             /* endif */
             long currentSegment_bitSetAndState = getBitSetAndState(currentSegment);
 
@@ -5119,7 +5262,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
      *  {@link InterleavedSegments.IntermediateCapacitySegment_AllocationSpaceBeforeGroup0} ->
      *  ...
      *  {@link InterleavedSegments.IntermediateCapacitySegment_AllocationSpaceAfterGroup7} ->
-     *  {@link InterleavedSegments.IntermediateCapacitySegment} ->
+     *  {@link IntermediateCapacitySegment} ->
      *  {@link InflatedSegment}
      *
      * The confusing part is that {@link ContinuousSegment_BitSetAndStateArea} and {@link
@@ -5290,7 +5433,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         /**
          * Generalized version of {@link
          * InterleavedSegments.FullCapacitySegment#writeKeyAndValueAtIndex} and {@link
-         * InterleavedSegments.IntermediateCapacitySegment#writeKeyAndValueAtIndex}.
+         * IntermediateCapacitySegment#writeKeyAndValueAtIndex}.
          */
         static void writeKeyAndValueAtIndex(Object segment,
                 /* if Interleaved segments Supported intermediateSegments */
@@ -5401,7 +5544,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         /* if !(Interleaved segments Supported intermediateSegments) */
         /**
          * Mirror of {@link InterleavedSegments.FullCapacitySegment#hashCode(SmoothieMap)} and
-         * {@link InterleavedSegments.IntermediateCapacitySegment#hashCode(SmoothieMap)}.
+         * {@link IntermediateCapacitySegment#hashCode(SmoothieMap)}.
          */
         @Override
         int hashCode(SmoothieMap<K, V> map) {
@@ -5438,7 +5581,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         /* if !(Interleaved segments Supported intermediateSegments) */
         /**
          * Mirror of {@link InterleavedSegments.FullCapacitySegment#forEach} and
-         * {@link InterleavedSegments.IntermediateCapacitySegment#forEach}.
+         * {@link IntermediateCapacitySegment#forEach}.
          */
         @Override
         void forEach(BiConsumer<? super K, ? super V> action) {
@@ -5464,7 +5607,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         /* if !(Interleaved segments Supported intermediateSegments) */
         /**
          * Mirror of {@link InterleavedSegments.FullCapacitySegment#forEachKey} and
-         * {@link InterleavedSegments.IntermediateCapacitySegment#forEachKey}.
+         * {@link IntermediateCapacitySegment#forEachKey}.
          */
         @Override
         void forEachKey(Consumer<? super K> action) {
@@ -5489,7 +5632,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         /* if !(Interleaved segments Supported intermediateSegments) */
         /**
          * Mirror of {@link InterleavedSegments.FullCapacitySegment#forEachValue} and
-         * {@link InterleavedSegments.IntermediateCapacitySegment#forEachValue}.
+         * {@link IntermediateCapacitySegment#forEachValue}.
          */
         @Override
         void forEachValue(Consumer<? super V> action) {
@@ -5514,7 +5657,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         /* if !(Interleaved segments Supported intermediateSegments) */
         /**
          * Mirror of {@link InterleavedSegments.FullCapacitySegment#forEachWhile} and
-         * {@link InterleavedSegments.IntermediateCapacitySegment#forEachWhile}.
+         * {@link IntermediateCapacitySegment#forEachWhile}.
          */
         @Override
         boolean forEachWhile(BiPredicate<? super K, ? super V> predicate) {
@@ -5543,7 +5686,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         /* if !(Interleaved segments Supported intermediateSegments) */
         /**
          * Mirror of {@link InterleavedSegments.FullCapacitySegment#replaceAll} and
-         * {@link InterleavedSegments.IntermediateCapacitySegment#replaceAll}.
+         * {@link IntermediateCapacitySegment#replaceAll}.
          */
         @Override
         void replaceAll(BiFunction<? super K, ? super V, ? extends V> function) {
@@ -5569,7 +5712,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         /* if !(Interleaved segments Supported intermediateSegments) */
         /**
          * Mirror of {@link InterleavedSegments.FullCapacitySegment#containsValue} and
-         * {@link InterleavedSegments.IntermediateCapacitySegment#containsValue}.
+         * {@link IntermediateCapacitySegment#containsValue}.
          */
         @Override
         boolean containsValue(SmoothieMap<K, V> map, V queriedValue) {
@@ -5599,7 +5742,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         /* if !(Interleaved segments Supported intermediateSegments) */
         /**
          * Mirror of {@link InterleavedSegments.FullCapacitySegment#writeAllEntries} and
-         * {@link InterleavedSegments.IntermediateCapacitySegment#writeAllEntries}.
+         * {@link IntermediateCapacitySegment#writeAllEntries}.
          */
         @Override
         void writeAllEntries(ObjectOutputStream s) throws IOException {
@@ -5626,7 +5769,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         /* if !(Interleaved segments Supported intermediateSegments) */
         /**
          * Mirror of {@link InterleavedSegments.FullCapacitySegment#removeIf} and
-         * {@link InterleavedSegments.IntermediateCapacitySegment#removeIf}.
+         * {@link IntermediateCapacitySegment#removeIf}.
          */
         @Override
         int removeIf(
@@ -5731,9 +5874,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 this.dataByte = (byte) dataByte;
                 this.allocIndex = allocIndex;
                 /* if Interleaved segments Supported intermediateSegments */
-                // Using `instanceof FullCapacitySegment` rather than
-                // `isFullCapacity(getBitSetAndState())` because segment's bitSetAndState may be set
-                // to BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE at the moment.
+                // There is no specific reason to use `instanceof FullCapacitySegment` rather than
+                // `BitSetAndState.isFullCapacity(getBitSetAndState(segment))` here.
                 long isFullCapacitySegment = segment instanceof FullCapacitySegment ? 1L : 0L;
                 /* endif */
                 long allocOffset = allocOffset((long) allocIndex
@@ -5774,7 +5916,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             /* if Continuous segments //
             extends Segment<K, V>
             // elif Interleaved segments Supported intermediateSegments */
-            extends InterleavedSegments.IntermediateCapacitySegment<K, V>
+            extends IntermediateCapacitySegment<K, V>
             /* elif Interleaved segments NotSupported intermediateSegments //
             extends InterleavedSegments.FullCapacitySegment<K, V>
             // endif */ {

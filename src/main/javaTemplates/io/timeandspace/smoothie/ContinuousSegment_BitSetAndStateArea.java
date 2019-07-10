@@ -3,7 +3,8 @@ package io.timeandspace.smoothie;
 
 import java.util.ConcurrentModificationException;
 
-import static io.timeandspace.smoothie.BitSetAndState.BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE;
+import static io.timeandspace.smoothie.BitSetAndState.isBulkOperationPlaceholderBitSetAndState;
+import static io.timeandspace.smoothie.BitSetAndState.makeBulkOperationPlaceholderBitSetAndState;
 import static io.timeandspace.smoothie.UnsafeUtils.U;
 /* if Continuous segments */
 /* elif Interleaved segments //
@@ -116,17 +117,17 @@ abstract class ContinuousSegment_BitSetAndStateArea<K, V>
 
     static long replaceBitSetAndStateWithBulkOperationPlaceholderOrThrowCme(Object segment) {
         long bitSetAndState = getBitSetAndState(segment);
-        if (bitSetAndState == BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE) {
+        if (isBulkOperationPlaceholderBitSetAndState(bitSetAndState)) {
             throw new ConcurrentModificationException();
         }
-        setBitSetAndState(segment, BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE);
+        setBitSetAndState(segment, makeBulkOperationPlaceholderBitSetAndState(bitSetAndState));
         return bitSetAndState;
     }
 
     static void setBitSetAndStateAfterBulkOperation(Object segment, long newBitSetAndState) {
         // This extra check doesn't guarantee anything because the update is not atomic, but it
         // raises the chances of catching concurrent modification.
-        if (getBitSetAndState(segment) != BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE) {
+        if (!isBulkOperationPlaceholderBitSetAndState(getBitSetAndState(segment))) {
             throw new ConcurrentModificationException();
         }
         setBitSetAndState(segment, newBitSetAndState);

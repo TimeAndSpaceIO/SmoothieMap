@@ -2,6 +2,7 @@ package io.timeandspace.smoothie;
 
 import java.util.ConcurrentModificationException;
 
+import static io.timeandspace.smoothie.SmoothieMap.SEGMENT_INTERMEDIATE_ALLOC_CAPACITY;
 import static io.timeandspace.smoothie.SmoothieMap.SEGMENT_MAX_ALLOC_CAPACITY;
 import static io.timeandspace.smoothie.Utils.verifyEqual;
 import static io.timeandspace.smoothie.Utils.verifyThat;
@@ -28,7 +29,9 @@ import static io.timeandspace.smoothie.Utils.verifyThat;
  * The final 6 bits (from 58th to 63rd) are used to hold special values to identify ordinary
  * segments (value 0), {@link SmoothieMap.InflatedSegment}s ({@link
  * #INFLATED_SEGMENT_SPECIAL_VALUE}), and segments in bulk operation (value 1; see {@link
- * #BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE}).
+ * #MIN_BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE}). This choice of special values allows
+ * single-operation {@link #isInflatedBitSetAndState} and {@link
+ * #isBulkOperationPlaceholderBitSetAndState}.
  *
  * All four values are packed into a single long rather than having their own fields in order to
  * save memory. The saving is 8 bytes if UseCompressedOops is false and
@@ -105,24 +108,19 @@ final class BitSetAndState {
     private static final int INFLATED_SEGMENT_SPECIAL_VALUE = 1 << (SPECIAL_VALUE_BITS - 1);
 
     /**
-     * This value is assigned into a bitSetAndState in the beginning of bulk operations (like {@link
-     * SmoothieMap.Segment#tryShrink2} and {@link SmoothieMap#splitAndInsert})) so that concurrent
-     * operations could catch this condition and throw {@link ConcurrentModificationException} more
-     * likely.
-     *
-     * This value is comprised of a full bit set (see {@link #EMPTY_BIT_SET}), an extra alloc
-     * capacity of 0, a segment order of 0, and a special value 1. Any entry insertion or deletion
-     * operation triggers either shrinking or growing if encounters this bitSetAndState, where it is
-     * identified that this bitSetAndState is a placeholder, and then a {@link
-     * ConcurrentModificationException} is thrown.
+     * This value is OR-ed with bitSetAndStates of segments in the beginning of bulk operations
+     * (like {@link SmoothieMap.Segment#tryShrink2} and {@link SmoothieMap#splitAndInsert})) so that
+     * concurrent operations could catch this condition and throw a {@link
+     * ConcurrentModificationException} more likely.
      */
-    static final long BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE = 1L << SPECIAL_VALUE_SHIFT;
+    private static final long MIN_BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE =
+            1L << SPECIAL_VALUE_SHIFT;
 
     static {
         // Checking that all bitSetAndState's areas are set up correctly
-        long fullBitSetAndState = BIT_SET_MASK |
-                ((long) SEGMENT_ORDER_MASK << SEGMENT_ORDER_SHIFT) |
-                ((long) EXTRA_ALLOC_CAPACITY_MASK << EXTRA_ALLOC_CAPACITY_SHIFT) |
+        long fullBitSetAndState = BIT_SET_MASK ^
+                ((long) SEGMENT_ORDER_MASK << SEGMENT_ORDER_SHIFT) ^
+                ((long) EXTRA_ALLOC_CAPACITY_MASK << EXTRA_ALLOC_CAPACITY_SHIFT) ^
                 ((long) SPECIAL_VALUE_MASK << SPECIAL_VALUE_SHIFT);
         verifyEqual(fullBitSetAndState, -1L);
         verifyEqual(BASE_ALLOC_CAPACITY, 17);
@@ -170,24 +168,43 @@ final class BitSetAndState {
     }
 
     /**
-     * Returns a bitSetAndState that includes a full bit set, an extra alloc capacity of 0, the
-     * specified segment order and a special value {@link #INFLATED_SEGMENT_SPECIAL_VALUE}.
+     * Returns a bitSetAndState that includes a full bit set, an extra alloc capacity of 0 for
+     * {@link ContinuousSegments} and {@link SmoothieMap#SEGMENT_INTERMEDIATE_ALLOC_CAPACITY} -
+     * {@link #BASE_ALLOC_CAPACITY} for {@link InterleavedSegments}, the specified segment order,
+     * and a special value {@link #INFLATED_SEGMENT_SPECIAL_VALUE}.
      */
     static long makeInflatedBitSetAndState(int segmentOrder) {
+        /* if Interleaved segments */
+        int extraAllocCapacity = SEGMENT_INTERMEDIATE_ALLOC_CAPACITY - BASE_ALLOC_CAPACITY;
+        /* endif */
         return (((long) INFLATED_SEGMENT_SPECIAL_VALUE) << SPECIAL_VALUE_SHIFT) |
+                /* if Interleaved segments */
+                (((long) extraAllocCapacity) << EXTRA_ALLOC_CAPACITY_SHIFT) |
+                /* endif */
                 (((long) segmentOrder) << SEGMENT_ORDER_SHIFT);
     }
 
-    static {
-        verifyEqual(makeInflatedBitSetAndState(0), Long.MIN_VALUE);
+    /**
+     * Bulk operation placeholder includes a full bit set (see {@link #EMPTY_BIT_SET}), a special
+     * value 1. Any entry insertion into the segment triggers {@link SmoothieMap#makeSpaceAndInsert}
+     * if encounters this bitSetAndState. Bulk operation placeholder bitSetAndState is identified
+     * there and then a {@link ConcurrentModificationException} is thrown.
+     */
+    static long makeBulkOperationPlaceholderBitSetAndState(long bitSetAndState) {
+        return (bitSetAndState | MIN_BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE) &
+                (~EMPTY_BIT_SET);
     }
 
     static boolean isInflatedBitSetAndState(long bitSetAndState) {
-        long inflatedSegmentWithZeroOrder_bitSetAndState =
+        long inflatedSegment_maxBitSetAndState = ((1L << SPECIAL_VALUE_SHIFT) - 1) |
                 ((long) INFLATED_SEGMENT_SPECIAL_VALUE) << SPECIAL_VALUE_SHIFT;
         // This kind of comparison is possible because of INFLATED_SEGMENT_SPECIAL_VALUE which is
         // 0b100000.
-        return bitSetAndState <= inflatedSegmentWithZeroOrder_bitSetAndState;
+        return bitSetAndState <= inflatedSegment_maxBitSetAndState;
+    }
+
+    static boolean isBulkOperationPlaceholderBitSetAndState(long bitSetAndState) {
+        return bitSetAndState >= MIN_BULK_OPERATION_PLACEHOLDER_BIT_SET_AND_STATE;
     }
 
     /**
@@ -328,6 +345,12 @@ final class BitSetAndState {
     }
 
     /* if Interleaved segments Supported intermediateSegments */
+    /**
+     * Works consistently for ordinary and inflated segments given that {@link
+     * SmoothieMap.InflatedSegment} is *not* a full-capacity segment (it extends {@link
+     * InterleavedSegments.IntermediateCapacitySegment}) and {@link #makeInflatedBitSetAndState}
+     * returns a bitSetAndState with the corresponding extra alloc capacity.
+     */
     static boolean isFullCapacity(long bitSetAndState) {
         long fullAllocCapacityMask = ((long) SEGMENT_MAX_ALLOC_CAPACITY - BASE_ALLOC_CAPACITY) <<
                 EXTRA_ALLOC_CAPACITY_SHIFT;
@@ -350,12 +373,27 @@ final class BitSetAndState {
 
     /** A structured view on a bitSetAndState for debugging. */
     static class DebugBitSetAndState {
+        enum Type {
+            ORDINARY, INFLATED, BULK_OPERATION_PLACEHOLDER, UNKNOWN;
+
+            static Type fromSpecialValue(int specialValue) {
+                switch (specialValue) {
+                    case 0: return ORDINARY;
+                    case 1: return BULK_OPERATION_PLACEHOLDER;
+                    case INFLATED_SEGMENT_SPECIAL_VALUE: return INFLATED;
+                    default: return UNKNOWN;
+                }
+            }
+        }
+
+        final Type type;
         final long bitSet;
         final int size;
         final int order;
         final int allocCapacity;
 
         DebugBitSetAndState(long bitSetAndState) {
+            type = Type.fromSpecialValue((int) (bitSetAndState >>> SPECIAL_VALUE_SHIFT));
             bitSet = extractBitSetForIteration(bitSetAndState);
             size = Long.bitCount(bitSet);
             order = segmentOrder(bitSetAndState);
