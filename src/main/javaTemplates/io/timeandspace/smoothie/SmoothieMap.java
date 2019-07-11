@@ -65,8 +65,8 @@ import static io.timeandspace.smoothie.BitSetAndState.clearBitSet;
 import static io.timeandspace.smoothie.BitSetAndState.extractBitSetForIteration;
 import static io.timeandspace.smoothie.BitSetAndState.freeAllocIndexClosestTo;
 import static io.timeandspace.smoothie.BitSetAndState.incrementSegmentOrder;
-/* if Interleaved segments Supported intermediateSegments */
 import static io.timeandspace.smoothie.BitSetAndState.isBulkOperationPlaceholderBitSetAndState;
+/* if Interleaved segments Supported intermediateSegments */
 import static io.timeandspace.smoothie.BitSetAndState.isFullCapacity;
 /* endif */
 import static io.timeandspace.smoothie.BitSetAndState.isInflatedBitSetAndState;
