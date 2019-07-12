@@ -97,12 +97,12 @@ final class SmoothieMapStats {
         // TODO Might be a bug in IntelliJ that it doesn't require for-each iteration variable to be
         //  Nullable when the array has Nullable elements - check when update to 2019.2
         //noinspection ConstantConditions: same as above in acquireSegmentStats()
-        for (@Nullable OrdinarySegmentStats @Nullable [] statsPerNumNonEmptySlots :
+        for (@Nullable OrdinarySegmentStats @Nullable [] statsPerNumFullSlots :
                 ordinarySegmentStatsPerOrderAndNumFullSlots) {
-            if (statsPerNumNonEmptySlots == null) {
+            if (statsPerNumFullSlots == null) {
                 continue;
             }
-            for (@Nullable OrdinarySegmentStats stats : statsPerNumNonEmptySlots) {
+            for (@Nullable OrdinarySegmentStats stats : statsPerNumFullSlots) {
                 if (stats != null) {
                     totalStats.add(stats);
                 }
@@ -111,20 +111,20 @@ final class SmoothieMapStats {
         return totalStats;
     }
 
-    OrdinarySegmentStats computeOrdinarySegmentStatsPerNumNonEmptySlots(int numNonEmptySlots) {
-        OrdinarySegmentStats totalStatsForNumNonEmptySlots = new OrdinarySegmentStats();
+    OrdinarySegmentStats computeOrdinarySegmentStatsPerNumFullSlots(int numFullSlots) {
+        OrdinarySegmentStats totalStatsForNumFullSlots = new OrdinarySegmentStats();
         //noinspection ConstantConditions: same as in computeTotalOrdinarySegmentStats()
-        for (@Nullable OrdinarySegmentStats @Nullable [] statsPerNumNonEmptySlots :
+        for (@Nullable OrdinarySegmentStats @Nullable [] statsPerNumFullSlots :
                 ordinarySegmentStatsPerOrderAndNumFullSlots) {
-            if (statsPerNumNonEmptySlots == null) {
+            if (statsPerNumFullSlots == null) {
                 continue;
             }
-            @Nullable OrdinarySegmentStats stats = statsPerNumNonEmptySlots[numNonEmptySlots];
+            @Nullable OrdinarySegmentStats stats = statsPerNumFullSlots[numFullSlots];
             if (stats != null) {
-                totalStatsForNumNonEmptySlots.add(stats);
+                totalStatsForNumFullSlots.add(stats);
             }
         }
-        return totalStatsForNumNonEmptySlots;
+        return totalStatsForNumFullSlots;
     }
 
     String segmentOrderAndLoadDistribution() {
@@ -146,27 +146,27 @@ final class SmoothieMapStats {
                     if (statsForSegmentOrder == null) {
                         return;
                     }
-                    Count numSegmentsWithNonEmptySlots_count = new Count(
+                    Count numSegmentsWithFullSlots_count = new Count(
                             "segments",
-                            numNonEmptySlots -> {
+                            numFullSlots -> {
                                 @Nullable OrdinarySegmentStats stats =
-                                        statsForSegmentOrder[numNonEmptySlots];
+                                        statsForSegmentOrder[numFullSlots];
                                 return stats == null ? 0 : (long) stats.getNumAggregatedSegments();
                             }
                     );
-                    Count numFullSlotsInSegmentsWithNonEmptySlots_count = new Count(
+                    Count numFullSlotsInSegmentsWithFullSlots_count = new Count(
                             "full slots",
-                            numNonEmptySlots -> {
+                            numFullSlots -> {
                                 @Nullable OrdinarySegmentStats stats =
-                                        statsForSegmentOrder[numNonEmptySlots];
+                                        statsForSegmentOrder[numFullSlots];
                                 return stats == null ? 0 : stats.getNumAggregatedFullSlots();
                             }
                     );
-                    appendNonZeroOrderedCountsWithPercentiles(sb, "# non-empty slots =",
+                    appendNonZeroOrderedCountsWithPercentiles(sb, "# full slots =",
                             statsForSegmentOrder.length,
-                            Arrays.asList(numSegmentsWithNonEmptySlots_count,
-                                    numFullSlotsInSegmentsWithNonEmptySlots_count),
-                            numNonEmptySlots -> {});
+                            Arrays.asList(numSegmentsWithFullSlots_count,
+                                    numFullSlotsInSegmentsWithFullSlots_count),
+                            numFullSlots -> {});
                 });
         return sb.toString();
     }
