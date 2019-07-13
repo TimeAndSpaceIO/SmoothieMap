@@ -129,6 +129,7 @@ final class SmoothieMapStats {
 
     String segmentOrderAndLoadDistribution() {
         StringBuilder sb = new StringBuilder();
+        sb.append("Num inflated segments: ").append(numInflatedSegments).append('\n');
 
         Count numSegmentsWithOrder_count = new Count(
                 "segments",

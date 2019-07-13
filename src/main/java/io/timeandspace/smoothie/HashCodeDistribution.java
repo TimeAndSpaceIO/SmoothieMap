@@ -26,6 +26,8 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 import static io.timeandspace.smoothie.HashTable.HASH_TABLE_SLOTS;
+import static io.timeandspace.smoothie.ObjectSize.arraySizeInBytes;
+import static io.timeandspace.smoothie.ObjectSize.classSizeInBytes;
 import static io.timeandspace.smoothie.SmoothieMap.maxSplittableSegmentOrder;
 import static io.timeandspace.smoothie.Statistics.PoissonDistribution;
 import static java.lang.Math.max;
@@ -38,6 +40,8 @@ import static java.lang.Math.max;
  * track poor hash code distribution events.
  */
 class HashCodeDistribution<K, V> {
+    private static final long SIZE_IN_BYTES = classSizeInBytes(HashCodeDistribution.class);
+
     /** @see #HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS */
     private static final int SKEWED_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__MAX_ACCOUNTED =
             3;
@@ -53,6 +57,9 @@ class HashCodeDistribution<K, V> {
     private static final int SKEWED_SEGMENT__SPLIT_STATS__INT_ARRAY_LENGTH =
             (SKEWED_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__MAX_ACCOUNTED + 1) *
                     SKEWED_SEGMENT__SPLIT_STAT_SIZE;
+
+    private static final long SKEWED_SEGMENT__SPLIT_STATS__ARRAY__SIZE_IN_BYTES =
+            arraySizeInBytes(int[].class, SKEWED_SEGMENT__SPLIT_STATS__INT_ARRAY_LENGTH);
 
     /**
      * The number of elements in this array corresponds to {@link
@@ -192,6 +199,14 @@ class HashCodeDistribution<K, V> {
         this.poorHashCodeDistrib_badOccasion_minReportingProb =
                 poorHashCodeDistrib_badOccasion_minReportingProb;
         this.reportingAction = reportingAction;
+    }
+
+    long sizeInBytes() {
+        return SIZE_IN_BYTES +
+                (skewedSegment_splitStatsToCurrentAverageOrder != null ?
+                        SKEWED_SEGMENT__SPLIT_STATS__ARRAY__SIZE_IN_BYTES : 0) +
+                (skewedSegment_splitStatsToNextAverageOrder != null ?
+                        SKEWED_SEGMENT__SPLIT_STATS__ARRAY__SIZE_IN_BYTES : 0);
     }
 
     boolean isReportingTooLargeInflatedSegment() {

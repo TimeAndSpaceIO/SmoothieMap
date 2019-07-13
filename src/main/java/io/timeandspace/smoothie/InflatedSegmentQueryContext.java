@@ -27,6 +27,8 @@ import java.util.HashMap;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 
+import static io.timeandspace.smoothie.ObjectSize.classSizeInBytes;
+import static io.timeandspace.smoothie.ObjectSize.objectSizeInBytes;
 import static io.timeandspace.smoothie.Utils.checkNonNull;
 import static io.timeandspace.smoothie.Utils.verifyNonNull;
 import static io.timeandspace.smoothie.Utils.verifyThat;
@@ -103,6 +105,7 @@ import static io.timeandspace.smoothie.Utils.nonNullOrThrowCme;
  * high.
  */
 final class InflatedSegmentQueryContext<K, V> {
+    private static final long SIZE_IN_BYTES = classSizeInBytes(InflatedSegmentQueryContext.class);
 
     static final Object COMPUTE_IF_PRESENT_ENTRY_REMOVED = new Object();
 
@@ -136,6 +139,19 @@ final class InflatedSegmentQueryContext<K, V> {
         computeIfAbsentLambda = new ComputeIfAbsentLambda<>(this);
         computeLambda = new ComputeLambda<>(this);
         mergeLambda = new MergeLambda<>(this);
+    }
+
+    long sizeInBytes() {
+        return SIZE_IN_BYTES +
+                ((cachedNode != null) ? Node.SIZE_IN_BYTES : 0) +
+                ((cachedComparableNode != null) ? ComparableNode.SIZE_IN_BYTES : 0) +
+                ((cachedNodeWithCustomKeyEquivalence != null) ?
+                        NodeWithCustomKeyEquivalence.SIZE_IN_BYTES : 0) +
+                ComputeIfPresentLambda.SIZE_IN_BYTES +
+                RemoveOrReplaceLambda.SIZE_IN_BYTES +
+                ComputeIfAbsentLambda.SIZE_IN_BYTES +
+                ComputeLambda.SIZE_IN_BYTES +
+                MergeLambda.SIZE_IN_BYTES;
     }
 
     @EnsuresNonNull("primaryKeyClass")
@@ -262,6 +278,8 @@ final class InflatedSegmentQueryContext<K, V> {
 
     private static class ComputeIfPresentLambda<K, V>
             implements BiFunction<Node<K, V>, Node<K, V>, Node<K, V>> {
+        private static final long SIZE_IN_BYTES = classSizeInBytes(ComputeIfPresentLambda.class);
+
         private final SmoothieMap<K, V> map;
         /**
          * Capturing the key (although it is also available via internalNode) for consistency with
@@ -345,10 +363,9 @@ final class InflatedSegmentQueryContext<K, V> {
      * the map because it incurs less object field reads and writes in the {@link
      * RemoveOrReplaceLambda}, that is better (?) when a GC algorithm with heavy barriers is used.
      *
-     * This decision affects the contracts of {@link
-     * SmoothieMap#replace(Object, Object, long, Object, Object)} and {@link
-     * SmoothieMap#replaceInflated} internal methods, but it doesn't affect the behaviour of public
-     * SmoothieMap's methods.
+     * This decision affects the contracts of {@link SmoothieMap#removeImpl}, {@link
+     * SmoothieMap#replaceImpl}, and {@link SmoothieMap#removeOrReplaceInflated} internal methods,
+     * but it doesn't affect the behaviour of public SmoothieMap's methods.
      */
     boolean removeOrReplaceEntry(HashMap<Node<K, V>, Node<K, V>> delegate,
             K key, long hash, Object matchValue, @Nullable V replacementValue) {
@@ -367,6 +384,8 @@ final class InflatedSegmentQueryContext<K, V> {
 
     private static class RemoveOrReplaceLambda<K, V>
             implements BiFunction<Node<K, V>, Node<K, V>, Node<K, V>> {
+        private static final long SIZE_IN_BYTES = classSizeInBytes(RemoveOrReplaceLambda.class);
+
         private final SmoothieMap<K, V> map;
         @Nullable Object matchValue;
         @Nullable V replacementValue;
@@ -508,6 +527,8 @@ final class InflatedSegmentQueryContext<K, V> {
     }
 
     private static class ComputeIfAbsentLambda<K, V> implements Function<Node<K, V>, Node<K, V>> {
+        private static final long SIZE_IN_BYTES = classSizeInBytes(ComputeIfAbsentLambda.class);
+
         private final InflatedSegmentQueryContext<K, V> context;
         @Nullable Function<? super K, ? extends @Nullable V> mappingFunction;
 
@@ -591,6 +612,8 @@ final class InflatedSegmentQueryContext<K, V> {
 
     private static class ComputeLambda<K, V>
             implements BiFunction<Node<K, V>, Node<K, V>, Node<K, V>> {
+        private static final long SIZE_IN_BYTES = classSizeInBytes(ComputeLambda.class);
+
         private final InflatedSegmentQueryContext<K, V> context;
         @Nullable
         BiFunction<? super K, ? super @Nullable V, ? extends @Nullable V> remappingFunction;
@@ -686,6 +709,8 @@ final class InflatedSegmentQueryContext<K, V> {
 
     private static class MergeLambda<K, V>
             implements BiFunction<Node<K, V>, Node<K, V>, Node<K, V>> {
+        private static final long SIZE_IN_BYTES = classSizeInBytes(MergeLambda.class);
+
         private final InflatedSegmentQueryContext<K, V> context;
         @Nullable BiFunction<? super V, ? super V, ? extends @Nullable V> remappingFunction;
 
@@ -728,6 +753,8 @@ final class InflatedSegmentQueryContext<K, V> {
     }
 
     static class Node<K, V> implements KeyValue<K, V> {
+        private static final long SIZE_IN_BYTES = classSizeInBytes(Node.class);
+
         long hash;
         private @Nullable K key;
         private @Nullable V value;
@@ -790,6 +817,7 @@ final class InflatedSegmentQueryContext<K, V> {
      * from this in {@link #getNodeForKey}, see [Comparable qualification check].
      */
     private static class ComparableNode extends Node implements Comparable<ComparableNode> {
+        private static final long SIZE_IN_BYTES = classSizeInBytes(ComparableNode.class);
 
         @Override
         public int compareTo(ComparableNode other) {
@@ -812,6 +840,9 @@ final class InflatedSegmentQueryContext<K, V> {
      * first place.
      */
     private static class NodeWithCustomKeyEquivalence<K, V> extends Node<K, V> {
+        private static final long SIZE_IN_BYTES =
+                classSizeInBytes(NodeWithCustomKeyEquivalence.class);
+
         private final Equivalence<K> equivalence;
 
         NodeWithCustomKeyEquivalence(Equivalence<K> equivalence) {

@@ -30,7 +30,6 @@ import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 import org.checkerframework.checker.nullness.qual.Nullable;
 import org.checkerframework.common.value.qual.IntRange;
 import org.jetbrains.annotations.Contract;
-import org.jetbrains.annotations.NotNull;
 
 import java.io.IOException;
 import java.io.InvalidObjectException;
@@ -133,6 +132,9 @@ import static io.timeandspace.smoothie.InflatedSegmentQueryContext.COMPUTE_IF_PR
 import static io.timeandspace.smoothie.InflatedSegmentQueryContext.Node;
 import static io.timeandspace.smoothie.LongMath.clearLowestNBits;
 import static io.timeandspace.smoothie.LongMath.clearLowestSetBit;
+import static io.timeandspace.smoothie.ObjectSize.classSizeInBytes;
+import static io.timeandspace.smoothie.ObjectSize.hashMapSizeInBytes;
+import static io.timeandspace.smoothie.ObjectSize.objectSizeInBytes;
 import static io.timeandspace.smoothie.OutboundOverflowCounts.addOutboundOverflowCountsPerGroup;
 import static io.timeandspace.smoothie.OutboundOverflowCounts.computeOutboundOverflowCount_perGroupChanges;
 import static io.timeandspace.smoothie.OutboundOverflowCounts.decrementOutboundOverflowCountsPerGroup;
@@ -236,6 +238,12 @@ import static sun.misc.Unsafe.ARRAY_OBJECT_INDEX_SCALE;
  */
 public class SmoothieMap<K, V> extends AbstractMap<K, V>
         implements ObjObjMap<K, V>, Cloneable, Serializable {
+    private static final long SIZE_IN_BYTES = classSizeInBytes(SmoothieMap.class);
+
+    private static final long KEY_SET__SIZE_IN_BYTES = classSizeInBytes(SmoothieMap.KeySet.class);
+    private static final long VALUES__SIZE_IN_BYTES = classSizeInBytes(SmoothieMap.Values.class);
+    private static final long ENTRY_SET__SIZE_IN_BYTES =
+            classSizeInBytes(SmoothieMap.EntrySet.class);
 
     static final double MAX__POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB = 0.2;
     static final double MIN__POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB = 0.00001;
@@ -280,6 +288,28 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
      */
     static final int SEGMENT_INTERMEDIATE_ALLOC_CAPACITY =
             /* if Continuous segments */30/* elif Interleaved segments //32// endif */;
+
+    private static final long FULL_CAPACITY_SEGMENT_SIZE_IN_BYTES =
+            objectSizeInBytes(createNewSegment(SEGMENT_MAX_ALLOC_CAPACITY, 0));
+
+    /* if Supported intermediateSegments */
+    private static final long INTERMEDIATE_CAPACITY_SEGMENT_SIZE_IN_BYTES =
+            objectSizeInBytes(createNewSegment(SEGMENT_INTERMEDIATE_ALLOC_CAPACITY, 0));
+
+    /* if Continuous segments */
+    private static final long[] SEGMENT_SIZE_IN_BYTES_PER_CAPACITY =
+            new long[SmoothieMap.SEGMENT_MAX_ALLOC_CAPACITY + 1];
+
+    private static long segmentSizeInBytes(Object segment, int allocCapacity) {
+        long sizeInBytes = SEGMENT_SIZE_IN_BYTES_PER_CAPACITY[allocCapacity];
+        if (sizeInBytes == 0) {
+            sizeInBytes = objectSizeInBytes(segment);
+            SEGMENT_SIZE_IN_BYTES_PER_CAPACITY[allocCapacity] = sizeInBytes;
+        }
+        return sizeInBytes;
+    }
+    /* endif */
+    /* endif */
 
     private static final long
             MAP_AVERAGE_SEGMENTS_SATURATION_SEGMENT_CAPACITY_POWER_OF_TWO_COMPONENTS =
@@ -623,6 +653,26 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         // Ensure that no thread sees null in the segmentsArray field and nulls as segmentsArray's
         // elements. The latter could lead to a segfault.
         U.storeFence();
+    }
+
+    public long sizeInBytes() {
+        return SIZE_IN_BYTES +
+                objectSizeInBytes(segmentsArray) +
+                /* if Interleaved segments Supported intermediateSegments */
+                objectSizeInBytes(isFullCapacitySegmentBitSet) +
+                /* endif */
+                totalSizeOfSegmentsInBytes() +
+                (inflatedSegmentQueryContext != null ?
+                        inflatedSegmentQueryContext.sizeInBytes() : 0) +
+                /* if Tracking hashCodeDistribution */
+                (hashCodeDistribution != null ? hashCodeDistribution.sizeInBytes() : 0) +
+                /* endif */
+                /* if Tracking segmentOrderStats */
+                objectSizeInBytes(segmentCountsByOrder) +
+                /* endif */
+                (keySet != null ? KEY_SET__SIZE_IN_BYTES : 0) +
+                (values != null ? VALUES__SIZE_IN_BYTES : 0) +
+                (entrySet != null ? ENTRY_SET__SIZE_IN_BYTES : 0);
     }
 
     /**
@@ -1626,7 +1676,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         // TODO `== value` may be better than `!= null` (if the method also returns the
         //  corresponding object) for the same reason as [Protecting null comparisons]. Or, the
-        //  method should be specialized.
+        //  method should be specialized. However, `== value` may not be possible due to the current
+        //  contract of removeImpl(): see InflatedSegmentQueryContext.removeOrReplaceEntry().
         return removeImpl(segment,
                 /* if Interleaved segments Supported intermediateSegments */isFullCapacitySegment,
                 /* endif */
@@ -1676,7 +1727,9 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         // TODO `== oldValue` may be better than `!= null` (if the method also returns the
         //  corresponding object) for the same reason as [Protecting null comparisons]. Or, the
-        //  method should be specialized.
+        //  method should be specialized. However, `== oldValue` may not be possible due to the
+        //  current contract of replaceImpl(): see
+        //  InflatedSegmentQueryContext.removeOrReplaceEntry().
         return replaceImpl(segment,
                 /* if Interleaved segments Supported intermediateSegments */isFullCapacitySegment,
                 /* endif */
@@ -4709,6 +4762,43 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         checkModCountOrThrowCme(modCount);
     }
 
+    private long totalSizeOfSegmentsInBytes() {
+        long totalSizeOfSegmentsInBytes = 0;
+        int modCount = getModCountOpaque();
+        Object[] segmentsArray = getNonNullSegmentsArrayOrThrowIse();
+        int segmentArrayLength = segmentsArray.length;
+        int segmentsArrayOrder = order(segmentArrayLength);
+        Segment<K, V> segment;
+        for (int segmentIndex = 0; segmentIndex >= 0;
+             segmentIndex = nextSegmentIndex(
+                     segmentArrayLength, segmentsArrayOrder, segmentIndex, segment)) {
+            segment = segmentByIndexDuringBulkOperations(segmentsArray, segmentIndex);
+            if (segment instanceof InflatedSegment) {
+                totalSizeOfSegmentsInBytes += ((InflatedSegment<K, V>) segment).sizeInBytes();
+                continue;
+            }
+            /* if NotSupported intermediateSegments */
+            totalSizeOfSegmentsInBytes += FULL_CAPACITY_SEGMENT_SIZE_IN_BYTES;
+            /* elif Supported intermediateSegments */
+            int segmentAllocCapacity = allocCapacity(getBitSetAndState(segment));
+            if (segmentAllocCapacity == SEGMENT_MAX_ALLOC_CAPACITY) {
+                totalSizeOfSegmentsInBytes += FULL_CAPACITY_SEGMENT_SIZE_IN_BYTES;
+            } else if (segmentAllocCapacity == SEGMENT_INTERMEDIATE_ALLOC_CAPACITY) {
+                totalSizeOfSegmentsInBytes += INTERMEDIATE_CAPACITY_SEGMENT_SIZE_IN_BYTES;
+            } else {
+                /* if Continuous segments */
+                totalSizeOfSegmentsInBytes += segmentSizeInBytes(segment, segmentAllocCapacity);
+                /* elif Interleaved segments */
+                throw new AssertionError(
+                        "Interleaved segments cannot have capacity " + segmentAllocCapacity);
+                /* endif */
+            }
+            /* endif */
+        }
+        checkModCountOrThrowCme(modCount);
+        return totalSizeOfSegmentsInBytes;
+    }
+
     //endregion
 
     //region Collection views: keySet(), values(), entrySet()
@@ -5920,6 +6010,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             /* elif Interleaved segments NotSupported intermediateSegments //
             extends InterleavedSegments.FullCapacitySegment<K, V>
             // endif */ {
+        private static final long SIZE_IN_BYTES = classSizeInBytes(InflatedSegment.class);
+
         /**
          * Allows to store {@link #SEGMENT_MAX_ALLOC_CAPACITY} + 1 entries without a rehash,
          * assuming that {@link #INFLATED_SEGMENT_DELEGATE_HASH_MAP_LOAD_FACTOR} is also used.
@@ -5974,6 +6066,15 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             this.checkAndReportIfTooLarge_lastCall_delegateSize =
                     checkAndReportIfTooLarge_lastCall_delegateSize;
             /* endif */
+        }
+
+        long sizeInBytes() {
+            long nodeSizeInBytes = 0;
+            if (delegate.size() > 0) {
+                nodeSizeInBytes = objectSizeInBytes(getEntries().iterator().next());
+            }
+            return SIZE_IN_BYTES + hashMapSizeInBytes(delegate) +
+                    nodeSizeInBytes * ((long) delegate.size());
         }
 
         Iterable<? extends KeyValue<K, V>> getEntries() {
