@@ -289,6 +289,27 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     static final int SEGMENT_INTERMEDIATE_ALLOC_CAPACITY =
             /* if Continuous segments */30/* elif Interleaved segments //32// endif */;
 
+    /**
+     * The probability of [Swap segments] after the [fromSegment iteration] loop is
+     * 1 - CDF[BinomialDistribution[48, 0.5],
+     *         MIN_ENTRIES_IN_INTERMEDIATE_CAPACITY_SEGMENT_AFTER_SPLIT_FOR_SWAPPING - 1]
+     *  = ~ 23.5% (Continuous segments)
+     *  = ~ 9.7% (Interleaved segments)
+     *
+     * It makes {@link ContinuousSegments.SegmentBase#swapContentsDuringSplit} (which are called
+     * within [Swap segments]) to not actually {@link RarelyCalledAmortizedPerSegment} because
+     * {@link RarelyCalledAmortizedPerSegment} requires less than 10% of probability of calling per
+     * split.
+     *
+     * The value is different for Continuous segments both because {@link
+     * #SEGMENT_INTERMEDIATE_ALLOC_CAPACITY} is less than for Interleaved segments (30 vs. 32) and
+     * because {@link ContinuousSegments.SegmentBase#swapContentsDuringSplit} is cheaper than {@link
+     * InterleavedSegments#swapContentsDuringSplit} so it should be more tolerable for it to be
+     * called more frequently.
+     */
+    private static final int MIN_ENTRIES_IN_INTERMEDIATE_CAPACITY_SEGMENT_AFTER_SPLIT_FOR_SWAPPING =
+            /* if Continuous segments */27/* elif Interleaved segments //29// endif */;
+
     private static final long FULL_CAPACITY_SEGMENT_SIZE_IN_BYTES =
             objectSizeInBytes(createNewSegment(SEGMENT_MAX_ALLOC_CAPACITY, 0));
 
@@ -3332,11 +3353,11 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         // fromSegment and intoSegment corresponds to the higher-index conceptual segment. After
         // [Swap segments], "Java object shells" of the two sibling segments swap. This is the
         // information which should  be returned from this method: see its Javadoc. Instead of
-        // having `boolean swappedSegmentsInsideLoop` and returning
-        // `swappedSegmentsInsideLoop ? siblingSegmentsQualificationBit : 0L` this variable stores
+        // having `boolean swappedSegments` and returning
+        // `swappedSegments ? siblingSegmentsQualificationBit : 0L` this variable stores
         // siblingSegmentsQualificationBit directly (which means "true"; 0 means "false") to avoid
         // a branch in the return statement.
-        long swappedSegmentsInsideLoop = 0;
+        long swappedSegments = 0;
         long siblingSegmentsQualificationBit = 1L << siblingSegmentsQualificationBitIndex;
         /* if Interleaved segments Supported intermediateSegments */
         // TODO check that Hotspot compiles this expression into branchless code.
@@ -3549,32 +3570,35 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                         // Alternative to swapping segments inline the [fromSegment iteration] and
                         // swapping fromSegment and intoSegment variables is finishing iteration in
                         // a separate method like "finishSplitAfterSwap()". The advantage of this
-                        // approach is that entryShouldRemainInFromSegment's computation is cheaper
-                        // (just check == 0 instead of comparing with a local), and that fromSegment
-                        // and intoSegment variable would be effectively final that may allow
-                        // compiler to generate more efficient machine code. The disadvantages is
-                        // higher overall complexity, having a separate method that is called rarely
-                        // (hence pretty cold and may kick JIT (re) compilation well into
-                        // SmoothieMap's operation), more methods to compile, poorer utilization of
-                        // instruction cache. The disadvantages seem to outweigh the advantages.
+                        // approach is that fromSegment and intoSegment variable would be
+                        // effectively final that may allow compiler to generate more efficient
+                        // machine code. The disadvantages is higher overall complexity, having a
+                        // separate method that is called rarely (hence pretty cold and may kick JIT
+                        // (re-)compilation well into SmoothieMap's operation), more methods to
+                        // compile, poorer utilization of instruction cache. The disadvantages seem
+                        // to outweigh the advantages.
 
-                        if (swappedSegmentsInsideLoop != 0) {
+                        if (swappedSegments != 0) {
                             // Already swapped segments inside the splitting loop once. This might
                             // only happen if entries are inserted into fromSegment concurrently
                             // with the splitting loop.
                             throw new ConcurrentModificationException();
                         }
-                        swappedSegmentsInsideLoop = siblingSegmentsQualificationBit;
+                        swappedSegments = siblingSegmentsQualificationBit;
 
-                        // Write out the iterDataGroup as it may have been updated at
-                        // [Empty the iteration slot].
                         /* if Enabled extraChecks */
                         // fromSegment_isFullCapacity can change its initial value 1 only in the
                         // end of segment swap itself.
                         verifyEqual(fromSegment_isFullCapacity, 1);
                         /* endif */
+                        // Write out the iterDataGroup as it may have been updated at
+                        // [Empty the iteration slot].
                         /* if Interleaved segments */FullCapacitySegment./* endif */writeDataGroup(
                                 fromSegment, iterGroupIndex, iterDataGroup);
+
+                        // Note: the code below until [Swap fromSegment and intoSegment variables]
+                        // (inclusive) should be updated in parallel with the code in another
+                        // [Swap segments] block after the [fromSegment iteration] loop.
 
                         // makeSpaceAndInsert[Second route] guarantees that only full-capacity
                         // segments are split:
@@ -3594,7 +3618,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                                         fromSegment, fromSegment_bitSetAndState,
                                         intoSegment, intoSegment_bitSetAndState);
                         /* endif */
-                        // Swap fromSegment and intoSegment variables.
+                        // Swap fromSegment and intoSegment variables:
                         {
                             /* if Continuous segments */
                             fromSegment_bitSetAndState = intoSegment_bitSetAndState;
@@ -3715,17 +3739,63 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             writeDataGroupAtOffset(fromSegment, iterDataGroupOffset, iterDataGroup);
         }
 
-        // TODO swap segments if intoSegment is of intermediate capacity and intoSegment_currentSize
-        //  is above some threshold (so that there is a sufficient skew of entries towards
-        //  intoSegment). The threshold may be a field of SmoothieMap dependent on the
-        //  OptimizationFactors chosen for the map.
+        // [Swap segments] if the distribution of entries between the sibling segments is
+        // significantly skewed towards the intermediate-capacity segment (intoSegment). The code
+        // within this `if` block should be updated in parallel with the code in [Swap segments]
+        // inside the [fromSegment iteration] loop above.
+        /* if Supported intermediateSegments */
+        if (swappedSegments == 0 && intoSegment_isFullCapacity == 0 &&
+                intoSegment_currentSize >=
+                        MIN_ENTRIES_IN_INTERMEDIATE_CAPACITY_SEGMENT_AFTER_SPLIT_FOR_SWAPPING) {
+            swappedSegments = siblingSegmentsQualificationBit;
+
+            // makeSpaceAndInsert[Second route] guarantees that only full-capacity segments are
+            // split:
+            /* if Enabled extraChecks */
+            verifyEqual(allocCapacity(fromSegment_bitSetAndState), SEGMENT_MAX_ALLOC_CAPACITY);
+            /* endif */
+            int fromSegment_allocCapacity = SEGMENT_MAX_ALLOC_CAPACITY;
+            /* if Continuous segments */
+            long intoSegment_bitSetAndState = ContinuousSegments.SegmentBase
+                    .swapContentsDuringSplit(fromSegment,
+                            fromSegment_allocCapacity, fromSegment_bitSetAndState,
+                            intoSegment, intoSegment_allocCapacity);
+            /* elif Interleaved segments */
+            fromSegment_bitSetAndState =
+                    InterleavedSegments.swapContentsDuringSplit(
+                            fromSegment, fromSegment_bitSetAndState,
+                            intoSegment, intoSegment_bitSetAndState);
+            /* endif */
+            // [Swap fromSegment and intoSegment variables]
+            {
+                /* if Continuous segments */
+                fromSegment_bitSetAndState = intoSegment_bitSetAndState;
+                /* elif Interleaved segments */
+                intoSegment_bitSetAndState = fromSegment_bitSetAndState;
+                // The updated fromSegment_bitSetAndState is written into bitSetAndState field of
+                // fromSegment in the call to InterleavedSegments.swapContentsDuringSplit() above.
+                // See the documentation to that method.
+                fromSegment_bitSetAndState = getBitSetAndState(intoSegment);
+                /* endif */
+
+                Object tmpSegment = intoSegment;
+                intoSegment = fromSegment;
+                fromSegment = tmpSegment;
+
+                intoSegment_allocCapacity = fromSegment_allocCapacity;
+
+                fromSegment_isFullCapacity = 0;
+                intoSegment_isFullCapacity = 1;
+            }
+        }
+        /* endif */
 
         // ### Write out bitSetAndStates and outbound overflow counts.
         /* if Continuous segments */
         long intoSegment_bitSetAndState = makeBitSetAndStateForPrivatelyPopulatedContinuousSegment(
                 intoSegment_allocCapacity, newSegmentOrder, intoSegment_currentSize);
         /* endif */
-        if (swappedSegmentsInsideLoop == 0) {
+        if (swappedSegments == 0) {
             setBitSetAndStateAfterBulkOperation(fromSegment, fromSegment_bitSetAndState);
             setBitSetAndState(intoSegment, intoSegment_bitSetAndState);
         } else {
@@ -3753,7 +3823,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         }
         /* endif */
 
-        return swappedSegmentsInsideLoop;
+        return swappedSegments;
     }
 
     /** Invariant before calling this method: oldSegment's size is equal to the capacity. */

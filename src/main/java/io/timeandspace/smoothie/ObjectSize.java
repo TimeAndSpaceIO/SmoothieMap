@@ -59,7 +59,7 @@ public final class ObjectSize {
         }
         Field lastField = Stream
                 .of(lastSetOfDeclaredFields)
-                .max(Comparator.comparingLong(field -> U.objectFieldOffset(field)))
+                .max(Comparator.comparingLong(U::objectFieldOffset))
                 .get();
         long lastFieldOffset = U.objectFieldOffset(lastField);
         Class<?> lastFieldType = lastField.getType();
