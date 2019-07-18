@@ -1906,18 +1906,19 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 // ContinuousSegment_BitSetAndStateArea.outboundOverflowCountsPerGroup) which would
                 // allow more granular breaking from the probing loop. TODO work out this idea
                 groupIndexStep += 1;
-                groupIndex = addGroupIndex(groupIndex, groupIndexStep);
-                // Break from the loop when visited all groups in the hash table: this may happen
-                // when every group in the hash table has outbound overflow count greater than 1,
-                // yet many of the groups are empty enough (after removals from the segment) so that
-                // the total number of them is less than SEGMENT_MAX_ALLOC_CAPACITY. This may
-                // eventually happen in a segment after a period of entry insertions and removals
-                // since no kind of "shift deletion" is performed upon removals. See also
-                // https://github.com/facebook/folly/blob/e988905d/
-                // folly/container/detail/F14Table.h#L1399-L1402.
-                // TODO remove this condition in a specialized version of a Map that doesn't support
-                //  removes
-                if (groupIndex == baseGroupIndex) { // Unlikely branch
+                if (groupIndexStep != HASH_TABLE_GROUPS) { // [Positive likely branch]
+                    groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                } else {
+                    // Break from the loop when visited all groups in the hash table: this may happen
+                    // when every group in the hash table has outbound overflow count greater than 1,
+                    // yet many of the groups are empty enough (after removals from the segment) so that
+                    // the total number of them is less than SEGMENT_MAX_ALLOC_CAPACITY. This may
+                    // eventually happen in a segment after a period of entry insertions and removals
+                    // since no kind of "shift deletion" is performed upon removals. See also
+                    // https://github.com/facebook/folly/blob/e988905d/
+                    // folly/container/detail/F14Table.h#L1399-L1402.
+                    // TODO remove this condition in a specialized version of a Map that doesn't support
+                    //  removes
                     return null;
                 }
             } else {
@@ -1970,9 +1971,10 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             // [InflatedSegment checking after unsuccessful key search]
             if (dataGroup != INFLATED_SEGMENT__MARKER_DATA_GROUP) { // [Positive likely branch]
                 groupIndexStep += 1; // [Quadratic probing]
-                groupIndex = addGroupIndex(groupIndex, groupIndexStep);
-                // [Break from the loop when visited all groups in the hash table]
-                if (groupIndex == baseGroupIndex) {
+                if (groupIndexStep != HASH_TABLE_GROUPS) { // [Positive likely branch]
+                    groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                } else {
+                    // [Break from the loop when visited all groups in the hash table]
                     throw new IllegalStateException("Expected the key to be in the map");
                 }
             } else {
@@ -2038,9 +2040,10 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             // [InflatedSegment checking after unsuccessful key search]
             if (dataGroup != INFLATED_SEGMENT__MARKER_DATA_GROUP) { // [Positive likely branch]
                 groupIndexStep += 1; // [Quadratic probing]
-                groupIndex = addGroupIndex(groupIndex, groupIndexStep);
-                // [Break from the loop when visited all groups in the hash table]
-                if (groupIndex == baseGroupIndex) { // Unlikely branch
+                if (groupIndexStep != HASH_TABLE_GROUPS) { // [Positive likely branch]
+                    groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                } else {
+                    // [Break from the loop when visited all groups in the hash table]
                     return null;
                 }
             } else {
@@ -2135,9 +2138,10 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             // [InflatedSegment checking after unsuccessful key search]
             if (dataGroup != INFLATED_SEGMENT__MARKER_DATA_GROUP) { // [Positive likely branch]
                 groupIndexStep += 1; // [Quadratic probing]
-                groupIndex = addGroupIndex(groupIndex, groupIndexStep);
-                // [Break from the loop when visited all groups in the hash table]
-                if (groupIndex == baseGroupIndex) { // Unlikely branch
+                if (groupIndexStep != HASH_TABLE_GROUPS) { // [Positive likely branch]
+                    groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                } else {
+                    // [Break from the loop when visited all groups in the hash table]
                     return null;
                 }
             } else {
@@ -2226,9 +2230,10 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 outboundOverflowCount_perGroupDecrements = outboundOverflowCount_markGroupForChange(
                         outboundOverflowCount_perGroupDecrements, groupIndex);
                 groupIndexStep += 1; // [Quadratic probing]
-                groupIndex = addGroupIndex(groupIndex, groupIndexStep);
-                // [Break from the loop when visited all groups in the hash table]
-                if (groupIndex == baseGroupIndex) { // Unlikely branch
+                if (groupIndexStep != HASH_TABLE_GROUPS) { // [Positive likely branch]
+                    groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                } else {
+                    // [Break from the loop when visited all groups in the hash table]
                     return null;
                 }
             } else {
@@ -2375,9 +2380,10 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             // [InflatedSegment checking after unsuccessful key search]
             if (dataGroup != INFLATED_SEGMENT__MARKER_DATA_GROUP) { // [Positive likely branch]
                 groupIndexStep += 1; // [Quadratic probing]
-                groupIndex = addGroupIndex(groupIndex, groupIndexStep);
-                // [Break from the loop when visited all groups in the hash table]
-                if (groupIndex == baseGroupIndex) { // Unlikely branch
+                if (groupIndexStep != HASH_TABLE_GROUPS) { // [Positive likely branch]
+                    groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                } else {
+                    // [Break from the loop when visited all groups in the hash table]
                     return null;
                 }
             } else {
@@ -2489,9 +2495,10 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                     // [Positive likely branch]
                     if (dataGroup != INFLATED_SEGMENT__MARKER_DATA_GROUP) {
                         groupIndexStep += 1; // [Quadratic probing]
-                        groupIndex = addGroupIndex(groupIndex, groupIndexStep);
-                        // [Break from the loop when visited all groups in the hash table]
-                        if (groupIndex == baseGroupIndex) { // Unlikely branch
+                        if (groupIndexStep != HASH_TABLE_GROUPS) { // [Positive likely branch]
+                            groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                        } else {
+                            // [Break from the loop when visited all groups in the hash table]
                             break keySearch; // to [Reset groupIndex]
                         }
                     } else {
@@ -2638,9 +2645,10 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                     // [Positive likely branch]
                     if (dataGroup != INFLATED_SEGMENT__MARKER_DATA_GROUP) {
                         groupIndexStep += 1; // [Quadratic probing]
-                        groupIndex = addGroupIndex(groupIndex, groupIndexStep);
-                        // [Break from the loop when visited all groups in the hash table]
-                        if (groupIndex == baseGroupIndex) { // Unlikely branch
+                        if (groupIndexStep != HASH_TABLE_GROUPS) { // [Positive likely branch]
+                            groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                        } else {
+                            // [Break from the loop when visited all groups in the hash table]
                             value = mappingFunction.apply(key);
                             if (value != null) {
                                 break keySearch; // to [Reset groupIndex]
@@ -2799,9 +2807,10 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                     // [Positive likely branch]
                     if (dataGroup != INFLATED_SEGMENT__MARKER_DATA_GROUP) {
                         groupIndexStep += 1; // [Quadratic probing]
-                        groupIndex = addGroupIndex(groupIndex, groupIndexStep);
-                        // [Break from the loop when visited all groups in the hash table]
-                        if (groupIndex == baseGroupIndex) { // Unlikely branch
+                        if (groupIndexStep != HASH_TABLE_GROUPS) { // [Positive likely branch]
+                            groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                        } else {
+                            // [Break from the loop when visited all groups in the hash table]
                             newValue = remappingFunction.apply(key, null);
                             if (newValue != null) {
                                 break keySearch; // to [Reset groupIndex]
@@ -2954,9 +2963,10 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                     // [Positive likely branch]
                     if (dataGroup != INFLATED_SEGMENT__MARKER_DATA_GROUP) {
                         groupIndexStep += 1; // [Quadratic probing]
-                        groupIndex = addGroupIndex(groupIndex, groupIndexStep);
-                        // [Break from the loop when visited all groups in the hash table]
-                        if (groupIndex == baseGroupIndex) { // Unlikely branch
+                        if (groupIndexStep != HASH_TABLE_GROUPS) { // [Positive likely branch]
+                            groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                        } else {
+                            // [Break from the loop when visited all groups in the hash table]
                             break keySearch; // to [Reset groupIndex]
                         }
                     } else {

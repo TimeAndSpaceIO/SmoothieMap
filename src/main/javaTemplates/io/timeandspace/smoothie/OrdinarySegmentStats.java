@@ -8,7 +8,6 @@ import java.util.function.IntToLongFunction;
 import java.util.stream.IntStream;
 
 import static io.timeandspace.smoothie.BitSetAndState.allocCapacity;
-import static io.timeandspace.smoothie.HashTable.GROUP_SLOTS;
 import static io.timeandspace.smoothie.HashTable.HASH_TABLE_GROUPS;
 import static io.timeandspace.smoothie.HashTable.HASH_TABLE_GROUPS_MASK;
 import static io.timeandspace.smoothie.LongMath.percentOf;
@@ -38,12 +37,14 @@ final class OrdinarySegmentStats {
     private long numAggregatedFullSlots = 0;
     private final long[] numAggregatedSegmentsPerAllocCapacity =
             new long[SEGMENT_MAX_ALLOC_CAPACITY + 1];
-    private final long[] numSlotsPerCollisionChainGroupLengths =
-            new long[SEGMENT_MAX_ALLOC_CAPACITY / GROUP_SLOTS];
+    private final long[] numSlotsPerCollisionChainGroupLength = new long[HASH_TABLE_GROUPS];
     private final long[] numSlotsPerNumCollisionKeyComparisons =
             new long[SEGMENT_MAX_ALLOC_CAPACITY];
+    /* if Interleaved segments */
     private final long[] numSlotsPerDistancesToAllocIndexBoundary =
-            new long[SEGMENT_MAX_ALLOC_CAPACITY];
+            new long[SEGMENT_MAX_ALLOC_CAPACITY -
+                    InterleavedSegments.FullCapacitySegment.STRIDE_0__NUM_ACTUAL_ALLOC_INDEXES];
+    /* endif */
 
     int getNumAggregatedSegments() {
         return numAggregatedSegments;
@@ -60,8 +61,9 @@ final class OrdinarySegmentStats {
                 (int) ((groupIndex - baseGroupIndex) & HASH_TABLE_GROUPS_MASK);
         int collisionChainGroupLength = QUADRATIC_PROBING_CHAIN_GROUP_INDEX_TO_CHAIN_LENGTH[
                 quadraticProbingChainGroupIndex];
-        numSlotsPerCollisionChainGroupLengths[collisionChainGroupLength]++;
+        numSlotsPerCollisionChainGroupLength[collisionChainGroupLength]++;
         numSlotsPerNumCollisionKeyComparisons[numCollisionKeyComparisons]++;
+        /* if Interleaved segments */
         int distanceToAllocIndexBoundary;
         if (allocIndex >= allocIndexBoundaryForGroup) {
             distanceToAllocIndexBoundary = allocIndex - allocIndexBoundaryForGroup;
@@ -69,6 +71,7 @@ final class OrdinarySegmentStats {
             distanceToAllocIndexBoundary = allocIndexBoundaryForGroup - allocIndex - 1;
         }
         numSlotsPerDistancesToAllocIndexBoundary[distanceToAllocIndexBoundary]++;
+        /* endif */
         numAggregatedFullSlots++;
     }
 
@@ -83,11 +86,13 @@ final class OrdinarySegmentStats {
                 numAggregatedSegmentsPerAllocCapacity, other.numAggregatedSegmentsPerAllocCapacity);
         numAggregatedFullSlots += other.numAggregatedFullSlots;
         addMetricArrays(
-                numSlotsPerCollisionChainGroupLengths, other.numSlotsPerCollisionChainGroupLengths);
+                numSlotsPerCollisionChainGroupLength, other.numSlotsPerCollisionChainGroupLength);
         addMetricArrays(
                 numSlotsPerNumCollisionKeyComparisons, other.numSlotsPerNumCollisionKeyComparisons);
+        /* if Interleaved segments */
         addMetricArrays(numSlotsPerDistancesToAllocIndexBoundary,
                 other.numSlotsPerDistancesToAllocIndexBoundary);
+        /* endif */
     }
 
     private static void addMetricArrays(long[] target, long[] source) {
@@ -112,28 +117,39 @@ final class OrdinarySegmentStats {
         sb.append(String.format("Average full slots: %.2f%n", averageFullSlots));
 
         appendSlotMetricStats(
-                sb, numSlotsPerCollisionChainGroupLengths, "collision chain group length");
+                sb, numSlotsPerCollisionChainGroupLength, "collision chain group length");
         appendSlotMetricStats(
                 sb, numSlotsPerNumCollisionKeyComparisons, "num collision key comparisons");
+        /* if Interleaved segments */
         appendSlotMetricStats(
                 sb, numSlotsPerDistancesToAllocIndexBoundary, "distance to alloc index boundary");
+        /* endif */
+
         return sb.toString();
     }
 
-    @SuppressWarnings("AutoBoxing")
-    private void appendSlotMetricStats(
+
+    private static void appendSlotMetricStats(
             StringBuilder sb, long[] numSlotsPerMetric, String metricName) {
+        appendMetricStats(sb, "slots", numSlotsPerMetric, metricName);
+    }
+
+    @SuppressWarnings("AutoBoxing")
+    static void appendMetricStats(
+            StringBuilder sb, String countName, long[] countsPerMetric, String metricName) {
         long totalMetricSum = 0;
-        for (int metricValue = 0; metricValue < numSlotsPerMetric.length; metricValue++) {
-            long numSlotsWithMetricValue = numSlotsPerMetric[metricValue];
-            totalMetricSum += numSlotsWithMetricValue * (long) metricValue;
+        long totalCount = 0;
+        for (int metricValue = 0; metricValue < countsPerMetric.length; metricValue++) {
+            long countWithMetricValue = countsPerMetric[metricValue];
+            totalMetricSum += countWithMetricValue * (long) metricValue;
+            totalCount += countWithMetricValue;
         }
-        double averageMetricValue = (double) totalMetricSum / (double) numAggregatedFullSlots;
+        double averageMetricValue = (double) totalMetricSum / (double) totalCount;
         sb.append(String.format("Average %s: %.2f%n", metricName, averageMetricValue));
 
         appendNonZeroOrderedCountsWithPercentiles(
-                sb, metricName + " =", numSlotsPerMetric.length,
-                singletonList(new Count("slots", metricValue -> numSlotsPerMetric[metricValue])),
+                sb, metricName + " =", countsPerMetric.length,
+                singletonList(new Count(countName, metricValue -> countsPerMetric[metricValue])),
                 metricValue -> {});
     }
 

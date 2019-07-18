@@ -16,6 +16,7 @@
 
 package io.timeandspace.smoothie;
 
+import org.checkerframework.checker.nullness.qual.Nullable;
 import org.junit.Before;
 import org.junit.Ignore;
 import org.junit.Test;
@@ -39,7 +40,7 @@ public class GrowTest {
         for (int i = 0; i < 20_000_000; i++) {
             int key = random.nextInt();
             keys.add(key);
-            Integer res = map.put(key, key);
+            @Nullable Integer res = map.put(key, key);
             if (map.size() > keys.size()) {
                 throw new AssertionError();
             }
