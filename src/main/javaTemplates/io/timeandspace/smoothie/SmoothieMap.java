@@ -1983,6 +1983,72 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         }
     }
 
+    final void aggregateKeySearchStats(Object key, KeySearchStats keySearchStats) {
+        checkNonNull(key);
+
+        final long hash = keyHashCode(key);
+        final long hash_segmentLookupBits = segmentLookupBits(hash);
+        /* if Interleaved segments Supported intermediateSegments */
+        // [Reading consistent segment and isFullCapacitySegment values]
+        final int segmentStructureModStamp = acquireSegmentStructureModStamp();
+        /* endif */
+        final Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
+        /* if Interleaved segments Supported intermediateSegments */
+        final int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits);
+        validateSegmentStructureModStamp(segmentStructureModStamp);
+        /* endif */
+
+        int collisionChainGroupLength = 0;
+        int numCollisionKeyComparisons = 0;
+
+        final long baseGroupIndex = baseGroupIndex(hash);
+        final long hashTagBits = tagBits(hash);
+        keySearch:
+        for (long groupIndex = baseGroupIndex, groupIndexStep = 0; ;) {
+            long tagGroupOffset = tagGroupOffset(groupIndex
+                    /* if Interleaved segments Supported intermediateSegments */
+                    , (long) isFullCapacitySegment/* endif */);
+            long tagGroup = readTagGroupAtOffset(segment, tagGroupOffset);
+            long dataGroupOffset = dataGroupFromTagGroupOffset(tagGroupOffset);
+            long dataGroup = readDataGroupAtOffset(segment, dataGroupOffset);
+            // bitMask loop:
+            // TODO compare with int-indexed loop with bitCount(bitMask) limit
+            for (long bitMask = match(tagGroup, hashTagBits, dataGroup);
+                 bitMask != 0L;
+                 bitMask = clearLowestSetBit(bitMask)) {
+                long allocOffset = allocOffset(firstAllocIndex(dataGroup, bitMask)
+                        /* if Interleaved segments Supported intermediateSegments */
+                        , (long) isFullCapacitySegment/* endif */);
+                K internalKey = readKeyAtOffset(segment, allocOffset);
+                //noinspection ObjectEquality: identity comparision is intended
+                boolean keysIdentical = internalKey == key;
+                if (keysIdentical || keysEqual(key, internalKey)) {
+                    break keySearch;
+                } else {
+                    numCollisionKeyComparisons++;
+                }
+            }
+            if (shouldStopProbing(dataGroup)) {
+                break keySearch;
+            }
+            // [InflatedSegment checking after unsuccessful key search]
+            if (dataGroup != INFLATED_SEGMENT__MARKER_DATA_GROUP) { // [Positive likely branch]
+                groupIndexStep += 1; // [Quadratic probing]
+                if (groupIndexStep != HASH_TABLE_GROUPS) { // [Positive likely branch]
+                    groupIndex = addGroupIndex(groupIndex, groupIndexStep);
+                    collisionChainGroupLength++;
+                } else {
+                    // [Break from the loop when visited all groups in the hash table]
+                    break keySearch;
+                }
+            } else {
+                // Not aggregating any stats of searches in inflated segments.
+                return;
+            }
+        }
+        keySearchStats.aggregate(collisionChainGroupLength, numCollisionKeyComparisons);
+    }
+
     /**
      * Shallow xxxInflated() methods: this method (and other xxxInflated() methods) just casts the
      * segment object to {@link InflatedSegment} and delegates to it's method. It's done to reduce
