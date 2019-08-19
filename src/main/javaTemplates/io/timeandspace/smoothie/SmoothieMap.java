@@ -3237,7 +3237,6 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             long outboundOverflowCounts_perGroupIncrements, K key, long hash, V value,
             long groupIndex, long dataGroup, int insertionSlotIndexWithinGroup,
             long bitSetAndState) {
-        // TODO fix for interleaved segments
         int modCount = getModCountOpaque();
 
         // The old segment's bitSetAndState is never reset back to an operational value after this
