@@ -3362,15 +3362,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         // ### Insert the new entry into fromSegment or intoSegment: calling into
         // internalPutIfAbsent() which accesses the segmentsArray (and the bit set with
-        // isFullCapacity flags, when this is implemented in isFullCapacitySegment() method)
-        // although both fromSegment and intoSegment are already available as local variables
-        // because choosing between fromSegment and intoSegment and determining whether the chosen
-        // segment has full capacity in an ad-hoc manner would likely result in more branches than
-        // internalPutIfAbsent(). Note that accessing segmentsArray (and the bit set) should read
-        // from L1 because this path with the same key and hash has already been taken in the
-        // beginning of the operation that initiated this splitAndInsert() call: in other words,
-        // higher in the stack. Also, calling to internalPutIfAbsent() is simpler than an
-        // alternative ad-hoc segment choice logic.
+        // isFullCapacity flags) although both fromSegment and intoSegment are already available as
+        // local variables because choosing between fromSegment and intoSegment and determining
+        // whether the chosen segment has full capacity in an ad-hoc manner would likely result in
+        // more branches than internalPutIfAbsent(). Note that accessing segmentsArray (and the bit
+        // set) should read from L1 because this path with the same key and hash has already been
+        // taken in the beginning of the operation that initiated this splitAndInsert() call: in
+        // other words, higher in the stack. Also, calling to internalPutIfAbsent() is simpler than
+        // an alternative ad-hoc segment choice logic.
         if (internalPutIfAbsent(key, hash, value) != null) {
             throw new ConcurrentModificationException(
                     "New entry shouldn't replace existing during split");
