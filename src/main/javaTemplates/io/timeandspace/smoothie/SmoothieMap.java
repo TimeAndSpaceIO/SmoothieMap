@@ -541,6 +541,11 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         MOD_COUNT_FIELD_OFFSET = getFieldOffset(SmoothieMap.class, "modCount");
     }
 
+    /**
+     * See https://probablydance.com/2018/06/16/fibonacci-
+     * hashing-the-optimization-that-the-world-forgot-or-a-better-alternative-to-integer-modulo/
+     * for explanation why this constant is good.
+     */
     protected static final long LONG_PHI_MAGIC = -7046029254386353131L;
 
     /**
