@@ -30,7 +30,6 @@ import static io.timeandspace.smoothie.InterleavedSegment_BitSetAndStateArea.cop
 import static io.timeandspace.smoothie.InterleavedSegment_BitSetAndStateArea.getOutboundOverflowCountsPerGroup;
 import static io.timeandspace.smoothie.InterleavedSegment_BitSetAndStateArea.setBitSetAndState;
 // endif */
-import static io.timeandspace.smoothie.HashTable.DATA__ALLOC_INDEX_MASK;
 import static io.timeandspace.smoothie.HashTable.EMPTY_DATA_GROUP;
 import static io.timeandspace.smoothie.HashTable.GROUP_SLOTS;
 import static io.timeandspace.smoothie.HashTable.HASH_TABLE_GROUPS;
@@ -259,7 +258,7 @@ final class InterleavedSegments {
      * complicated (requires something like several bit sets stored in long values for tracking
      * individual swapping of hash table's slots and alloc indexes in both segments) and doesn't
      * make much sense since the probability of calling this method is just 0.7% (see
-     * [Swap segments] in {@link SmoothieMap#split}) and since intermediate-capacity segments are
+     * [Swap segments] in {@link SmoothieMap#doSplit}) and since intermediate-capacity segments are
      * used at all, the garbage produce of the SmoothieMap is much higher already so temporary array
      * allocations in this method are an insignificant contribution to the total garbage produce.
      */
@@ -280,9 +279,9 @@ final class InterleavedSegments {
                 getOutboundOverflowCountsPerGroup(intermediateCapSegment);
         // Zero intermediateCapSegment_outboundOverflowCountsPerGroup: this method expects
         // intermediateCapacitySegment's outbound overflow counts to be zero for all groups. This is
-        // because swapContentsDuringSplit() is called from SmoothieMap.split() where
+        // because swapContentsDuringSplit() is called from SmoothieMap.doSplit() where
         // intermediateCapacitySegment is created privately (so no other thread can possibly modify
-        // it in parallel) and in the logic of SmoothieMap.split() itself outbound overflow counts
+        // it in parallel) and in the logic of SmoothieMap.doSplit() itself outbound overflow counts
         // are not written until the end of the method (after the call to
         // swapContentsDuringSplit()).
         //
@@ -713,7 +712,7 @@ final class InterleavedSegments {
         }
 
         @HotPath
-        private static long allocOffset(long allocIndex) {
+        static long allocOffset(long allocIndex) {
             // Making allocIndex to be relative to stride 0. [Reusing local variable].
             allocIndex += STRIDE_SIZE_IN_ALLOC_INDEXES - STRIDE_0__NUM_ACTUAL_ALLOC_INDEXES;
             // Equivalent to allocIndex / STRIDE_SIZE_IN_ALLOC_INDEXES (= 6).
@@ -955,7 +954,7 @@ final class InterleavedSegments {
             // Sticking to [Branchless hash table iteration] in a cold method: the performance
             // considerations of branchless vs. byte-by-byte hash table iteration (see the
             // description of [Branchless hash table iteration] for details) are not important in
-            // this method, but since performance-critical methods (such as SmoothieMap.split())
+            // this method, but since performance-critical methods (such as SmoothieMap.doSplit())
             // already take the branchless approach other methods such as aggregateStats() follow
             // the performance-critical methods to reduce the variability in the codebase, that is,
             // to maintain just one mode of hash table iteration. Similar reasoning is applied in
@@ -1616,9 +1615,8 @@ final class InterleavedSegments {
                     /* endif */);
             if (insertionAllocIndex >= SEGMENT_INTERMEDIATE_ALLOC_CAPACITY) {
                 // Can happen if entries are inserted into fullCapacitySegment (see the code of
-                // swapContentsDuringSplit()) concurrently with split(), including
-                // concurrently with swapContentsDuringSplit() which is called from
-                // split().
+                // swapContentsDuringSplit()) concurrently with doSplit(), including concurrently
+                // with swapContentsDuringSplit() which is called from doSplit().
                 throw new ConcurrentModificationException();
             }
 
@@ -1754,14 +1752,7 @@ final class InterleavedSegments {
         @Override
         void aggregateStats(SmoothieMap<K, V> map, OrdinarySegmentStats ordinarySegmentStats) {
             ordinarySegmentStats.incrementAggregatedSegments(bitSetAndState);
-            // Sticking to [Branchless hash table iteration] in a cold method: the performance
-            // considerations of branchless vs. byte-by-byte hash table iteration (see the
-            // description of [Branchless hash table iteration] for details) are not important in
-            // this method, but since performance-critical methods (such as SmoothieMap.split())
-            // already take the branchless approach other methods such as aggregateStats() follow
-            // the performance-critical methods to reduce the variability in the codebase, that is,
-            // to maintain just one mode of hash table iteration. Similar reasoning is applied in
-            // [Same hash table iteration mode in symmetric methods]
+            // [Sticking to [Branchless hash table iteration] in a cold method]
             for (long groupIndex = 0; groupIndex < HASH_TABLE_GROUPS; groupIndex++) {
                 long dataGroup = readDataGroup(this, groupIndex);
                 int allocIndexBoundaryForGroup =

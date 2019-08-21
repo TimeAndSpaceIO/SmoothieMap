@@ -16,6 +16,7 @@
 
 package io.timeandspace.smoothie;
 
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import org.checkerframework.checker.nullness.qual.Nullable;
 import org.jetbrains.annotations.Contract;
 
@@ -34,10 +35,13 @@ public final class SmoothieMapBuilder<K, V> {
         return new SmoothieMapBuilder<>();
     }
 
-    private SmoothieMapBuilder() {}
+    /** Mirror field: {@link SmoothieMap#allocateIntermediateSegments}. */
+    private boolean allocateIntermediateSegments;
+    /** Mirror field: {@link SmoothieMap#splitBetweenTwoNewSegments}. */
+    private boolean splitBetweenTwoNewSegments;
+    /** Mirror field: {@link SmoothieMap#doShrink}. */
+    private boolean doShrink;
 
-    private boolean allocateIntermediateSegments = true;
-    private boolean doShrink = true;
     private @Nullable Supplier<ToLongFunction<K>> hashFunctionFactory = null;
 
     private long expectedSize = UNKNOWN_SIZE;
@@ -48,18 +52,22 @@ public final class SmoothieMapBuilder<K, V> {
     private @Nullable Consumer<PoorHashCodeDistributionOccasion<K, V>> reportingAction = null;
     /* endif */
 
-    /**
-     * The default objective is {@link OptimizationObjective#MEMORY_FOOTPRINT}.
-     */
+    private SmoothieMapBuilder() {
+        defaultOptimizationConfiguration();
+    }
+
+    @CanIgnoreReturnValue
     @Contract("_ -> this")
     public SmoothieMapBuilder<K, V> optimizeFor(OptimizationObjective optimizationObjective) {
         switch (optimizationObjective) {
             case ALLOCATION_RATE:
                 this.allocateIntermediateSegments = false;
+                this.splitBetweenTwoNewSegments = false;
                 this.doShrink = false;
                 break;
             case MEMORY_FOOTPRINT:
                 this.allocateIntermediateSegments = true;
+                this.splitBetweenTwoNewSegments = true;
                 this.doShrink = true;
                 break;
             default:
@@ -68,6 +76,20 @@ public final class SmoothieMapBuilder<K, V> {
         return this;
     }
 
+    /**
+     * The default objective is a compromise between {@link OptimizationObjective#MEMORY_FOOTPRINT}
+     * and {@link OptimizationObjective#ALLOCATION_RATE}.
+     */
+    @CanIgnoreReturnValue
+    @Contract(" -> this")
+    public SmoothieMapBuilder<K, V> defaultOptimizationConfiguration() {
+        this.allocateIntermediateSegments = true;
+        this.splitBetweenTwoNewSegments = false;
+        this.doShrink = true;
+        return this;
+    }
+
+    @CanIgnoreReturnValue
     @Contract("_ -> this")
     public SmoothieMapBuilder<K, V> allocateIntermediateSegments(
             boolean allocateIntermediateSegments) {
@@ -75,12 +97,21 @@ public final class SmoothieMapBuilder<K, V> {
         return this;
     }
 
+    @CanIgnoreReturnValue
+    @Contract("_ -> this")
+    public SmoothieMapBuilder<K, V> splitBetweenTwoNewSegments(boolean splitBetweenTwoNewSegments) {
+        this.splitBetweenTwoNewSegments = splitBetweenTwoNewSegments;
+        return this;
+    }
+
+    @CanIgnoreReturnValue
     @Contract("_ -> this")
     public SmoothieMapBuilder<K, V> doShrink(boolean doShrink) {
         this.doShrink = doShrink;
         return this;
     }
 
+    @CanIgnoreReturnValue
     @Contract("_ -> this")
     public SmoothieMapBuilder<K, V> hashFunctionFactory(
             Supplier<ToLongFunction<K>> hashFunctionFactory) {
@@ -89,12 +120,14 @@ public final class SmoothieMapBuilder<K, V> {
         return this;
     }
 
+    @CanIgnoreReturnValue
     @Contract(" -> this")
     public SmoothieMapBuilder<K, V> defaultHashFunctionFactory() {
         this.hashFunctionFactory = null;
         return this;
     }
 
+    @CanIgnoreReturnValue
     @Contract("_ -> this")
     public SmoothieMapBuilder<K, V> expectedSize(long expectedSize) {
         checkNonNegative(expectedSize, "expected size");
@@ -102,12 +135,14 @@ public final class SmoothieMapBuilder<K, V> {
         return this;
     }
 
+    @CanIgnoreReturnValue
     @Contract(" -> this")
     public SmoothieMapBuilder<K, V> unknownExpectedSize() {
         this.expectedSize = UNKNOWN_SIZE;
         return this;
     }
 
+    @CanIgnoreReturnValue
     @Contract("_ -> this")
     public SmoothieMapBuilder<K, V> minExpectedSize(long minExpectedSize) {
         checkNonNegative(minExpectedSize, "minimum expected size");
@@ -115,6 +150,8 @@ public final class SmoothieMapBuilder<K, V> {
         return this;
     }
 
+    @CanIgnoreReturnValue
+    @Contract(" -> this")
     public SmoothieMapBuilder<K, V> unknownMinExpectedSize() {
         this.minExpectedSize = UNKNOWN_SIZE;
         return this;
@@ -160,6 +197,7 @@ public final class SmoothieMapBuilder<K, V> {
      * TODO add a higher bound estimate of the key pool cardinality as a parameter?
      *  or just a boolean indicating infinite number of possible keys
      */
+    @CanIgnoreReturnValue
     @Contract("_, _ -> this")
     public SmoothieMapBuilder<K, V> reportPoorHashCodeDistribution(
             double maxProbabilityOfOccasionIfHashFunctionWasRandom,
@@ -172,8 +210,9 @@ public final class SmoothieMapBuilder<K, V> {
     }
     /* endif */
 
+    @CanIgnoreReturnValue
     @Contract(" -> this")
-    public SmoothieMapBuilder<K, V> dontReportPoorHashCodeDistrubution() {
+    public SmoothieMapBuilder<K, V> dontReportPoorHashCodeDistribution() {
         this.reportingAction = null;
         return this;
     }
@@ -185,6 +224,10 @@ public final class SmoothieMapBuilder<K, V> {
 
     boolean allocateIntermediateSegments() {
         return allocateIntermediateSegments;
+    }
+
+    boolean splitBetweenTwoNewSegments() {
+        return splitBetweenTwoNewSegments;
     }
 
     boolean doShrink() {

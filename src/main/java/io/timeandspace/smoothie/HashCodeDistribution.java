@@ -66,7 +66,7 @@ class HashCodeDistribution<K, V> {
      * #SKEWED_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__MAX_ACCOUNTED} + 1.
      *
      * A value at index `i` is a cumulative distribution of the event that a segment split ({@link
-     * SmoothieMap#split}) observes at least 29 + i keys that should have been fallen in either
+     * SmoothieMap#doSplit}) observes at least 29 + i keys that should have been fallen in either
      * the lower or the higher half of the segment's hash table (and, conversely, at most 19 - i
      * keys should have been fallen in the less populated half). It is called a "skewness level"
      * below in this class.
@@ -75,7 +75,7 @@ class HashCodeDistribution<K, V> {
      * reasons:
      *
      *  1) the probability of such events is too large (~0.31 for 28 keys), so
-     *  HashCodeDistribution's methods would be called too often from {@link SmoothieMap#split},
+     *  HashCodeDistribution's methods would be called too often from {@link SmoothieMap#doSplit},
      *  contributing more significantly to the average CPU cost of the latter.
      *
      *  2) Both {@link #skewedSegment_splitStatsToCurrentAverageOrder} and {@link
@@ -132,7 +132,7 @@ class HashCodeDistribution<K, V> {
     /**
      * Whether to report a poor hash code distribution event when there are so many segments in the
      * SmoothieMap with entries concentrated in either the lower or the higher half of a hash table
-     * (determined during {@link SmoothieMap#split}) that statistical probability of this event
+     * (determined during {@link SmoothieMap#doSplit}) that statistical probability of this event
      * (assuming the hash function was truly random) is below {@code
      * maxProbabilityOfOccasionIfHashFunctionWasRandom} passed into {@link
      * SmoothieMapBuilder#reportPoorHashCodeDistribution}.

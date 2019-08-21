@@ -286,7 +286,7 @@ final class ContinuousSegments {
                 long bitSetAndState, int fitInAllocCapacity) {
             int segmentSize = segmentSize(bitSetAndState);
             // Must not happen since this segment's bitSetAndState is not re-read during
-            // SmoothieMap.split(): see the flow of fromSegment_bitSetAndState variable in that
+            // SmoothieMap.doSplit(): see the flow of fromSegment_bitSetAndState variable in that
             // method.
             verifyThat(segmentSize <= fitInAllocCapacity);
             // compactEntriesDuringSegmentSwap() method must not be called if it's not needed
@@ -389,9 +389,9 @@ final class ContinuousSegments {
 
         /**
          * Can happen if entries are inserted into the segment concurrently with {@link
-         * SmoothieMap#split}, including concurrently with {@link #compactEntriesDuringSegmentSwap}
-         * which is called from {@link #swapContentsDuringSplit} which is called from
-         * {@link SmoothieMap#split}.
+         * SmoothieMap#doSplit}, including concurrently with {@link
+         * #compactEntriesDuringSegmentSwap} which is called from {@link #swapContentsDuringSplit}
+         * which is called from {@link SmoothieMap#doSplit}.
          */
         private static ConcurrentModificationException cmeDuringCompactEntries() {
             return new ConcurrentModificationException();

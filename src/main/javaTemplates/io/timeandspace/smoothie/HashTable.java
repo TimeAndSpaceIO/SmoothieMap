@@ -95,7 +95,7 @@ final class HashTable {
     }
 
     private static final int DATA__ALLOC_INDEX_BITS = 6;
-    static final int DATA__ALLOC_INDEX_MASK = (1 << DATA__ALLOC_INDEX_BITS) - 1; // = 63
+    private static final int DATA__ALLOC_INDEX_MASK = (1 << DATA__ALLOC_INDEX_BITS) - 1; // = 63
 
     private static final int DATA__OUTBOUND_OVERFLOW_BIT = 1 << DATA__ALLOC_INDEX_BITS;
     private static final int DATA__FULLNESS_BIT = DATA__OUTBOUND_OVERFLOW_BIT << 1;

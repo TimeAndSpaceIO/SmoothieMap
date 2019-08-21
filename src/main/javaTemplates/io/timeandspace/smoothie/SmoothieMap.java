@@ -273,12 +273,13 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
     /**
      * Using 30 for {@link ContinuousSegments} because statistically it leads to lower expected
-     * SmoothieMap's memory footprint. Using 32 for {@link InterleavedSegments} because it's only
-     * very marginally worse than 30, but {@link IntermediateCapacitySegment}
-     * can be fully symmetric with 4 allocation slots surrounding each hash table group. Also,
-     * the probability of calling {@link
+     * SmoothieMap's memory footprint (if {@link #splitBetweenTwoNewSegments} is false; if
+     * {@link #splitBetweenTwoNewSegments}, the result may be different, e. g. 32 or 34). Using 32
+     * for {@link InterleavedSegments} because it's only very marginally worse than 30, but {@link
+     * IntermediateCapacitySegment} can be fully symmetric with 4 allocation slots surrounding each
+     * hash table group. Also, the probability of calling {@link
      * FullCapacitySegment#swapContentsDuringSplit} is lower
-     * (see [Swap segments] in {@link #split}) which is good because {@link
+     * (see [Swap segments] in {@link #doSplit}) which is good because {@link
      * FullCapacitySegment#swapContentsDuringSplit} is relatively
      * more expensive than {@link
      * ContinuousSegments.SegmentBase#swapContentsDuringSplit} and allocates.
@@ -575,14 +576,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     /**
      * The last value returned from a {@link #doComputeAverageSegmentOrder} call. Updated
      * transparently in {@link #computeAverageSegmentOrder}. The average segment order is computed
-     * and used only in the contexts related to SmoothieMap's growth, namely {@link #split}
+     * and used only in the contexts related to SmoothieMap's growth, namely {@link #doSplit}
      * (triggered when a segment grows too large) and {@link #splitInflated} (triggered when the
      * average segment order grows large enough for an inflated segment to not be considered outlier
      * anymore). It means that if no entries are inserted into a SmoothieMap or more entries are
      * deleted from a SmoothieMap than inserted the value stored in lastComputedAverageSegmentOrder
      * could become stale, much larger than the actual average segment order. It's updated when a
-     * SmoothieMap starts to grow again (in the next {@link #split} call), so there shouldn't be any
-     * "high watermark" effects, unless entries are inserted into a SmoothieMap in an artificial
+     * SmoothieMap starts to grow again (in the next {@link #doSplit} call), so there shouldn't be
+     * any "high watermark" effects, unless entries are inserted into a SmoothieMap in an artificial
      * order, for example, making all insertions to fall into already inflated segments, while
      * removals happen from ordinary segments. See also the comment for {@link
      * InflatedSegment#shouldBeSplit}, and the comments inside that method.
@@ -590,7 +591,18 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     byte lastComputedAverageSegmentOrder;
 
     /* if Supported intermediateSegments */
+    /** Mirror field: {@link SmoothieMapBuilder#allocateIntermediateSegments}. */
     private boolean allocateIntermediateSegments;
+
+    /**
+     * If this flag is true then during {@link #splitAndInsert} instead of moving half (on average)
+     * of the entries from the old segment into a newly allocated segment, we allocate two new
+     * intermediate-capacity segments which allows extra memory savings at the cost of higher memory
+     * churn during the growth of the SmoothieMap.
+     *
+     * Mirror field: {@link SmoothieMapBuilder#splitBetweenTwoNewSegments}.
+     */
+    private boolean splitBetweenTwoNewSegments;
 
     /* if Interleaved segments */
     /**
@@ -619,6 +631,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     /* endif */
 
     /* if Flag doShrink */
+    /** Mirror field: {@link SmoothieMapBuilder#doShrink}. */
     private boolean doShrink;
     /* endif */
 
@@ -664,6 +677,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     SmoothieMap(SmoothieMapBuilder<K, V> builder) {
         /* if Supported intermediateSegments */
         this.allocateIntermediateSegments = builder.allocateIntermediateSegments();
+        this.splitBetweenTwoNewSegments = builder.splitBetweenTwoNewSegments();
         /* endif */
 
         SegmentsArrayLengthAndNumSegments initialSegmentsArrayLengthAndNumSegments =
@@ -1292,7 +1306,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     }
 
     /**
-     * Specifically to be called from {@link #split}.
+     * Specifically to be called from {@link #doSplit}.
      * @param firstSiblingsSegmentIndex the first (smallest) index in {@link #segmentsArray} where
      *        where yet unsplit segment (with the order equal to newSegmentOrder - 1) is stored.
      * @param newSegmentOrder the order of the two new sibling segments
@@ -1894,8 +1908,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 //   will be longer than two groups (when the repetitive step computations will
                 //   start to make the difference) is very low. TODO evaluate this approach
                 //  - A simplified, no-action approach to handling missing opportunities of shifting
-                //  back unnecessarily overflown entries during split() is not possible with double
-                //  hashing because that approach relies on the quadratic probing scheme: see
+                //  back unnecessarily overflown entries during doSplit() is not possible with
+                //  double hashing because that approach relies on the quadratic probing scheme: see
                 //  [fromSegment iteration].
                 //
                 // The maximum load factor in SmoothieMap is lower than in F14
@@ -3293,17 +3307,62 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         checkModCountOrThrowCme(modCount);
     }
 
+    /**
+     * Precondition for calling this method: {@link #tryEnsureSegmentsArrayCapacityForSplit} is
+     * called with {@code priorSegmentOrder} as the argument and returned a non-negative result.
+     */
     @AmortizedPerSegment
     private void splitAndInsert(int modCount, Object fromSegment, K key, long hash, V value,
             long fromSegment_bitSetAndState, int priorSegmentOrder) {
-        // Increment modCount because splitting is a modification itself.
+        /* if Supported intermediateSegments */
+        if (!splitBetweenTwoNewSegments) {
+        /* endif */
+            split(modCount, fromSegment, hash, fromSegment_bitSetAndState, priorSegmentOrder);
+        /* if Supported intermediateSegments */
+        } else {
+            splitBetweenTwoNewSegments(
+                    modCount, fromSegment, hash, fromSegment_bitSetAndState, priorSegmentOrder);
+        }
+        /* endif */
+
+        // ### Insert the new entry into fromSegment or intoSegment: calling into
+        // internalPutIfAbsent() which accesses the segmentsArray (and the bit set with
+        // isFullCapacity flags) although both fromSegment and intoSegment could be available as
+        // local variables (if split() was inlined into splitAndInsert()) because choosing between
+        // fromSegment and intoSegment and determining whether the chosen segment has full capacity
+        // in an ad-hoc manner would likely result in more branches than internalPutIfAbsent(). Note
+        // that accessing segmentsArray (and the bit set) should read from L1 because this path with
+        // the same key and hash has already been taken in the beginning of the operation that
+        // initiated this splitAndInsert() call: in other words, higher in the stack. Also, calling
+        // to internalPutIfAbsent() is simpler than an alternative ad-hoc segment choice logic.
+        internalPutIfAbsentDuringSplit(key, hash, value);
+    }
+
+    private void internalPutIfAbsentDuringSplit(K key, long hash, V value) {
+        if (internalPutIfAbsent(key, hash, value) != null) {
+            throw new ConcurrentModificationException(
+                    "New entry shouldn't replace existing one during split");
+        }
+    }
+
+    private void split(int modCount, Object fromSegment, long hash, long fromSegment_bitSetAndState,
+            int priorSegmentOrder) {
+        // The point of incrementing modCount early is that concurrent calls to other methods have a
+        // chance to catch a concurrent modification. We increment modCount here because splitting
+        // procedure changes the contents of fromSegment structurally (in doSplit()) before calling
+        // to replaceInSegmentsArray(). This is a unique case among other *AndInsert() methods:
+        // inflateAndInsert() and splitBetweenTwoNewSegmentsAndInsert() call
+        // replaceInSegmentsArray() as their first structural modification. growCapacityAndInsert()
+        // populates the new segment, but doesn't alter the contents of the old segment (apart from
+        // setting its bitSetAndState to a bulk operation placeholder value) until the call to
+        // replaceInSegmentsArray() as well.
         modCount++;
         // Parallel modCount field increment: increment modCount field on itself rather than
         // assigning the local variable to still be able to capture the discrepancy and throw a
         // ConcurrentModificationException in the end of this method.
         this.modCount++;
 
-        // The bitSetAndState of fromSegment is reset back to an operational value inside split(),
+        // The bitSetAndState of fromSegment is reset back to an operational value inside doSplit(),
         // closer to the end of the method.
         setBitSetAndState(fromSegment,
                 makeBulkOperationPlaceholderBitSetAndState(fromSegment_bitSetAndState));
@@ -3313,16 +3372,16 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         // ### Create a new segment and split entries between fromSegment and the new segment.
         int intoSegmentAllocCapacity = getInitialSegmentAllocCapacity(siblingSegmentsOrder);
         // intoSegment's bitSetAndState is written and [Safe segment publication] is ensured inside
-        // split(), closer to the end of the method.
+        // doSplit(), closer to the end of the method.
         Segment<K, V> intoSegment =
                 allocateNewSegmentWithoutSettingBitSetAndSet(intoSegmentAllocCapacity);
         int siblingSegmentsQualificationBitIndex =
                 SEGMENT_LOOKUP_HASH_SHIFT + siblingSegmentsOrder - 1;
 
-        long fromSegmentIsHigher = split(fromSegment,
+        long fromSegmentIsHigher = doSplit(fromSegment,
                 fromSegment_bitSetAndState, intoSegment, intoSegmentAllocCapacity,
                 siblingSegmentsOrder, siblingSegmentsQualificationBitIndex);
-        // storeFence() is called inside split() to make the publishing of intoSegment safe.
+        // storeFence() is called inside doSplit() to make the publishing of intoSegment safe.
 
         // ### Publish intoSegment (the new segment) to segmentsArray.
         int intoSegmentIsLower = (int) (fromSegmentIsHigher >>>
@@ -3353,26 +3412,11 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         // to be inflated or split itself if during the splitting all or almost all entries went to
         // one of the segments. There is no cheap way to detect if that have happened to
         // additionally increment the local copy of modCount. (Compare with the similar problem in
-        // splitInflated().) After all, the main point is making a modCount check after bulky
-        // operations: split() and replaceInSegmentsArray() which are called above. Including the
-        // last point update (the internalPutIfAbsent() call below) in the scope of the modCount
-        // check is not necessary.
+        // splitBetweenTwoNewSegments() and splitInflated().) After all, the main point is making a
+        // modCount check after bulky operations: doSplit() and replaceInSegmentsArray() which are
+        // called above. Including the last point update (the internalPutIfAbsent() call below) in
+        // the scope of the modCount check is not necessary.
         checkModCountOrThrowCme(modCount);
-
-        // ### Insert the new entry into fromSegment or intoSegment: calling into
-        // internalPutIfAbsent() which accesses the segmentsArray (and the bit set with
-        // isFullCapacity flags) although both fromSegment and intoSegment are already available as
-        // local variables because choosing between fromSegment and intoSegment and determining
-        // whether the chosen segment has full capacity in an ad-hoc manner would likely result in
-        // more branches than internalPutIfAbsent(). Note that accessing segmentsArray (and the bit
-        // set) should read from L1 because this path with the same key and hash has already been
-        // taken in the beginning of the operation that initiated this splitAndInsert() call: in
-        // other words, higher in the stack. Also, calling to internalPutIfAbsent() is simpler than
-        // an alternative ad-hoc segment choice logic.
-        if (internalPutIfAbsent(key, hash, value) != null) {
-            throw new ConcurrentModificationException(
-                    "New entry shouldn't replace existing during split");
-        }
     }
 
     /**
@@ -3391,14 +3435,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
      *
      * @apiNote siblingSegmentsQualificationBitIndex can be re-computed inside the method from
      * newSegmentOrder instead of being passed as a parameter. There is the same "pass-or-recompute"
-     * tradeoff as in {@link #doInsert} and {@link #makeSpaceAndInsert}. However, in split() an
+     * tradeoff as in {@link #doInsert} and {@link #makeSpaceAndInsert}. However, in doSplit() an
      * additional factor for passing siblingSegmentsQualificationBitIndex is making it being
      * computed only once in {@link #splitAndInsert}, hence less implicit dependency and probability
      * of making mistakes.
      */
     @SuppressWarnings({"UnnecessaryLabelOnBreakStatement", "UnnecessaryLabelOnContinueStatement"})
     @AmortizedPerSegment
-    final long split(Object fromSegment, long fromSegment_bitSetAndState,
+    final long doSplit(Object fromSegment, long fromSegment_bitSetAndState,
             Object intoSegment, int intoSegment_allocCapacity, int newSegmentOrder,
             int siblingSegmentsQualificationBitIndex) {
         // Updating fromSegment_bitSetAndState's segment order early in this method because it's
@@ -3484,9 +3528,11 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         // yet different properties than Segment.removeIf() and compactEntriesDuringSegmentSwap()
         // because the hash table should be SEGMENT_MAX_ALLOC_CAPACITY / HASH_TABLE_SLOTS = 75%
         // full here. So if byte-by-byte hash table iteration is better than the branchless
-        // approach in any one of split(), Segment.removeIf(), and compactEntriesDuringSegmentSwap()
-        // methods, it should be in split().
-        // TODO compare the approaches for split().
+        // approach in any one of doSplit(), Segment.removeIf(), and
+        // compactEntriesDuringSegmentSwap() methods, it should be in doSplit().
+        // TODO compare the approaches for doSplit().
+        // On the other hand, this instance of [Branchless hash table iteration] has exactly the
+        // same properties as in doSplitBetweenTwoNewSegments().
 
         // [Int-indexed loop to avoid a safepoint poll]
         for (int extraGroupIndex = 0; extraGroupIndex < HASH_TABLE_GROUPS; extraGroupIndex++) {
@@ -3766,7 +3812,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                                 // intoSegment's size instead of calling
                                 // lowestFreeAllocIndex(intoSegment_bitSetAndState) is an
                                 // optimization based on the fact that we are populating intoSegment
-                                // privately in split() so there can't be any "holes" in its alloc
+                                // privately in doSplit() so there can't be any "holes" in its alloc
                                 // area due to entry removals.
                                 int intoSegment_allocIndex = intoSegment_currentSize;
                                 /* elif Interleaved segments */
@@ -3904,6 +3950,99 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         return swappedSegments;
     }
+
+    /* if Supported intermediateSegments */
+    /**
+     * Precondition for calling this method: {@link #tryEnsureSegmentsArrayCapacityForSplit} is
+     * called with {@code priorSegmentOrder} as the argument and returned a non-negative result.
+     *
+     * The code of this method is almost verbatim copy of {@link #splitInflated}. These methods must
+     * be changed in parallel.
+     */
+    @AmortizedPerSegment
+    private void splitBetweenTwoNewSegments(int modCount, Object oldSegment,
+            long hash, long oldSegment_bitSetAndState, int priorSegmentOrder) {
+        // The oldSegment's bitSetAndState is never reset back to an operational value after this
+        // statement.
+        setBitSetAndState(oldSegment,
+                makeBulkOperationPlaceholderBitSetAndState(oldSegment_bitSetAndState));
+
+        // ### Creating two result segments and replacing references in segmentsArray to the
+        // ### old segment with references to the the result segments.
+        int resultSegmentsOrder = priorSegmentOrder + 1;
+        int resultSegmentsAllocCapacity = getInitialSegmentAllocCapacity(resultSegmentsOrder);
+
+        // [Publishing result segments before population]
+        // [SegmentOne/SegmentTwo naming]
+        int firstIndexOfResultSegmentOne =
+                firstSegmentIndexByHashAndOrder(hash, resultSegmentsOrder);
+        Segment<K, V> resultSegmentOne =
+                createNewSegment(resultSegmentsAllocCapacity, resultSegmentsOrder);
+        Object[] segmentsArray = getNonNullSegmentsArrayOrThrowCme();
+        /* if Interleaved segments */
+        boolean oldSegment_isFullCapacitySegment = true;
+        /* endif */
+        replaceInSegmentsArray(
+                segmentsArray, firstIndexOfResultSegmentOne, resultSegmentsOrder, resultSegmentOne
+                /* if Interleaved segments */, oldSegment_isFullCapacitySegment/* endif */);
+        modCount++; // Matches the modCount field increment performed in replaceInSegmentsArray().
+
+        int firstIndexOfResultSegmentTwo =
+                siblingSegmentIndex(firstIndexOfResultSegmentOne, resultSegmentsOrder);
+        Segment<K, V> resultSegmentTwo =
+                createNewSegment(resultSegmentsAllocCapacity, resultSegmentsOrder);
+        replaceInSegmentsArray(
+                segmentsArray, firstIndexOfResultSegmentTwo, resultSegmentsOrder, resultSegmentTwo
+                /* if Interleaved segments */, oldSegment_isFullCapacitySegment/* endif */);
+        modCount++; // Matches the modCount field increment performed in replaceInSegmentsArray().
+
+        /* if Tracking segmentOrderStats */
+        addToSegmentCountWithOrder(resultSegmentsOrder, 2);
+        subtractFromSegmentCountWithOrder(priorSegmentOrder, 1);
+        /* endif */
+
+        // [Checking modCount before actual split of entries]
+        checkModCountOrThrowCme(modCount);
+
+        doSplitBetweenTwoNewSegments(oldSegment);
+    }
+
+    @AmortizedPerSegment
+    private void doSplitBetweenTwoNewSegments(Object oldSegment) {
+        int numMovedEntries = 0;
+        // [Branchless hash table iteration]
+        // [Int-indexed loop to avoid a safepoint poll]
+        for (int iterGroupIndex = 0; iterGroupIndex < HASH_TABLE_GROUPS; iterGroupIndex++) {
+            long iterDataGroup = /* if Interleaved segments */FullCapacitySegment./* endif */
+                    readDataGroup(oldSegment, (long) iterGroupIndex);
+
+            // [groupIteration]
+            for (long iterBitMask = matchFull(iterDataGroup);
+                 iterBitMask != 0L;
+                 iterBitMask = clearLowestSetBit(iterBitMask)) {
+                long oldSegment_allocIndex;
+                // [Inlined lowestMatchingSlotIndex]
+                int iterTrailingZeros = Long.numberOfTrailingZeros(iterBitMask);
+                oldSegment_allocIndex = extractAllocIndex(iterDataGroup, iterTrailingZeros);
+                long oldSegment_allocOffset = /* if Interleaved segments */FullCapacitySegment.
+                        /* endif */allocOffset(oldSegment_allocIndex);
+
+                K key = readKeyAtOffset(oldSegment, oldSegment_allocOffset);
+                long hash = keyHashCode(key);
+                V value = readValueAtOffset(oldSegment, oldSegment_allocOffset);
+
+                // [Publishing result segments before population] explains why we are using "public"
+                // internalPutIfAbsentDuringSplit() method here.
+                internalPutIfAbsentDuringSplit(key, hash, value);
+
+                numMovedEntries++;
+            }
+        }
+        // Restoring the correct size after calling putImpl() with entries that are already in the
+        // map in the loop above.
+        size = size - (long) numMovedEntries;
+    }
+    /* endif */
 
     /** Invariant before calling this method: oldSegment's size is equal to the capacity. */
     @RarelyCalledAmortizedPerSegment
@@ -4480,6 +4619,10 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
     /**
      * Splits an inflated segment whose order is not an outlier anymore.
+     *
+     * The code of this method is almost verbatim copy of {@link #splitBetweenTwoNewSegments}. These
+     * methods must be changed in parallel.
+     *
      * @param hash a hash code of some entry belonging to the given segment. It allows to determine
      * indexes at which the given segment is stored in {@link #segmentsArray}.
      */
@@ -4506,8 +4649,9 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         // ### inflated segment with references to the the result segments.
         int resultSegmentsOrder = inflatedSegmentOrder + 1;
         int resultSegmentsAllocCapacity = getInitialSegmentAllocCapacity(resultSegmentsOrder);
-        // Publishing result segments before population in splitInflated: result segments are first
-        // published to segmentsArray and then populated using the "public" putImpl() procedure (see
+
+        // Publishing result segments before population: result segments are first published to
+        // segmentsArray and then populated using the "public" internalPutIfAbsentDuringSplit() (see
         // doSplitInflated()) rather than populated privately as in doShrinkInto() and
         // doDeflateSmall() because the inflated segment which is being split in this method may
         // contain more than SEGMENT_MAX_ALLOC_CAPACITY entries, therefore one of the result
@@ -4556,11 +4700,11 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         subtractFromSegmentCountWithOrder(inflatedSegmentOrder, 1);
         /* endif */
 
-        // Checking modCount just after tryEnsureSegmentsArrayCapacityForSplit() and
-        // replaceInSegmentsArray(), but before doSplitInflated() because it's very hard or
-        // impossible to track the extra increments to modCount field if one (or both) of the result
-        // segments are inflated, or grown in capacity, or split. See explanations in
-        // [Publishing result segments before population in splitInflated] comment above.
+        // Checking modCount before actual split of entries: checking the modCount just after
+        // tryEnsureSegmentsArrayCapacityForSplit() and replaceInSegmentsArray(), but before
+        // doSplitInflated() because it's very hard or impossible to track the extra increments to
+        // modCount field if one (or both) of the result segments are inflated, or grown in
+        // capacity, or split. See explanations in [Publishing result segments before population].
         checkModCountOrThrowCme(modCount);
 
         doSplitInflated(inflatedSegment);
@@ -4574,25 +4718,10 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             // [Possibly wrong hash from InflatedSegment's node]
             long hash = node.hash;
 
-            long hash_segmentLookupBits = segmentLookupBits(hash);
-            /* if Interleaved segments Supported intermediateSegments */
-            // [Reading consistent segment and isFullCapacitySegment values]
-            final int segmentStructureModStamp = acquireSegmentStructureModStamp();
-            /* endif */
-            final Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
-            /* if Interleaved segments Supported intermediateSegments */
-            final int isFullCapacitySegment = isFullCapacitySegment(hash_segmentLookupBits);
-            validateSegmentStructureModStamp(segmentStructureModStamp);
-            /* endif */
+            // [Publishing result segments before population] explains why we are using "public"
+            // internalPutIfAbsentDuringSplit() method here. (1)
+            internalPutIfAbsentDuringSplit(key, hash, value);
 
-            // [Publishing result segments before population in splitInflated] explains why we are
-            // using "public" putImpl() method here. (1)
-            if (putImpl(segment,
-                    /* if Interleaved segments Supported intermediateSegments */
-                    isFullCapacitySegment,/* endif */
-                    key, hash, value, true /* onlyIfAbsent */) != null) {
-                throw new ConcurrentModificationException();
-            }
             numMovedEntries++;
         }
         // Restoring the correct size after calling putImpl() with entries that are already in the
@@ -6026,7 +6155,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 // HASH_TABLE_SLOTS = 64, or 56%), so byte-by-byte checking branch would be even
                 // less predictable in removeIf() than in compactEntriesDuringSegmentSwap().
                 // TODO compare the approaches, separately from compactEntriesDuringSegmentSwap()
-                //  and split() because the branch probability is different.
+                //  and doSplit()/doSplitBetweenTwoNewSegments() because the branch probability is
+                //  different.
 
                 // [Int-indexed loop to avoid a safepoint poll]
                 for (int iterGroupIndex = 0; iterGroupIndex < HASH_TABLE_GROUPS; iterGroupIndex++) {
