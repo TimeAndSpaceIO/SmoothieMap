@@ -488,9 +488,6 @@ class HashCodeDistribution<K, V> {
             if (maxKeysForHalf < SKEWED_SEGMENT__HASH_TABLE_HALF__MAX_KEYS__MIN_ACCOUNTED) {
                 return;
             }
-            // TODO report to IntelliJ if not fixed by
-            //  https://youtrack.jetbrains.com/issue/IDEA-214972 in 2019.2
-            //noinspection ConstantConditions
             skewedSegment_splitStats = skewedSegment_splitStatsToCurrentAverageOrder;
             if (skewedSegment_splitStats == null) {
                 // TODO allocate smaller array initially and grow as needed in
@@ -510,9 +507,6 @@ class HashCodeDistribution<K, V> {
                 if (maxKeysForHalf < SKEWED_SEGMENT__HASH_TABLE_HALF__MAX_KEYS__MIN_ACCOUNTED) {
                     return;
                 }
-                // TODO report to IntelliJ if not fixed by
-                //  https://youtrack.jetbrains.com/issue/IDEA-214972 in 2019.2
-                //noinspection ConstantConditions
                 skewedSegment_splitStats = skewedSegment_splitStatsToNextAverageOrder;
                 if (skewedSegment_splitStats == null) {
                     // TODO allocate smaller array initially and grow as needed in

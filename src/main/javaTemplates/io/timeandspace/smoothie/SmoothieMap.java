@@ -1275,12 +1275,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         return (Segment<K, V>) ((Object[]) segmentsArray)[segmentIndex];
     }
 
-    /**
-     * TODO annotate segmentsArray with @Nullable when
-     *  https://youtrack.jetbrains.com/issue/IDEA-210087 is fixed.
-     */
     private static <K, V> Segment<K, V> segmentByIndexDuringBulkOperations(
-            Object[] segmentsArray, int segmentIndex) {
+            @Nullable Object[] segmentsArray, int segmentIndex) {
         // [Not avoiding normal array access]
         @Nullable Object segment = segmentsArray[segmentIndex];
         if (segment == null) {
@@ -1437,12 +1433,10 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     /**
      * Should be called in point access and segment transformation methods, except in {@link
      * #segmentBySegmentLookupBits} (see the comment for {@link #throwIseSegmentsArrayNull}).
-     *
-     * Must annotate with @Nullable when https://youtrack.jetbrains.com/issue/IDEA-210087 is fixed.
      */
-    private Object[] getNonNullSegmentsArrayOrThrowCme() {
-        @Nullable Object[] segmentsArray =
-                (@Nullable Object[]) this.segmentsArray;
+    private @Nullable Object[] getNonNullSegmentsArrayOrThrowCme() {
+        @Nullable Object @Nullable [] segmentsArray =
+                (@Nullable Object @Nullable []) this.segmentsArray;
         /* if Enabled moveToMapWithShrunkArray */
         // [segmentsArray non-null checks]
         if (segmentsArray == null) {
@@ -1454,12 +1448,10 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
     /**
      * Should be called in the beginning of bulk iteration methods.
-     *
-     * Must annotate with @Nullable when https://youtrack.jetbrains.com/issue/IDEA-210087 is fixed.
      */
-    private Object[] getNonNullSegmentsArrayOrThrowIse() {
-        @Nullable Object[] segmentsArray =
-                (@Nullable Object[]) this.segmentsArray;
+    private @Nullable Object[] getNonNullSegmentsArrayOrThrowIse() {
+        @Nullable Object @Nullable [] segmentsArray =
+                (@Nullable Object @Nullable []) this.segmentsArray;
         /* if Enabled moveToMapWithShrunkArray */
         // segmentsArray non-null checks: are needed only when moveToMapWithShrunkArray() operation
         // is possible because there is no other way that segmentsArray can be observed to be null

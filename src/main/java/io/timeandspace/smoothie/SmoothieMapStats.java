@@ -27,7 +27,6 @@ final class SmoothieMapStats {
 
     @SuppressWarnings("WeakerAccess")
     int computeNumAggregatedOrdinarySegmentsWithOrder(int segmentOrder) {
-        //noinspection ConstantConditions: same as in computeTotalOrdinarySegmentStats()
         @Nullable OrdinarySegmentStats @Nullable [] statsForSegmentOrder =
                 ordinarySegmentStatsPerOrderAndNumFullSlots[segmentOrder];
         if (statsForSegmentOrder == null) {
@@ -41,7 +40,6 @@ final class SmoothieMapStats {
     }
 
     private long computeNumAggregatedFullSlotsInSegmentsWithOrder(int segmentOrder) {
-        //noinspection ConstantConditions: same as in computeTotalOrdinarySegmentStats()
         @Nullable OrdinarySegmentStats @Nullable [] statsForSegmentOrder =
                 ordinarySegmentStatsPerOrderAndNumFullSlots[segmentOrder];
         if (statsForSegmentOrder == null) {
@@ -59,9 +57,6 @@ final class SmoothieMapStats {
     }
 
     private OrdinarySegmentStats acquireSegmentStats(int segmentOrder, int numFullSlots) {
-        // might be fixed in IntelliJ 2019.2 by https://youtrack.jetbrains.com/issue/IDEA-210087
-        // TODO check when update to 2019.2
-        //noinspection ConstantConditions
         @Nullable OrdinarySegmentStats @Nullable [] ordinarySegmentStatsPerNumFullSlots =
                 ordinarySegmentStatsPerOrderAndNumFullSlots[segmentOrder];
         if (ordinarySegmentStatsPerNumFullSlots == null) {
@@ -94,9 +89,6 @@ final class SmoothieMapStats {
 
     OrdinarySegmentStats computeTotalOrdinarySegmentStats() {
         OrdinarySegmentStats totalStats = new OrdinarySegmentStats();
-        // TODO Might be a bug in IntelliJ that it doesn't require for-each iteration variable to be
-        //  Nullable when the array has Nullable elements - check when update to 2019.2
-        //noinspection ConstantConditions: same as above in acquireSegmentStats()
         for (@Nullable OrdinarySegmentStats @Nullable [] statsPerNumFullSlots :
                 ordinarySegmentStatsPerOrderAndNumFullSlots) {
             if (statsPerNumFullSlots == null) {
@@ -113,7 +105,6 @@ final class SmoothieMapStats {
 
     OrdinarySegmentStats computeOrdinarySegmentStatsPerNumFullSlots(int numFullSlots) {
         OrdinarySegmentStats totalStatsForNumFullSlots = new OrdinarySegmentStats();
-        //noinspection ConstantConditions: same as in computeTotalOrdinarySegmentStats()
         for (@Nullable OrdinarySegmentStats @Nullable [] statsPerNumFullSlots :
                 ordinarySegmentStatsPerOrderAndNumFullSlots) {
             if (statsPerNumFullSlots == null) {
@@ -137,7 +128,6 @@ final class SmoothieMapStats {
         );
         Count numFullSlotsInSegmentsWithOrder_count =
                 new Count("full slots", this::computeNumAggregatedFullSlotsInSegmentsWithOrder);
-        //noinspection ConstantConditions: same as in computeTotalOrdinarySegmentStats()
         appendNonZeroOrderedCountsWithPercentiles(sb, "order",
                 ordinarySegmentStatsPerOrderAndNumFullSlots.length,
                 Arrays.asList(numSegmentsWithOrder_count, numFullSlotsInSegmentsWithOrder_count),
