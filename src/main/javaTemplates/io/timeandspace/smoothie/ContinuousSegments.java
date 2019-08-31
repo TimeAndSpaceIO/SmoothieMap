@@ -13,7 +13,6 @@ import static io.timeandspace.smoothie.BitSetAndState.makeBitSetAndStateWithNewA
 import static io.timeandspace.smoothie.BitSetAndState.makeNewBitSetAndState;
 import static io.timeandspace.smoothie.BitSetAndState.segmentSize;
 import static io.timeandspace.smoothie.BitSetAndState.setLowestAllocBit;
-import static io.timeandspace.smoothie.ContinuousSegment_BitSetAndStateArea.copyOutboundOverflowCountsPerGroup;
 import static io.timeandspace.smoothie.HashTable.GROUP_SLOTS;
 import static io.timeandspace.smoothie.HashTable.HASH_TABLE_SLOTS;
 import static io.timeandspace.smoothie.LongMath.clearLowestSetBit;
@@ -232,9 +231,9 @@ final class ContinuousSegments {
          *         alloc indexes set full and the rest set empty.
          */
         @RarelyCalledAmortizedPerSegment
-        static long swapContentsDuringSplit(Object nonFullSegment,
+        static long swapContentsDuringSplit(SmoothieMap.Segment<?, ?> nonFullSegment,
                 int nonFullSegment_allocCapacity, long nonFullSegment_bitSetAndState,
-                Object fullSegment, int fullSegment_allocCapacity) {
+                SmoothieMap.Segment<?, ?> fullSegment, int fullSegment_allocCapacity) {
             TODO copy outbound overflow counts
             // Compacting entries of nonFullSegment if needed to be able to swap allocation areas.
             // This must be done before swapping the hash tables, because
@@ -398,7 +397,8 @@ final class ContinuousSegments {
         }
 
         @RarelyCalledAmortizedPerSegment
-        private static void swapHashTables(Object segmentOne, Object segmentTwo) {
+        private static void swapHashTables(
+                SmoothieMap.Segment<?, ?> segmentOne, SmoothieMap.Segment<?, ?> segmentTwo) {
             /* if Enabled extraChecks */
             assert segmentOne != null;
             assert segmentTwo != null;
@@ -437,7 +437,7 @@ final class ContinuousSegments {
         }
 
         @AmortizedPerSegment
-        void copyHashTableFrom(Object oldSegment) {
+        void copyHashTableFrom(SmoothieMap.Segment<?, ?> oldSegment) {
             /* if Enabled extraChecks */assert oldSegment != null;/* endif */
             // Looping manually instead of using Unsafe.copyMemory() because Unsafe prohibits
             // calling copyMemory() with non-array objects since Java 9.
@@ -473,19 +473,21 @@ final class ContinuousSegments {
     }
 
     /**
-     * This segment's bitSetAndState is passed as a parameter to this method because {@link
-     * ContinuousSegment_BitSetAndStateArea#replaceBitSetAndStateWithBulkOperationPlaceholderOrThrowCme}
-     * is called on this segment before calling this method.
+     * nonFullCapSegment's bitSetAndState is passed as a parameter to this method because
+     * nonFullCapSegment.bitSetAndState is already set to bulk operation placeholder value
+     * before calling this method.
      */
-    static <K, V> SmoothieMap.Segment<K, V> grow(
-            Object oldSegment, long bitSetAndState, int toAllocCapacity) {
+    static <K, V> SmoothieMap.Segment<K, V> grow(SmoothieMap.Segment<?, ?> nonFullCapSegment,
+            long nonFullCapSegment_bitSetAndState, int toAllocCapacity) {
         SmoothieMap.Segment<K, V> newSegment = allocateSegment(toAllocCapacity);
-        newSegment.copyHashTableFrom(oldSegment);
-        int oldSegment_allocCapacity = allocCapacity(bitSetAndState);
-        newSegment.copyAllocAreaFrom(newSegment, oldSegment_allocCapacity);
-        bitSetAndState = makeBitSetAndStateWithNewAllocCapacity(bitSetAndState, toAllocCapacity);
-        newSegment.bitSetAndState = bitSetAndState;
-        copyOutboundOverflowCountsPerGroup(oldSegment, newSegment);
+        newSegment.copyHashTableFrom(nonFullCapSegment);
+        int nonFullCapSegment_allocCapacity = allocCapacity(nonFullCapSegment_bitSetAndState);
+        newSegment.copyAllocAreaFrom(newSegment, nonFullCapSegment_allocCapacity);
+        long fullCapSegment_bitSetAndState = makeBitSetAndStateWithNewAllocCapacity(
+                nonFullCapSegment_bitSetAndState, toAllocCapacity);
+        newSegment.bitSetAndState = fullCapSegment_bitSetAndState;
+        newSegment.outboundOverflowCountsPerGroup =
+                nonFullCapSegment.outboundOverflowCountsPerGroup;
         U.storeFence(); // [Safe segment publication]
         return newSegment;
     }

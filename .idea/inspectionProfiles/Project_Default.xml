@@ -23,6 +23,7 @@
         <isEnabled>true</isEnabled>
       </Java>
     </inspection_tool>
+    <inspection_tool class="EqualsWhichDoesntCheckParameterClass" enabled="false" level="WARNING" enabled_by_default="false" />
     <inspection_tool class="GrMethodMayBeStatic" enabled="true" level="ERROR" enabled_by_default="true" />
     <inspection_tool class="ImplicitNumericConversion" enabled="true" level="WEAK WARNING" enabled_by_default="true">
       <scope name="Production" level="ERROR" enabled="true">
@@ -51,20 +52,41 @@
       <option name="IGNORE_SUSPICIOUS_METHOD_CALLS" value="true" />
     </inspection_tool>
     <inspection_tool class="SSBasedInspection" enabled="true" level="ERROR" enabled_by_default="true">
-      <searchConfiguration name="&quot;SmoothieMap&quot; shouldn't leak to string literals, e. g. exception messages" text="&quot;$String$&quot;" recursive="true" caseInsensitive="false" type="JAVA">
-        <constraint name="__context__" target="true" within="" contains="" />
-        <constraint name="String" regexp=".*SmoothieMap.*" within="" contains="" />
-      </searchConfiguration>
-      <searchConfiguration name="Method names shouldn't leak to string literals, e. g. exception messages" text="&quot;$String$&quot;" recursive="true" caseInsensitive="false" type="JAVA">
-        <constraint name="__context__" target="true" within="" contains="" />
-        <constraint name="String" regexp=".*\(\).*" within="" contains="" />
-      </searchConfiguration>
       <searchConfiguration name="static fields that are not final" text="class $Class$ {&#10;  static $Type$ $Variable$ = $Init$;&#10;}" recursive="true" caseInsensitive="true" type="JAVA">
         <constraint name="__context__" within="" contains="" />
         <constraint name="Class" within="" contains="" />
         <constraint name="Type" within="" contains="" />
         <constraint name="Variable" script="&quot;!__context__.hasModifierProperty(&quot;final&quot;)&quot;" maxCount="2147483647" target="true" within="" contains="" />
         <constraint name="Init" minCount="0" within="" contains="" />
+      </searchConfiguration>
+      <searchConfiguration name="Unsafe segment state-accessing methods shouldn't be called on objects of Segment type" text="$Method$($segment$, $args$)" recursive="true" caseInsensitive="true" type="JAVA" pattern_context="default">
+        <constraint name="__context__" within="" contains="" />
+        <constraint name="Method" regexp="getBitSetAndState|setBitSetAndState|getOutboundOverflowCountsPerGroup|setOutboundOverflowCountsPerGroup" within="" contains="" />
+        <constraint name="segment" nameOfExprType="io\.timeandspace\.smoothie\.AbstractSegment" expressionTypes="io.timeandspace.smoothie.AbstractSegment" exprTypeWithinHierarchy="true" within="" contains="" />
+        <constraint name="args" minCount="0" maxCount="2147483647" within="" contains="" />
+      </searchConfiguration>
+      <searchConfiguration name="AmortizedPerSegment and AmortizedPerOrder methods should accept typed Segment objects, not Objects" text="@$Annotation$&#10;$ReturnType$ $Method$($ParamTypeBefore$ $paramBefore$, Object $segment$, $ParamTypeAfter$ $paramAfter$);" recursive="true" caseInsensitive="true" type="JAVA" pattern_context="default">
+        <constraint name="__context__" within="" contains="" />
+        <constraint name="Method" within="" contains="" />
+        <constraint name="segment" regexp=".*[Ss]egment(One|Two)?" within="" contains="" />
+        <constraint name="ReturnType" within="" contains="" />
+        <constraint name="paramBefore" minCount="0" maxCount="2147483647" within="" contains="" />
+        <constraint name="ParamTypeBefore" within="" contains="" />
+        <constraint name="ParamTypeAfter" within="" contains="" />
+        <constraint name="paramAfter" minCount="0" maxCount="2147483647" within="" contains="" />
+        <constraint name="Annotation" regexp=".*AmortizedPerSegment|.*AmortizedPerOrder|BarelyCalled" within="" contains="" />
+      </searchConfiguration>
+      <searchConfiguration name="AmortizedPerSegment and AmortizedPerOrder methods shouldn't define Object segment variables" text="@$Annotation$&#10;$ReturnType$ $Method$($ParamTypeBefore$ $paramBefore$) {&#10;    $BeforeStatements$;&#10;    Object $segment$ = $Init$;&#10;    $AfterStatements$;&#10;}" recursive="true" caseInsensitive="true" type="JAVA" pattern_context="default">
+        <constraint name="__context__" within="" contains="" />
+        <constraint name="Method" within="" contains="" />
+        <constraint name="segment" regexp=".*[Ss]egment(One|Two)?" within="" contains="" />
+        <constraint name="ReturnType" within="" contains="" />
+        <constraint name="paramBefore" minCount="0" maxCount="2147483647" within="" contains="" />
+        <constraint name="ParamTypeBefore" within="" contains="" />
+        <constraint name="Annotation" regexp=".*AmortizedPerSegment|.*AmortizedPerOrder|BarelyCalled" within="" contains="" />
+        <constraint name="BeforeStatements" minCount="0" maxCount="2147483647" within="" contains="" />
+        <constraint name="AfterStatements" minCount="0" maxCount="2147483647" within="" contains="" />
+        <constraint name="Init" within="" contains="" />
       </searchConfiguration>
     </inspection_tool>
     <inspection_tool class="UnnecessaryBoxing" enabled="true" level="ERROR" enabled_by_default="true" />

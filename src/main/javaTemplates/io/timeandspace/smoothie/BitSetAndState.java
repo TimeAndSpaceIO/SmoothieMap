@@ -109,7 +109,7 @@ final class BitSetAndState {
 
     /**
      * This value is OR-ed with bitSetAndStates of segments in the beginning of bulk operations
-     * (like {@link SmoothieMap.Segment#tryShrink2} and {@link SmoothieMap#splitAndInsert})) so that
+     * (like {@link SmoothieMap.Segment#tryShrink3} and {@link SmoothieMap#splitAndInsert})) so that
      * concurrent operations could catch this condition and throw a {@link
      * ConcurrentModificationException} more likely.
      */

@@ -39,7 +39,6 @@ public class GuavaTest extends TestCase {
                 .withFeatures(CollectionFeature.REMOVE_OPERATIONS)
                 .withFeatures(CollectionSize.ANY)
                 .withFeatures(FAILS_FAST_ON_CONCURRENT_MODIFICATION)
-                .withFeatures(CollectionFeature.SERIALIZABLE)
                 .createTestSuite();
     }
     
@@ -65,12 +64,12 @@ public class GuavaTest extends TestCase {
 
         @Override
         public Map<String, String> create(Object... objects) {
-            Map<String, String> map = SmoothieMap.<String, String>newBuilder().build();
+            SmoothieMap<String, String> map = SmoothieMap.<String, String>newBuilder().build();
             for (Object obj : objects) {
                 Map.Entry e = (Map.Entry) obj;
                 map.put((String) e.getKey(), (String) e.getValue());
             }
-            return map;
+            return map.asMapWithMutableIteratorsWithUniqueEntries();
         }
 
         @Override

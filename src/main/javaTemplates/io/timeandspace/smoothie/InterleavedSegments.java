@@ -22,13 +22,9 @@ import static io.timeandspace.smoothie.BitSetAndState.setAllocBit;
 // comment // Dummy templating to make this class "compilable" in IntelliJ before code generation
 /**/
 /* if Continuous segments */
-import static io.timeandspace.smoothie.ContinuousSegment_BitSetAndStateArea.copyOutboundOverflowCountsPerGroup;
 import static io.timeandspace.smoothie.ContinuousSegment_BitSetAndStateArea.getOutboundOverflowCountsPerGroup;
-import static io.timeandspace.smoothie.ContinuousSegment_BitSetAndStateArea.setBitSetAndState;
 /* elif Interleaved segments //
-import static io.timeandspace.smoothie.InterleavedSegment_BitSetAndStateArea.copyOutboundOverflowCountsPerGroup;
 import static io.timeandspace.smoothie.InterleavedSegment_BitSetAndStateArea.getOutboundOverflowCountsPerGroup;
-import static io.timeandspace.smoothie.InterleavedSegment_BitSetAndStateArea.setBitSetAndState;
 // endif */
 import static io.timeandspace.smoothie.HashTable.EMPTY_DATA_GROUP;
 import static io.timeandspace.smoothie.HashTable.GROUP_SLOTS;
@@ -263,8 +259,9 @@ final class InterleavedSegments {
      * allocations in this method are an insignificant contribution to the total garbage produce.
      */
     @RarelyCalledAmortizedPerSegment
-    static long swapContentsDuringSplit(Object fullCapacitySegment,
-            long fullCapSegment_bitSetAndState, Object intermediateCapacitySegment,
+    static long swapContentsDuringSplit(SmoothieMap.Segment<?, ?> fullCapacitySegment,
+            long fullCapSegment_bitSetAndState,
+            SmoothieMap.Segment<?, ?> intermediateCapacitySegment,
             long intermediateCapSegment_bitSetAndState) {
         FullCapacitySegment fullCapSegment = (FullCapacitySegment) fullCapacitySegment;
         IntermediateCapacitySegment intermediateCapSegment =
@@ -276,7 +273,7 @@ final class InterleavedSegments {
         Object[] intermediateCapSegment_entries =
                 intermediateCapSegment.copyEntriesToArrayDuringSegmentSwap();
         long intermediateCapSegment_outboundOverflowCountsPerGroup =
-                getOutboundOverflowCountsPerGroup(intermediateCapSegment);
+                intermediateCapSegment.outboundOverflowCountsPerGroup;
         // Zero intermediateCapSegment_outboundOverflowCountsPerGroup: this method expects
         // intermediateCapacitySegment's outbound overflow counts to be zero for all groups. This is
         // because swapContentsDuringSplit() is called from SmoothieMap.doSplit() where
@@ -371,18 +368,18 @@ final class InterleavedSegments {
                     groupIndex, fullCapSegment_dataGroup);
         }
 
-        setBitSetAndState(intermediateCapSegment, intermediateCapSegment_bitSetAndState);
-        copyOutboundOverflowCountsPerGroup(fullCapSegment, intermediateCapSegment);
+        intermediateCapSegment.bitSetAndState = intermediateCapSegment_bitSetAndState;
+        intermediateCapSegment.outboundOverflowCountsPerGroup =
+                fullCapSegment.outboundOverflowCountsPerGroup;
     }
 
     /**
      * intermediateCapSegment's bitSetAndState is passed as a parameter to this method because
-     * {@link
-     * ContinuousSegment_BitSetAndStateArea#replaceBitSetAndStateWithBulkOperationPlaceholderOrThrowCme}
-     * is called on the segment before calling this method.
+     * intermediateCapSegment.bitSetAndState is already set to bulk operation placeholder value
+     * before calling this method.
      */
     @AmortizedPerSegment
-    static <K, V> FullCapacitySegment<K, V> grow(Object intermediateCapSegment,
+    static <K, V> FullCapacitySegment<K, V> grow(SmoothieMap.Segment<K, V> intermediateCapSegment,
             long intermediateCapSegment_bitSetAndState, int toAllocCapacity) {
         verifyEqual(toAllocCapacity, SEGMENT_MAX_ALLOC_CAPACITY);
 
@@ -393,7 +390,7 @@ final class InterleavedSegments {
         fullCapSegment_bitSetAndState = moveContentsFromIntermediateToFullCapacitySegment(
                 (IntermediateCapacitySegment) intermediateCapSegment, fullCapSegment,
                 fullCapSegment_bitSetAndState);
-        setBitSetAndState(fullCapSegment, fullCapSegment_bitSetAndState);
+        fullCapSegment.bitSetAndState = fullCapSegment_bitSetAndState;
         U.storeFence(); // [Safe segment publication]
         return fullCapSegment;
     }
@@ -453,7 +450,8 @@ final class InterleavedSegments {
                     groupIndex, intermediateCapSegment_dataGroup);
         }
 
-        copyOutboundOverflowCountsPerGroup(intermediateCapSegment, fullCapSegment);
+        fullCapSegment.outboundOverflowCountsPerGroup =
+                intermediateCapSegment.outboundOverflowCountsPerGroup;
 
         return fullCapSegment_bitSetAndState;
     }
@@ -836,7 +834,7 @@ final class InterleavedSegments {
                 copyOutboundOverflowBitsFrom((long) groupIndex, dataGroupToCopy);
             }
 
-            setOutboundOverflowCountsPerGroup(this, outboundOverflowCountsPerGroup);
+            this.outboundOverflowCountsPerGroup = outboundOverflowCountsPerGroup;
 
             return bitSetAndState;
         }
@@ -1315,7 +1313,7 @@ final class InterleavedSegments {
             } finally {
                 // [Writing bitSetAndState in a finally block]
                 if (modCount != initialModCount) {
-                    setBitSetAndState(this, bitSetAndState);
+                    this.bitSetAndState = bitSetAndState;
                 }
             }
             return modCount;
@@ -2101,7 +2099,7 @@ final class InterleavedSegments {
             } finally {
                 // [Writing bitSetAndState in a finally block]
                 if (modCount != initialModCount) {
-                    setBitSetAndState(this, bitSetAndState);
+                    this.bitSetAndState = bitSetAndState;
                 }
             }
             return modCount;

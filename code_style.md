@@ -11,4 +11,7 @@ Terminology: use "delete" in application to HashTable's slots and entries, "eras
 Segment's allocation slots, and "remove" in application to SmoothieMap's keys, values, or entries.
 
 Method that does the memory access is always responsible for making all necessary extraChecks to
-ensure that the memory access is not corrupting. 
+ensure that the memory access is not corrupting.
+
+There shouldn't be any performance-explaining comments in @RarelyCalledAmortizedPerSegment,
+@AmortizedPerOrder, and @BarelyCalled methods.

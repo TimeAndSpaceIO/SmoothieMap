@@ -41,8 +41,8 @@ dependencies {
     testImplementation "org.junit.jupiter:junit-jupiter-api:$junitVersion"
     testRuntimeOnly "org.junit.jupiter:junit-jupiter-engine:$junitVersion"
 
-    testImplementation 'com.google.guava:guava:27.1-jre'
-    testImplementation 'com.google.guava:guava-testlib:27.0.1-jre'
+    testImplementation 'com.google.guava:guava:28.1-jre'
+    testImplementation 'com.google.guava:guava-testlib:28.1-jre'
     testImplementation 'org.apache.commons:commons-math3:3.2'
 
     errorprone 'com.google.errorprone:error_prone_core:2.3.3'

@@ -84,21 +84,37 @@ abstract class ContinuousSegment_BitSetAndStateArea<K, V>
                 ContinuousSegment_BitSetAndStateArea.class, "outboundOverflowCountsPerGroup");
     }
 
+    /**
+     * This method must not be called on objects which already have type {@link
+     * io.timeandspace.smoothie.SmoothieMap.Segment}.
+     */
     static long getBitSetAndState(Object segment) {
         /* if Enabled extraChecks */assert segment != null;/* endif */
         return U.getLong(segment, BIT_SET_AND_STATE_OFFSET);
     }
 
+    /**
+     * This method must not be called on objects which already have type {@link
+     * io.timeandspace.smoothie.SmoothieMap.Segment}.
+     */
     static void setBitSetAndState(Object segment, long bitSetAndState) {
         /* if Enabled extraChecks */assert segment != null;/* endif */
         U.putLong(segment, BIT_SET_AND_STATE_OFFSET, bitSetAndState);
     }
 
+    /**
+     * This method must not be called on objects which already have type {@link
+     * io.timeandspace.smoothie.SmoothieMap.Segment}.
+     */
     static long getOutboundOverflowCountsPerGroup(Object segment) {
         /* if Enabled extraChecks */assert segment != null;/* endif */
         return U.getLong(segment, OUTBOUND_OVERFLOW_COUNTS_PER_GROUP_OFFSET);
     }
 
+    /**
+     * This method must not be called on objects which already have type {@link
+     * io.timeandspace.smoothie.SmoothieMap.Segment}.
+     */
     static void setOutboundOverflowCountsPerGroup(
             Object segment, long outboundOverflowCountsPerGroup) {
         /* if Enabled extraChecks */assert segment != null;/* endif */
@@ -110,27 +126,22 @@ abstract class ContinuousSegment_BitSetAndStateArea<K, V>
         outboundOverflowCountsPerGroup = 0;
     }
 
-    static void copyOutboundOverflowCountsPerGroup(Object fromSegment, Object toSegment) {
-        long outboundOverflowCountsPerGroup = getOutboundOverflowCountsPerGroup(fromSegment);
-        setOutboundOverflowCountsPerGroup(toSegment, outboundOverflowCountsPerGroup);
-    }
-
-    static long replaceBitSetAndStateWithBulkOperationPlaceholderOrThrowCme(Object segment) {
-        long bitSetAndState = getBitSetAndState(segment);
+    long replaceBitSetAndStateWithBulkOperationPlaceholderOrThrowCme() {
+        long bitSetAndState = this.bitSetAndState;
         if (isBulkOperationPlaceholderBitSetAndState(bitSetAndState)) {
             throw new ConcurrentModificationException();
         }
-        setBitSetAndState(segment, makeBulkOperationPlaceholderBitSetAndState(bitSetAndState));
+        this.bitSetAndState = makeBulkOperationPlaceholderBitSetAndState(bitSetAndState);
         return bitSetAndState;
     }
 
-    static void setBitSetAndStateAfterBulkOperation(Object segment, long newBitSetAndState) {
+    void setBitSetAndStateAfterBulkOperation(long newBitSetAndState) {
         // This extra check doesn't guarantee anything because the update is not atomic, but it
         // raises the chances of catching concurrent modification.
-        if (!isBulkOperationPlaceholderBitSetAndState(getBitSetAndState(segment))) {
+        if (!isBulkOperationPlaceholderBitSetAndState(this.bitSetAndState)) {
             throw new ConcurrentModificationException();
         }
-        setBitSetAndState(segment, newBitSetAndState);
+        this.bitSetAndState = newBitSetAndState;
     }
 
     /** @deprecated in order not to forget to remove calls from production code */

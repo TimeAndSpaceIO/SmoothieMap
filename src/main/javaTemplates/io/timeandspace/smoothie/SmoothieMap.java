@@ -81,14 +81,10 @@ import static io.timeandspace.smoothie.BitSetAndState.setLowestAllocBit;
 // comment // [if-elif Continuous|Interleaved segments templating] /**/
 /* if Continuous segments */
 import static io.timeandspace.smoothie.ContinuousSegment_BitSetAndStateArea.getBitSetAndState;
-import static io.timeandspace.smoothie.ContinuousSegment_BitSetAndStateArea.replaceBitSetAndStateWithBulkOperationPlaceholderOrThrowCme;
 import static io.timeandspace.smoothie.ContinuousSegment_BitSetAndStateArea.setBitSetAndState;
-import static io.timeandspace.smoothie.ContinuousSegment_BitSetAndStateArea.setBitSetAndStateAfterBulkOperation;
 /* elif Interleaved segments //
 import static io.timeandspace.smoothie.InterleavedSegment_BitSetAndStateArea.getBitSetAndState;
-import static io.timeandspace.smoothie.InterleavedSegment_BitSetAndStateArea.replaceBitSetAndStateWithBulkOperationPlaceholderOrThrowCme;
 import static io.timeandspace.smoothie.InterleavedSegment_BitSetAndStateArea.setBitSetAndState;
-import static io.timeandspace.smoothie.InterleavedSegment_BitSetAndStateArea.setBitSetAndStateAfterBulkOperation;
 // endif */
 import static io.timeandspace.smoothie.HashTable.HASH_TABLE_GROUPS_MASK;
 import static io.timeandspace.smoothie.HashTable.matchFull;
@@ -166,6 +162,7 @@ import static io.timeandspace.smoothie.UnsafeUtils.getFieldOffset;
 import static io.timeandspace.smoothie.UnsafeUtils.storeStoreFence;
 import static io.timeandspace.smoothie.Utils.checkNonNull;
 import static io.timeandspace.smoothie.Utils.duplicateArray;
+import static io.timeandspace.smoothie.Utils.nonNullOrThrowCme;
 import static io.timeandspace.smoothie.Utils.rethrowUnchecked;
 import static io.timeandspace.smoothie.Utils.verifyEqual;
 import static io.timeandspace.smoothie.Utils.verifyIsPowerOfTwo;
@@ -667,9 +664,9 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     private byte maxSegmentOrder;
     /* endif */
 
-    private @Nullable Set<K> keySet;
-    private @Nullable Collection<V> values;
-    private @Nullable Set<Entry<K, V>> entrySet;
+    private @MonotonicNonNull Set<K> keySet;
+    private @MonotonicNonNull Collection<V> values;
+    private @MonotonicNonNull Set<Entry<K, V>> entrySet;
 
     /**
      * Creates a new, empty {@code SmoothieMap}.
@@ -1275,7 +1272,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         return (Segment<K, V>) ((Object[]) segmentsArray)[segmentIndex];
     }
 
-    private static <K, V> Segment<K, V> segmentByIndexDuringBulkOperations(
+    /** This method should be called only during bulk operations and from iterators. */
+    private static <K, V> Segment<K, V> segmentCheckedByIndex(
             @Nullable Object[] segmentsArray, int segmentIndex) {
         // [Not avoiding normal array access]
         @Nullable Object segment = segmentsArray[segmentIndex];
@@ -1302,7 +1300,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     }
 
     /**
-     * Specifically to be called from {@link #doSplit}.
+     * Specifically to be called from {@link #split}.
      * @param firstSiblingsSegmentIndex the first (smallest) index in {@link #segmentsArray} where
      *        where yet unsplit segment (with the order equal to newSegmentOrder - 1) is stored.
      * @param newSegmentOrder the order of the two new sibling segments
@@ -1342,7 +1340,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         // beginSegmentStructureModification..endSegmentStructureModification are fairly expensive
         // (CAS operations and barriers), so avoiding them whenever only segmentsArray, but not
         // isFullCapacitySegmentBitSet should be updated, including when Interleaved segments with
-        // Supported intermediateSegments are used. In particular, we avoids doing
+        // Supported intermediateSegments are used. In particular, we avoid doing
         // beginSegmentStructureModification..endSegmentStructureModification when intermediate
         // segments are supported but allocateIntermediateSegments is false for a SmoothieMap in
         // which case isFullCapacitySegmentBitSet is never updated in replaceInSegmentsArray().
@@ -1401,7 +1399,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 // unless segmentsArray (and isFullCapacitySegmentBitSet) is read just once across
                 // all paths in put(), remove() etc. methods and passed all the way down as local
                 // parameter to replaceInSegmentsArray() (which is called in splitAndInsert(),
-                // tryShrink2(), and other methods) which is likely not practical because it
+                // tryShrink3(), and other methods) which is likely not practical because it
                 // contributes to bytecode size and machine operations on the hot paths of methods
                 // like put() and remove() then a memory corrupting race is possible because
                 // segmentsArray is not volatile and the second read of this field (e. g. the one
@@ -1434,9 +1432,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
      * Should be called in point access and segment transformation methods, except in {@link
      * #segmentBySegmentLookupBits} (see the comment for {@link #throwIseSegmentsArrayNull}).
      */
-    private @Nullable Object[] getNonNullSegmentsArrayOrThrowCme() {
-        @Nullable Object @Nullable [] segmentsArray =
-                (@Nullable Object @Nullable []) this.segmentsArray;
+    private Object[] getNonNullSegmentsArrayOrThrowCme() {
+        Object @Nullable [] segmentsArray = (Object @Nullable []) this.segmentsArray;
         /* if Enabled moveToMapWithShrunkArray */
         // [segmentsArray non-null checks]
         if (segmentsArray == null) {
@@ -1449,9 +1446,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     /**
      * Should be called in the beginning of bulk iteration methods.
      */
-    private @Nullable Object[] getNonNullSegmentsArrayOrThrowIse() {
-        @Nullable Object @Nullable [] segmentsArray =
-                (@Nullable Object @Nullable []) this.segmentsArray;
+    private Object[] getNonNullSegmentsArrayOrThrowIse() {
+        Object @Nullable [] segmentsArray = (Object @Nullable []) this.segmentsArray;
         /* if Enabled moveToMapWithShrunkArray */
         // segmentsArray non-null checks: are needed only when moveToMapWithShrunkArray() operation
         // is possible because there is no other way that segmentsArray can be observed to be null
@@ -2320,18 +2316,25 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     }
 
     /**
-     * The difference of this method from {@link #removeImpl} is that we know that the entry
-     * corresponding to the given hash value must be present in the segment's hash table, otherwise
-     * there should be some concurrent modification.
+     * The difference of this method from {@link #removeImpl} is that {@link #removeAtSlotNoShrink}
+     * called inside the method instead of {@link #removeAtSlot}.
      *
      * @param allocIndexToRemove the alloc index of the entry being removed; should be matched
      *        instead of key and matchValue as in {@link #removeImpl}.
      */
-    @SuppressWarnings("unused") // will be used in removing iterators which are not implemented yet
-    private void removeDuringIterationFromOrdinarySegment(Object segment,
-            /* if Interleaved segments Supported intermediateSegments */int isFullCapacitySegment,
-            /* endif */
-            long hash, long allocIndexToRemove) {
+    private void removeDuringIterationFromOrdinarySegment(
+            Segment<K, V> segment, long allocIndexToRemove) {
+        /* if Interleaved segments Supported intermediateSegments */
+        // Not storing isFullCapacitySegment during iteration: because of various race conditions
+        // possible from abusing Iterator (see the comment for checkAllocIndex()), it doesn't make
+        // sense to store isFullCapacitySegment in a field in Iterator object: it has to be
+        // re-checked against the local `segment` variable every time it is used, anyways.
+        final int isFullCapacitySegment = segment instanceof FullCapacitySegment ? 1 : 0;
+        /* endif */
+        final Object key = readKeyCheckedAtIndex(segment, allocIndexToRemove
+                /* if Interleaved segments Supported intermediateSegments */
+                , (long) isFullCapacitySegment/* endif */);
+        final long hash = keyHashCode(key);
         final long baseGroupIndex = baseGroupIndex(hash);
         final long hashTagBits = tagBits(hash);
         // TODO [Compare with precomputed outboundOverflowCount_perGroupChanges approach]
@@ -2360,7 +2363,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                     // cache line containing segment's bitSetAndState should likely be already in L1
                     // anyway because bitSetAndState is read in the beginning of an iteration over
                     // a segment.
-                    long bitSetAndState = getBitSetAndState(segment);
+                    long bitSetAndState = segment.bitSetAndState;
                     /* if Enabled extraChecks */
                     verifyThat(!isInflatedBitSetAndState(bitSetAndState));
                     /* endif */
@@ -2376,7 +2379,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                             isFullCapacitySegment,/* endif */
                             outboundOverflowCount_perGroupDecrements, dataGroupOffset, dataGroup,
                             allocIndex, allocOffset);
-                    setBitSetAndState(segment, bitSetAndState);
+                    segment.bitSetAndState = bitSetAndState;
                     return;
                 }
             }
@@ -3121,8 +3124,9 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                     groupIndex, dataGroup, insertionSlotIndexWithinGroup, bitSetAndState,
                     allocIndex);
         } else {
-            makeSpaceAndInsert(allocCapacity, segment, outboundOverflowCounts_perGroupIncrements,
-                    key, hash, value, groupIndex, dataGroup, insertionSlotIndexWithinGroup,
+            @SuppressWarnings("unchecked") Segment<K, V> seg = (Segment<K, V>) segment;
+            makeSpaceAndInsert(allocCapacity, seg, outboundOverflowCounts_perGroupIncrements, key,
+                    hash, value, groupIndex, dataGroup, insertionSlotIndexWithinGroup,
                     bitSetAndState);
         }
     }
@@ -3134,8 +3138,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             long outboundOverflowCounts_perGroupIncrements,
             K key, long hash, V value, long groupIndex, long dataGroup,
             int insertionSlotIndexWithinGroup, long bitSetAndState, int allocIndex) {
-        size++;
-        modCount++;
+        incrementSize();
 
         if (outboundOverflowCounts_perGroupIncrements != 0) { // Unlikely branch
             incrementOutboundOverflowCountsPerGroup(segment,
@@ -3184,7 +3187,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
      * TODO compare the approaches
      */
     @AmortizedPerSegment
-    final void makeSpaceAndInsert(int allocCapacity, Object segment,
+    final void makeSpaceAndInsert(int allocCapacity, Segment<K, V> segment,
             long outboundOverflowCounts_perGroupIncrements, K key, long hash, V value,
             long groupIndex, long dataGroup, int insertionSlotIndexWithinGroup,
             long bitSetAndState) {
@@ -3239,7 +3242,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     }
 
     @AmortizedPerSegment
-    private void growCapacityAndInsert(Object oldSegment,
+    private void growCapacityAndInsert(Segment<K, V> oldSegment,
             long outboundOverflowCounts_perGroupIncrements, K key, long hash, V value,
             long groupIndex, long dataGroup, int insertionSlotIndexWithinGroup,
             long bitSetAndState) {
@@ -3247,7 +3250,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         // The old segment's bitSetAndState is never reset back to an operational value after this
         // statement.
-        setBitSetAndState(oldSegment, makeBulkOperationPlaceholderBitSetAndState(bitSetAndState));
+        oldSegment.bitSetAndState = makeBulkOperationPlaceholderBitSetAndState(bitSetAndState);
 
         // ### Create a new segment.
         /* if Continuous segments */
@@ -3258,7 +3261,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         Segment<?, ?> newSegment = grow(oldSegment, bitSetAndState, newAllocCapacity);
         // Reusing local variable: it's better to reuse an existing local variable than to introduce
         // a new variable because of a risk of using a wrong variable in the code below.
-        bitSetAndState = getBitSetAndState(newSegment);
+        bitSetAndState = newSegment.bitSetAndState;
 
         // ### Replace references from oldSegment to newSegment in segmentsArray.
         int segmentOrder = segmentOrder(bitSetAndState);
@@ -3304,7 +3307,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
      * called with {@code priorSegmentOrder} as the argument and returned a non-negative result.
      */
     @AmortizedPerSegment
-    private void splitAndInsert(int modCount, Object fromSegment, K key, long hash, V value,
+    private void splitAndInsert(int modCount, Segment<K, V> fromSegment, K key, long hash, V value,
             long fromSegment_bitSetAndState, int priorSegmentOrder) {
         /* if Supported intermediateSegments */
         if (!splitBetweenTwoNewSegments) {
@@ -3337,8 +3340,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         }
     }
 
-    private void split(int modCount, Object fromSegment, long hash, long fromSegment_bitSetAndState,
-            int priorSegmentOrder) {
+    private void split(int modCount, Segment<K, V> fromSegment, long hash,
+            long fromSegment_bitSetAndState, int priorSegmentOrder) {
         // The point of incrementing modCount early is that concurrent calls to other methods have a
         // chance to catch a concurrent modification. We increment modCount here because splitting
         // procedure changes the contents of fromSegment structurally (in doSplit()) before calling
@@ -3356,8 +3359,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         // The bitSetAndState of fromSegment is reset back to an operational value inside doSplit(),
         // closer to the end of the method.
-        setBitSetAndState(fromSegment,
-                makeBulkOperationPlaceholderBitSetAndState(fromSegment_bitSetAndState));
+        fromSegment.bitSetAndState =
+                makeBulkOperationPlaceholderBitSetAndState(fromSegment_bitSetAndState);
 
         int siblingSegmentsOrder = priorSegmentOrder + 1;
 
@@ -3434,8 +3437,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
      */
     @SuppressWarnings({"UnnecessaryLabelOnBreakStatement", "UnnecessaryLabelOnContinueStatement"})
     @AmortizedPerSegment
-    final long doSplit(Object fromSegment, long fromSegment_bitSetAndState,
-            Object intoSegment, int intoSegment_allocCapacity, int newSegmentOrder,
+    final long doSplit(Segment<K, V> fromSegment, long fromSegment_bitSetAndState,
+            Segment<K, V> intoSegment, int intoSegment_allocCapacity, int newSegmentOrder,
             int siblingSegmentsQualificationBitIndex) {
         // Updating fromSegment_bitSetAndState's segment order early in this method because it's
         // hard to track different segment orders of fromSegment and intoSegment and their possible
@@ -3513,7 +3516,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         //
         // `size & HASH_TABLE_GROUPS_MASK` is effectively a pseudo-random value (after splitting the
         // first segment in the SmoothieMap with the order of 0), yet it is deterministic when the
-        // map is populated with exactly the same data (e. g. in tests).
+        // map is populated with exactly the same data (e. g. in tests). (Compare with
+        // [Randomized choice of the segment to shrink into].)
         long iterGroupIndexStart = size & HASH_TABLE_GROUPS_MASK;
 
         // [Branchless hash table iteration]: this instance of [Branchless hash table iteration] has
@@ -3745,10 +3749,10 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                             // field of fromSegment in the call to
                             // InterleavedSegments.swapContentsDuringSplit() above.
                             // See the documentation to that method.
-                            fromSegment_bitSetAndState = getBitSetAndState(intoSegment);
+                            fromSegment_bitSetAndState = intoSegment.bitSetAndState;
                             /* endif */
 
-                            Object tmpSegment = intoSegment;
+                            Segment<K, V> tmpSegment = intoSegment;
                             intoSegment = fromSegment;
                             fromSegment = tmpSegment;
 
@@ -3892,10 +3896,10 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 // The updated fromSegment_bitSetAndState is written into bitSetAndState field of
                 // fromSegment in the call to InterleavedSegments.swapContentsDuringSplit() above.
                 // See the documentation to that method.
-                fromSegment_bitSetAndState = getBitSetAndState(intoSegment);
+                fromSegment_bitSetAndState = intoSegment.bitSetAndState;
                 /* endif */
 
-                Object tmpSegment = intoSegment;
+                Segment<K, V> tmpSegment = intoSegment;
                 intoSegment = fromSegment;
                 fromSegment = tmpSegment;
 
@@ -3913,20 +3917,18 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 intoSegment_allocCapacity, newSegmentOrder, intoSegment_currentSize);
         /* endif */
         if (swappedSegments == 0) {
-            setBitSetAndStateAfterBulkOperation(fromSegment, fromSegment_bitSetAndState);
-            setBitSetAndState(intoSegment, intoSegment_bitSetAndState);
+            fromSegment.setBitSetAndStateAfterBulkOperation(fromSegment_bitSetAndState);
+            intoSegment.bitSetAndState = intoSegment_bitSetAndState;
         } else {
-            setBitSetAndState(fromSegment, fromSegment_bitSetAndState);
-            setBitSetAndStateAfterBulkOperation(intoSegment, intoSegment_bitSetAndState);
+            fromSegment.bitSetAndState = fromSegment_bitSetAndState;
+            intoSegment.setBitSetAndStateAfterBulkOperation(intoSegment_bitSetAndState);
         }
         subtractOutboundOverflowCountsPerGroupAndUpdateAllGroups(fromSegment,
                 /* if Interleaved segments Supported intermediateSegments */
                 fromSegment_isFullCapacity,/* endif */
                 fromSegment_outboundOverflowCount_perGroupDeductions);
-        addOutboundOverflowCountsPerGroup(intoSegment,
-                /* if Interleaved segments Supported intermediateSegments */
-                intoSegment_isFullCapacity,/* endif */
-                intoSegment_outboundOverflowCount_perGroupAdditions);
+        addOutboundOverflowCountsPerGroup(
+                intoSegment, intoSegment_outboundOverflowCount_perGroupAdditions);
         U.storeFence(); // [Safe segment publication]
 
         /* if Tracking hashCodeDistribution */
@@ -3952,12 +3954,12 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
      * be changed in parallel.
      */
     @AmortizedPerSegment
-    private void splitBetweenTwoNewSegments(int modCount, Object oldSegment,
+    private void splitBetweenTwoNewSegments(int modCount, Segment<K, V> oldSegment,
             long hash, long oldSegment_bitSetAndState, int priorSegmentOrder) {
         // The oldSegment's bitSetAndState is never reset back to an operational value after this
         // statement.
-        setBitSetAndState(oldSegment,
-                makeBulkOperationPlaceholderBitSetAndState(oldSegment_bitSetAndState));
+        oldSegment.bitSetAndState =
+                makeBulkOperationPlaceholderBitSetAndState(oldSegment_bitSetAndState);
 
         // ### Creating two result segments and replacing references in segmentsArray to the
         // ### old segment with references to the the result segments.
@@ -4000,7 +4002,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     }
 
     @AmortizedPerSegment
-    private void doSplitBetweenTwoNewSegments(Object oldSegment) {
+    private void doSplitBetweenTwoNewSegments(Segment<K, V> oldSegment) {
         int numMovedEntries = 0;
         // [Branchless hash table iteration]
         // [Int-indexed loop to avoid a safepoint poll]
@@ -4038,12 +4040,12 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
     /** Invariant before calling this method: oldSegment's size is equal to the capacity. */
     @RarelyCalledAmortizedPerSegment
-    private void inflateAndInsert(int modCount, int segmentOrder, Object oldSegment,
+    private void inflateAndInsert(int modCount, int segmentOrder, Segment<K, V> oldSegment,
             long bitSetAndState, K key, long hash, V value) {
 
         // The old segment's bitSetAndState is never reset back to an operational value after this
         // statement.
-        setBitSetAndState(oldSegment, makeBulkOperationPlaceholderBitSetAndState(bitSetAndState));
+        oldSegment.bitSetAndState = makeBulkOperationPlaceholderBitSetAndState(bitSetAndState);
 
         /* if Enabled extraChecks */
         // Checking preconditions for copyEntriesDuringInflate()
@@ -4052,8 +4054,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         verifyEqual(allocCapacity, segmentSize(bitSetAndState));
         /* endif */
         InflatedSegment<K, V> inflatedSegment = new InflatedSegment<>(segmentOrder, size);
-        //noinspection unchecked
-        ((Segment<K, V>) oldSegment).copyEntriesDuringInflate(this, inflatedSegment);
+        oldSegment.copyEntriesDuringInflate(this, inflatedSegment);
 
         int firstSegmentIndex = firstSegmentIndexByHashAndOrder(hash, segmentOrder);
         /* if Interleaved segments Supported intermediateSegments */
@@ -4103,8 +4104,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             /* endif */
             long outboundOverflowCount_perGroupDecrements, long dataGroupOffset,
             long dataGroupWithEmptiedSlot, long allocIndex, long allocOffset) {
-        size--;
-        modCount++;
+        decrementSize();
 
         if (outboundOverflowCount_perGroupDecrements != 0) { // Unlikely branch
             decrementOutboundOverflowCountsPerGroup(segment,
@@ -4165,7 +4165,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             // When this condition is met symmetrically both sibling segments it's guaranteed they
             // can shrink into one of them with capacity SEGMENT_MAX_ALLOC_CAPACITY with
             // MIN_LEFTOVER_ALLOC_CAPACITY_AFTER_SHRINKING = 4 extra leftover capacity after
-            // shrinking (see the tryShrink2[1] condition).
+            // shrinking (see the tryShrink3[1] condition).
 
             // Assumption that one of the siblings has the capacity of SEGMENT_MAX_ALLOC_CAPACITY:
             // In a pair of two sibling segments at least one should have the capacity of
@@ -4176,9 +4176,9 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             //  is not a target case for optimization because after shrinkAndTrimToSize()
             //  SmoothieMap is assumed to be used as an immutable map, which is the point of
             //  shrinkAndTrimToSize().
-            // Correctness is preserved in both of these cases in tryShrink2[1] condition. It's just
+            // Correctness is preserved in both of these cases in tryShrink3[1] condition. It's just
             // that tryShrink2() would be entered unnecessarily and relatively expensive
-            // computations (including reading from the sibling segment) is done until tryShrink2[1]
+            // computations (including reading from the sibling segment) is done until tryShrink3[1]
             // condition. But that's OK because it is either happen rarely (1) or on unconventional
             // use of SmoothieMap (2). The alternative to comparing segmentSize with a constant
             // in tryShrink1() that could probably cover the cases (1) and (2) is extracting
@@ -4193,8 +4193,9 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             // tryShrink2() needlessly which is a deliberate choice: see
             // [Not shrinking the sole segment].
 
+            @SuppressWarnings("unchecked") Segment<K, V> seg = (Segment<K, V>) segment;
             // The probability of taking this branch is low, so tryShrink2() should not be inlined.
-            tryShrink2(segment, bitSetAndState, hash);
+            tryShrink2(seg, bitSetAndState, hash);
         }
     }
 
@@ -4206,7 +4207,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
      * index in {@link #segmentsArray} some segment is stored at.
      */
     @AmortizedPerSegment
-    private void tryShrink2(Object segmentOne, long segmentOne_bitSetAndState, long hash) {
+    private void tryShrink2(Segment<K, V> segmentOne, long segmentOne_bitSetAndState, long hash) {
         if (isBulkOperationPlaceholderBitSetAndState(segmentOne_bitSetAndState)) {
             // This segment is already being shrunk from a racing thread.
             throw new ConcurrentModificationException();
@@ -4229,17 +4230,44 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             return;
         }
 
-        int modCount = getModCountOpaque();
         // Segment index re-computation: it's possible to pass segmentIndex downstream from
         // SmoothieMap's methods instead of recomputing it here, but it doesn't probably worth that
         // to store an extra value on the stack, because tryShrink2() is called rarely even if
         // shrinking is enabled.
         int firstSegmentOneIndex = firstSegmentIndexByHashAndOrder(hash, segmentOneOrder);
+
+        @SuppressWarnings("unused")
+        int modCountChange = tryShrink3(
+                segmentOne, segmentOne_bitSetAndState, segmentOneOrder, firstSegmentOneIndex);
+    }
+
+    /**
+     * Returns the total {@link #modCount} change during the operation. Value 0 means no shrinking
+     * was done.
+     */
+    @AmortizedPerSegment
+    private int tryShrink3(Segment<K, V> segmentOne, long segmentOne_bitSetAndState,
+            int segmentOneOrder, int firstSegmentOneIndex) {
+        final int originalModCount = getModCountOpaque();
+        int modCount = originalModCount;
+
         int firstSegmentTwoIndex = siblingSegmentIndex(firstSegmentOneIndex, segmentOneOrder);
+
         Object[] segmentsArray = getNonNullSegmentsArrayOrThrowCme();
-        // [Not avoiding normal array access]
-        Object segmentTwo = segmentsArray[firstSegmentTwoIndex];
-        long segmentTwo_bitSetAndState = getBitSetAndState(segmentTwo);
+        // Get segmentTwo and deflate if needed.
+        Segment<K, V> segmentTwo = segmentCheckedByIndex(segmentsArray, firstSegmentTwoIndex);
+        if (segmentTwo instanceof InflatedSegment) { // Unlikely branch
+            int segmentTwoSize = ((InflatedSegment<K, V>) segmentTwo).delegate.size();
+            if (!InflatedSegment.shouldDeflateSmall(segmentTwoSize)) {
+                return 0;
+            }
+            deflateSmallWithSegmentIndex((InflatedSegment<K, V>) segmentTwo, firstSegmentTwoIndex);
+            modCount++; // Matches the modCount field increment in deflateSmallWithSegmentIndex().
+            // Re-read the deflated segment from the segmentsArray.
+            segmentTwo = segmentCheckedByIndex(segmentsArray, firstSegmentTwoIndex);
+        }
+
+        long segmentTwo_bitSetAndState = segmentTwo.bitSetAndState;
         int segmentTwoOrder = segmentOrder(segmentTwo_bitSetAndState);
         if (segmentTwoOrder == segmentOneOrder) { // [Positive likely branch]
             int segmentOneSize = segmentSize(segmentOne_bitSetAndState);
@@ -4249,7 +4277,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             int segmentTwo_allocCapacity = allocCapacity(segmentTwo_bitSetAndState);
             int maxAllocCapacity = max(segmentOne_allocCapacity, segmentTwo_allocCapacity);
             // This branch is not guaranteed to be taken by the condition in tryShrink1() because
-            // tryShrink1() concerns only a single sibling segment. Upon entering tryShrink2() it
+            // tryShrink1() concerns only a single sibling segment. Upon entering tryShrink3() it
             // may discover that the sibling is still too large for shrinking. Another reason why
             // this condition might not be taken is that the
             // [Assumption that one of the siblings has the capacity of SEGMENT_MAX_ALLOC_CAPACITY]
@@ -4257,18 +4285,24 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             if (sizeAfterShrinking + MIN_LEFTOVER_ALLOC_CAPACITY_AFTER_SHRINKING <=
                     maxAllocCapacity) { // (1)
                 int fromSegment_firstIndex;
-                Object fromSegment;
+                Segment<K, V> fromSegment;
                 long fromSegment_bitSetAndState;
                 int fromSegmentSize;
-                Object intoSegment;
+                Segment<K, V> intoSegment;
                 long intoSegment_bitSetAndState;
-                // Unless entries are removed in an ad hoc order, tryShrink2() should appear to be
-                // called while performing a removal from the lower-index or the higher-index (0 or
-                // 1 in (order - 1)th bit) segment randomly. Therefore always shrinking segments of
-                // the same alloc capacity into `segmentOne` (rather than randomizing
-                // segmentOne/segmentTwo choice when segmentOne_allocCapacity ==
-                // segmentTwo_allocCapacity) shouldn't cause any skew.
-                if (segmentOne_allocCapacity < segmentTwo_allocCapacity) {
+                // Randomized choice of the segment to shrink into: although tryShrink3() should
+                // appear to be called from tryShrink2() while performing a removal from the
+                // lower-index or the higher-index (0 or 1 in (order - 1)th bit) segment randomly
+                // (unless entries are removed from the SmoothieMap is a specially crafted order),
+                // tryShrink3() is called from MutableSmoothieIterator always with the higher-index
+                // segment. Therefore always shrinking segments with equal capacity
+                // (segmentOne_allocCapacity == segmentTwo_allocCapacity) into segmentOne can cause
+                // a bias in how entries are arranged in the shrunk segments. `+ ((int) size & 1)`
+                // inserts pseudo-randomness in whether we are shrinking into the lower-index or the
+                // higher-index segment when they are of equal capacity, yet actually preserves
+                // determinism, which is valuable in tests. (Compare with iterGroupIndexStart
+                // variable in doSplit().)
+                if (segmentOne_allocCapacity + ((int) size & 1) <= segmentTwo_allocCapacity) {
                     fromSegment_firstIndex = firstSegmentOneIndex;
                     fromSegment = segmentOne;
                     fromSegment_bitSetAndState = segmentOne_bitSetAndState;
@@ -4285,8 +4319,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 }
                 // The bitSetAndState is reset back to an operational value in the epilogue of the
                 // doShrinkInto() method.
-                setBitSetAndState(intoSegment,
-                        makeBulkOperationPlaceholderBitSetAndState(intoSegment_bitSetAndState));
+                intoSegment.bitSetAndState =
+                        makeBulkOperationPlaceholderBitSetAndState(intoSegment_bitSetAndState);
                 replaceInSegmentsArray(
                         segmentsArray, fromSegment_firstIndex, segmentOneOrder, intoSegment
                         /* if Interleaved segments Supported intermediateSegments */
@@ -4307,23 +4341,24 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 subtractFromSegmentCountWithOrder(segmentOneOrder, 2);
                 addToSegmentCountWithOrder(segmentOneOrder - 1, 1);
                 /* endif */
+                // Fall through to [Common return statement]
             } else {
                 // sizeAfterShrinking is not small enough yet.
-                //noinspection UnnecessaryReturnStatement
-                return;
+                // Fall through to [Common return statement]
             }
         } else if (segmentTwoOrder > segmentOneOrder) {
             // The ranges of hash codes sibling to the ranges associated with segmentOne are
             // associated with multiple segments, i. e. they are "split deeper" than segmentOne.
             // Those multiple segments should be shrunk themselves first before it's possible to
             // merge them with segmentOne.
-            //noinspection UnnecessaryReturnStatement
-            return;
+            // Fall through to [Common return statement]
         } else {
             // If the order of segmentTwo is observed to be lower than the order of segmentOne,
             // it should be already shrinking in a racing thread.
             throw new ConcurrentModificationException();
         }
+        // Common return statement:
+        return modCount - originalModCount;
     }
 
     /**
@@ -4331,8 +4366,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
      * decrementing the segment order.
      */
     @AmortizedPerSegment
-    private void doShrinkInto(Object fromSegment, final long fromSegment_bitSetAndState,
-            Object intoSegment, long intoSegment_bitSetAndState) {
+    private void doShrinkInto(Segment<K, V> fromSegment, final long fromSegment_bitSetAndState,
+            Segment<K, V> intoSegment, long intoSegment_bitSetAndState) {
 
         int intoSegment_allocCapacity = allocCapacity(intoSegment_bitSetAndState);
         /* if Interleaved segments Supported intermediateSegments */
@@ -4434,11 +4469,9 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         // ### Update intoSegment's bitSetAndState and outbound overflow counts.
         intoSegment_bitSetAndState -= SEGMENT_ORDER_UNIT;
-        setBitSetAndStateAfterBulkOperation(intoSegment, intoSegment_bitSetAndState);
-        addOutboundOverflowCountsPerGroup(intoSegment,
-                /* if Interleaved segments Supported intermediateSegments */
-                intoSegment_isFullCapacity,/* endif */
-                intoSegment_outboundOverflowCount_perGroupAdditions);
+        intoSegment.setBitSetAndStateAfterBulkOperation(intoSegment_bitSetAndState);
+        addOutboundOverflowCountsPerGroup(
+                intoSegment, intoSegment_outboundOverflowCount_perGroupAdditions);
     }
     /* endif */ //comment*/ end if Flag|Always doShrink //*/
 
@@ -4454,15 +4487,23 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
      */
     @RarelyCalledAmortizedPerSegment
     private void deflateSmall(long hash, InflatedSegment<K, V> inflatedSegment) {
+        int segmentOrder = segmentOrder(inflatedSegment.bitSetAndState);
+        int firstSegmentIndex = firstSegmentIndexByHashAndOrder(hash, segmentOrder);
+        deflateSmallWithSegmentIndex(inflatedSegment, firstSegmentIndex);
+    }
+
+    /** @see #deflateSmall */
+    private void deflateSmallWithSegmentIndex(
+            InflatedSegment<K, V> inflatedSegment, int firstSegmentIndex) {
         int modCount = getModCountOpaque();
 
         // The inflated segment's bitSetAndState is never reset back to an operational value after
         // this statement.
         long inflatedSegment_bitSetAndState =
-                replaceBitSetAndStateWithBulkOperationPlaceholderOrThrowCme(inflatedSegment);
+                inflatedSegment.replaceBitSetAndStateWithBulkOperationPlaceholderOrThrowCme();
         int segmentOrder = segmentOrder(inflatedSegment_bitSetAndState);
         int deflatedSegment_allocCapacity = SEGMENT_MAX_ALLOC_CAPACITY;
-        Segment<Object, Object> deflatedSegment =
+        Segment<K, V> deflatedSegment =
                 allocateNewSegmentWithoutSettingBitSetAndSet(deflatedSegment_allocCapacity);
 
         doDeflateSmall(
@@ -4470,7 +4511,6 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         // storeFence() is called inside doDeflateSmall() to make publishing of deflatedSegment
         // safe.
 
-        int firstSegmentIndex = firstSegmentIndexByHashAndOrder(hash, segmentOrder);
         /* if Interleaved segments Supported intermediateSegments */
         boolean inflatedSegment_isFullCapacitySegment = false;
         /* endif */
@@ -4492,7 +4532,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
      */
     @RarelyCalledAmortizedPerSegment
     private void doDeflateSmall(int segmentOrder, InflatedSegment<K, V> inflatedSegment,
-            Object intoSegment, int intoSegment_allocCapacity) {
+            Segment<K, V> intoSegment, int intoSegment_allocCapacity) {
         int intoSegment_currentSize = 0;
         long intoSegment_outboundOverflowCount_perGroupAdditions = 0;
         /* if Interleaved segments */
@@ -4574,16 +4614,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         long intoSegment_bitSetAndState = makeBitSetAndStateForPrivatelyPopulatedContinuousSegment(
                 intoSegment_allocCapacity, segmentOrder, intoSegment_currentSize);
         /* endif */
-        setBitSetAndState(intoSegment, intoSegment_bitSetAndState);
+        intoSegment.bitSetAndState = intoSegment_bitSetAndState;
         /* if Interleaved segments Supported intermediateSegments */
         int intoSegment_isFullCapacity = 1;
         /* endif */
         // No point in specializing addOutboundOverflowCountsPerGroup() for a full-capacity segment
         // because we are in a RarelyCalledAmortizedPerSegment method.
-        addOutboundOverflowCountsPerGroup(intoSegment,
-                /* if Interleaved segments Supported intermediateSegments */
-                intoSegment_isFullCapacity,/* endif */
-                intoSegment_outboundOverflowCount_perGroupAdditions);
+        addOutboundOverflowCountsPerGroup(
+                intoSegment, intoSegment_outboundOverflowCount_perGroupAdditions);
         U.storeFence(); // [Safe segment publication]
     }
 
@@ -4593,7 +4631,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         // The inflated segment's bitSetAndState is never reset back to an operational value after
         // this statement.
         long inflatedSegment_bitSetAndState =
-                replaceBitSetAndStateWithBulkOperationPlaceholderOrThrowCme(inflatedSegment);
+                inflatedSegment.replaceBitSetAndStateWithBulkOperationPlaceholderOrThrowCme();
         int segmentOrder = segmentOrder(inflatedSegment_bitSetAndState);
         int ordinarySegmentAllocCapacity = getInitialSegmentAllocCapacity(segmentOrder);
         Segment<Object, Object> ordinarySegment =
@@ -4624,7 +4662,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         // The inflated segment's bitSetAndState is never reset back to an operational value after
         // this statement.
         long inflatedSegmentBitSetAndState =
-                replaceBitSetAndStateWithBulkOperationPlaceholderOrThrowCme(inflatedSegment);
+                inflatedSegment.replaceBitSetAndStateWithBulkOperationPlaceholderOrThrowCme();
         int inflatedSegmentOrder = segmentOrder(inflatedSegmentBitSetAndState);
         int modCountIncrement = tryEnsureSegmentsArrayCapacityForSplit(inflatedSegmentOrder);
         if (modCountIncrement < 0) { // Unlikely branch
@@ -4767,7 +4805,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         // segmentIndex must be zero in this case anyway.
         segmentIndex <<= -segmentsArrayOrder;
         segmentIndex = Integer.reverse(segmentIndex);
-        int segmentOrder = segmentOrder(getBitSetAndState(segment));
+        int segmentOrder = segmentOrder(segment.bitSetAndState);
         verifyThat(segmentOrder <= segmentsArrayOrder);
         int numberOfArrayIndexesWithThisSegment = 1 << (segmentsArrayOrder - segmentOrder);
         segmentIndex += numberOfArrayIndexesWithThisSegment;
@@ -4790,7 +4828,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         for (int segmentIndex = 0; segmentIndex >= 0;
              segmentIndex = nextSegmentIndex(
                      segmentArrayLength, segmentsArrayOrder, segmentIndex, segment)) {
-            segment = segmentByIndexDuringBulkOperations(segmentsArray, segmentIndex);
+            segment = segmentCheckedByIndex(segmentsArray, segmentIndex);
             h += segment.hashCode(this);
         }
         checkModCountOrThrowCme(modCount);
@@ -4808,7 +4846,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         for (int segmentIndex = 0; segmentIndex >= 0;
              segmentIndex = nextSegmentIndex(
                      segmentArrayLength, segmentsArrayOrder, segmentIndex, segment)) {
-            segment = segmentByIndexDuringBulkOperations(segmentsArray, segmentIndex);
+            segment = segmentCheckedByIndex(segmentsArray, segmentIndex);
             segment.forEach(action);
         }
         checkModCountOrThrowCme(modCount);
@@ -4826,7 +4864,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         for (int segmentIndex = 0; segmentIndex >= 0;
              segmentIndex = nextSegmentIndex(
                      segmentArrayLength, segmentsArrayOrder, segmentIndex, segment)) {
-            segment = segmentByIndexDuringBulkOperations(segmentsArray, segmentIndex);
+            segment = segmentCheckedByIndex(segmentsArray, segmentIndex);
             if (!segment.forEachWhile(predicate)) {
                 interrupted = true;
                 break;
@@ -4847,7 +4885,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         for (int segmentIndex = 0; segmentIndex >= 0;
              segmentIndex = nextSegmentIndex(
                      segmentArrayLength, segmentsArrayOrder, segmentIndex, segment)) {
-            segment = segmentByIndexDuringBulkOperations(segmentsArray, segmentIndex);
+            segment = segmentCheckedByIndex(segmentsArray, segmentIndex);
             segment.replaceAll(function);
         }
         checkModCountOrThrowCme(modCount);
@@ -4866,7 +4904,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         for (int segmentIndex = 0; segmentIndex >= 0;
              segmentIndex = nextSegmentIndex(
                      segmentArrayLength, segmentsArrayOrder, segmentIndex, segment)) {
-            segment = segmentByIndexDuringBulkOperations(segmentsArray, segmentIndex);
+            segment = segmentCheckedByIndex(segmentsArray, segmentIndex);
             if (segment.containsValue(this, v)) {
                 found = true;
                 break;
@@ -4938,7 +4976,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         for (int segmentIndex = 0; segmentIndex >= 0;
              segmentIndex = nextSegmentIndex(
                      segmentArrayLength, segmentsArrayOrder, segmentIndex, segment)) {
-            segment = segmentByIndexDuringBulkOperations(segmentsArray, segmentIndex);
+            segment = segmentCheckedByIndex(segmentsArray, segmentIndex);
             segment.writeAllEntries(s);
         }
         checkModCountOrThrowCme(modCount);
@@ -4980,7 +5018,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         for (int segmentIndex = 0; segmentIndex >= 0;
              segmentIndex = nextSegmentIndex(
                      segmentArrayLength, segmentsArrayOrder, segmentIndex, segment)) {
-            segment = segmentByIndexDuringBulkOperations(segmentsArray, segmentIndex);
+            segment = segmentCheckedByIndex(segmentsArray, segmentIndex);
             if (segment.clear(segmentIndex, this)) {
                 modCount++;
             }
@@ -5006,7 +5044,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         for (int segmentIndex = 0; segmentIndex >= 0;
              segmentIndex = nextSegmentIndex(
                      segmentArrayLength, segmentsArrayOrder, segmentIndex, segment)) {
-            segment = segmentByIndexDuringBulkOperations(segmentsArray, segmentIndex);
+            segment = segmentCheckedByIndex(segmentsArray, segmentIndex);
             int newModCount = segment.removeIf(this, filter, modCount);
             removedSomeEntries |= modCount != newModCount;
             modCount = newModCount;
@@ -5026,7 +5064,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         for (int segmentIndex = 0; segmentIndex >= 0;
              segmentIndex = nextSegmentIndex(
                      segmentArrayLength, segmentsArrayOrder, segmentIndex, segment)) {
-            segment = segmentByIndexDuringBulkOperations(segmentsArray, segmentIndex);
+            segment = segmentCheckedByIndex(segmentsArray, segmentIndex);
             stats.aggregateSegment(this, segment);
         }
         checkModCountOrThrowCme(modCount);
@@ -5042,7 +5080,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         for (int segmentIndex = 0; segmentIndex >= 0;
              segmentIndex = nextSegmentIndex(
                      segmentArrayLength, segmentsArrayOrder, segmentIndex, segment)) {
-            segment = segmentByIndexDuringBulkOperations(segmentsArray, segmentIndex);
+            segment = segmentCheckedByIndex(segmentsArray, segmentIndex);
             if (segment instanceof InflatedSegment) {
                 totalSizeOfSegmentsInBytes += ((InflatedSegment<K, V>) segment).sizeInBytes();
                 continue;
@@ -5050,7 +5088,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             /* if NotSupported intermediateSegments */
             totalSizeOfSegmentsInBytes += FULL_CAPACITY_SEGMENT_SIZE_IN_BYTES;
             /* elif Supported intermediateSegments */
-            int segmentAllocCapacity = allocCapacity(getBitSetAndState(segment));
+            int segmentAllocCapacity = allocCapacity(segment.bitSetAndState);
             if (segmentAllocCapacity == SEGMENT_MAX_ALLOC_CAPACITY) {
                 totalSizeOfSegmentsInBytes += FULL_CAPACITY_SEGMENT_SIZE_IN_BYTES;
             } else if (segmentAllocCapacity == SEGMENT_INTERMEDIATE_ALLOC_CAPACITY) {
@@ -5073,56 +5111,63 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
     //region Collection views: keySet(), values(), entrySet()
 
+    @EnsuresNonNull("keySet")
     @Override
     public final Set<K> keySet() {
-        @Nullable Set<K> ks = keySet;
-        return ks != null ? ks : (keySet = new KeySet());
+        @MonotonicNonNull Set<K> ks = keySet;
+        return ks != null ? ks : (keySet = new KeySet<>(this));
     }
 
     /** TODO don't extend AbstractSet */
-    final class KeySet extends AbstractSet<K> {
+    static class KeySet<K, V> extends AbstractSet<K> {
+        final SmoothieMap<K, V> smoothie;
+
+        KeySet(SmoothieMap<K, V> smoothie) {
+            this.smoothie = smoothie;
+        }
+
         @Override
         public int size() {
-            return SmoothieMap.this.size();
+            return smoothie.size();
         }
 
         @Override
         public void clear() {
-            SmoothieMap.this.clear();
+            smoothie.clear();
         }
 
         @Override
         public Iterator<K> iterator() {
-            return new ImmutableKeyIterator<>(SmoothieMap.this);
+            return new ImmutableKeyIterator<>(smoothie);
         }
 
         @Override
         public boolean contains(Object o) {
-            return containsKey(o);
+            return smoothie.containsKey(o);
         }
 
         @Override
         public boolean remove(Object key) {
             // TODO specialize to avoid access into value's memory: see
             //  [Protecting null comparisons].
-            return SmoothieMap.this.remove(key) != null;
+            return smoothie.remove(key) != null;
         }
 
         @Override
         public final void forEach(Consumer<? super K> action) {
             checkNonNull(action);
-            int modCount = getModCountOpaque();
-            Object[] segmentsArray = getNonNullSegmentsArrayOrThrowIse();
+            int modCount = smoothie.getModCountOpaque();
+            Object[] segmentsArray = smoothie.getNonNullSegmentsArrayOrThrowIse();
             int segmentArrayLength = segmentsArray.length;
             int segmentsArrayOrder = order(segmentArrayLength);
             Segment<K, V> segment;
             for (int segmentIndex = 0; segmentIndex >= 0;
                  segmentIndex = nextSegmentIndex(
                          segmentArrayLength, segmentsArrayOrder, segmentIndex, segment)) {
-                segment = segmentByIndexDuringBulkOperations(segmentsArray, segmentIndex);
+                segment = segmentCheckedByIndex(segmentsArray, segmentIndex);
                 segment.forEachKey(action);
             }
-            checkModCountOrThrowCme(modCount);
+            smoothie.checkModCountOrThrowCme(modCount);
         }
 
         @Override
@@ -5133,7 +5178,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                     // the contract, "remove all elements from this, containing in the given
                     // collection".
                     // TODO review with the new SmoothieMap extension model.
-                    SmoothieMap.this.getClass() == SmoothieMap.class) {
+                    smoothie.getClass() == SmoothieMap.class) {
                 for (Iterator<?> it = c.iterator(); it.hasNext();) {
                     if (remove(it.next())) {
                         // Employing streaming method forEachRemaining() which may be optimized
@@ -5149,96 +5194,131 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 }
                 return false;
             } else {
-                return SmoothieMap.this.removeIf((k, v) -> c.contains(k));
+                return smoothie.removeIf((k, v) -> c.contains(k));
             }
         }
 
         @Override
         public boolean retainAll(Collection<?> c) {
             checkNonNull(c);
-            return SmoothieMap.this.removeIf((k, v) -> !c.contains(k));
+            return smoothie.removeIf((k, v) -> !c.contains(k));
         }
     }
 
+    static final class KeySetWithMutableIterator<K, V> extends KeySet<K, V> {
+        KeySetWithMutableIterator(SmoothieMap<K, V> smoothie) {
+            super(smoothie);
+        }
+
+        @Override
+        public Iterator<K> iterator() {
+            return new MutableKeyIterator<>(smoothie);
+        }
+    }
+
+    @EnsuresNonNull("values")
     @Override
     public final Collection<V> values() {
-        @Nullable Collection<V> vs = values;
-        return vs != null ? vs : (values = new Values());
+        @MonotonicNonNull Collection<V> vs = values;
+        return vs != null ? vs : (values = new Values<>(this));
     }
 
     /** TODO don't extend AbstractCollection */
-    final class Values extends AbstractCollection<V> {
+    static class Values<K, V> extends AbstractCollection<V> {
+        final SmoothieMap<K, V> smoothie;
+
+        public Values(SmoothieMap<K, V> smoothie) {
+            this.smoothie = smoothie;
+        }
+
         @Override
         public int size() {
-            return SmoothieMap.this.size();
+            return smoothie.size();
         }
 
         @Override
         public void clear() {
-            SmoothieMap.this.clear();
+            smoothie.clear();
         }
 
         @Override
         public Iterator<V> iterator() {
-            return new ImmutableValueIterator<>(SmoothieMap.this);
+            return new ImmutableValueIterator<>(smoothie);
         }
 
         @Override
         public boolean contains(Object o) {
-            return containsValue(o);
+            return smoothie.containsValue(o);
         }
 
         @Override
         public void forEach(Consumer<? super V> action) {
             checkNonNull(action);
-            int modCount = getModCountOpaque();
-            Object[] segmentsArray = getNonNullSegmentsArrayOrThrowIse();
+            int modCount = smoothie.getModCountOpaque();
+            Object[] segmentsArray = smoothie.getNonNullSegmentsArrayOrThrowIse();
             int segmentArrayLength = segmentsArray.length;
             int segmentsArrayOrder = order(segmentArrayLength);
             Segment<K, V> segment;
             for (int segmentIndex = 0; segmentIndex >= 0;
                  segmentIndex = nextSegmentIndex(
                          segmentArrayLength, segmentsArrayOrder, segmentIndex, segment)) {
-                segment = segmentByIndexDuringBulkOperations(segmentsArray, segmentIndex);
+                segment = segmentCheckedByIndex(segmentsArray, segmentIndex);
                 segment.forEachValue(action);
             }
-            checkModCountOrThrowCme(modCount);
+            smoothie.checkModCountOrThrowCme(modCount);
         }
 
         @Override
         public boolean removeAll(Collection<?> c) {
             checkNonNull(c);
-            return SmoothieMap.this.removeIf((k, v) -> c.contains(v));
+            return smoothie.removeIf((k, v) -> c.contains(v));
         }
 
         @Override
         public boolean retainAll(Collection<?> c) {
             checkNonNull(c);
-            return SmoothieMap.this.removeIf((k, v) -> !c.contains(v));
+            return smoothie.removeIf((k, v) -> !c.contains(v));
         }
     }
 
-    @Override
-    public final Set<Entry<K, V>> entrySet() {
-        @Nullable Set<Entry<K, V>> es = entrySet;
-        return es != null ? es : (entrySet = new EntrySet());
+    static final class ValuesWithMutableIterator<K, V> extends Values<K, V> {
+        ValuesWithMutableIterator(SmoothieMap<K, V> smoothie) {
+            super(smoothie);
+        }
+
+        @Override
+        public Iterator<V> iterator() {
+            return new MutableValueIterator<>(smoothie);
+        }
     }
 
-    /** TODO don't extend AbstractSet */
-    final class EntrySet extends AbstractSet<Entry<K, V>> {
+    @EnsuresNonNull("entrySet")
+    @Override
+    public final Set<Entry<K, V>> entrySet() {
+        @MonotonicNonNull Set<Entry<K, V>> es = entrySet;
+        return es != null ? es : (entrySet = new EntrySet<>(this));
+    }
+
+    static class EntrySet<K, V> extends AbstractSet<Map.Entry<K, V>> {
+        final SmoothieMap<K, V> smoothie;
+
+        EntrySet(SmoothieMap<K, V> smoothie) {
+            this.smoothie = smoothie;
+        }
+
         @Override
         public int size() {
-            return SmoothieMap.this.size();
+            return smoothie.size();
         }
 
         @Override
         public void clear() {
-            SmoothieMap.this.clear();
+            smoothie.clear();
         }
 
         @Override
         public Iterator<Entry<K, V>> iterator() {
-            return new ImmutableEntryIterator<>(SmoothieMap.this);
+            return new ImmutableEntryIterator<>(smoothie);
         }
 
         @Override
@@ -5246,16 +5326,131 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             if (!(o instanceof Entry))
                 return false;
             Entry<?, ?> e = (Entry<?, ?>) o;
-            return containsEntry(e.getKey(), e.getValue());
+            return smoothie.containsEntry(e.getKey(), e.getValue());
         }
 
         @Override
         public boolean remove(Object o) {
             if (o instanceof Entry) {
                 Entry<?, ?> e = (Entry<?, ?>) o;
-                return SmoothieMap.this.remove(e.getKey(), e.getValue());
+                return smoothie.remove(e.getKey(), e.getValue());
             }
             return false;
+        }
+    }
+
+    static final class EntrySetWithMutableIterator<K, V> extends EntrySet<K, V> {
+        EntrySetWithMutableIterator(SmoothieMap<K, V> smoothie) {
+            super(smoothie);
+        }
+
+        @Override
+        public Iterator<Entry<K, V>> iterator() {
+            return new MutableEntryIterator<>(smoothie);
+        }
+    }
+
+    static final class EntrySetWithMutableIteratorWithUniqueEntries<K, V> extends EntrySet<K, V> {
+        EntrySetWithMutableIteratorWithUniqueEntries(SmoothieMap<K, V> smoothie) {
+            super(smoothie);
+        }
+
+        @Override
+        public Iterator<Entry<K, V>> iterator() {
+            return new MutableEntryIteratorWithUniqueEntries<>(smoothie);
+        }
+    }
+
+    public Map<K, V> asMapWithMutableIterators() {
+        return new MapViewWithMutableIterators<>(this);
+    }
+
+    @VisibleForTesting
+    Map<K, V> asMapWithMutableIteratorsWithUniqueEntries() {
+        return new MapViewWithMutableIteratorsWithUniqueEntries<>(this);
+    }
+
+    static class MapViewWithMutableIterators<K, V> implements Map<K, V> {
+        final SmoothieMap<K, V> s;
+        private @MonotonicNonNull KeySetWithMutableIterator<K, V> keySet;
+        private @MonotonicNonNull ValuesWithMutableIterator<K, V> values;
+        @MonotonicNonNull EntrySet<K, V> entrySet;
+
+        MapViewWithMutableIterators(SmoothieMap<K, V> smoothie) {
+            this.s = smoothie;
+        }
+
+        @EnsuresNonNull("keySet")
+        @Override
+        public final Set<K> keySet() {
+            @MonotonicNonNull Set<K> ks = keySet;
+            return ks != null ? ks : (keySet = new KeySetWithMutableIterator<>(s));
+        }
+
+        @EnsuresNonNull("values")
+        @Override
+        public final Collection<V> values() {
+            @MonotonicNonNull Collection<V> vs = values;
+            return vs != null ? vs : (values = new ValuesWithMutableIterator<>(s));
+        }
+
+        @EnsuresNonNull("entrySet")
+        @Override
+        public Set<Entry<K, V>> entrySet() {
+            @MonotonicNonNull Set<Entry<K, V>> es = entrySet;
+            return es != null ? es : (entrySet = new EntrySetWithMutableIterator<>(s));
+        }
+
+        @Override public int size() { return s.size(); }
+        @Override public boolean isEmpty() { return s.isEmpty(); }
+        @Override public boolean containsKey(Object key) { return s.containsKey(key); }
+        @Override public boolean containsValue(Object value) { return s.containsValue(value); }
+        @Override public @Nullable V get(Object key) { return s.get(key); }
+        @Override public @Nullable V remove(Object key) { return s.remove(key); }
+        @Override public @Nullable V put(K key, V value) { return s.put(key, value); }
+        @Override public void putAll(Map<? extends K, ? extends V> m) { this.s.putAll(m); }
+        @Override public void clear() { s.clear(); }
+        @Override public V getOrDefault(Object key, V defaultValue) {
+            return s.getOrDefault(key, defaultValue); }
+        @Override public void forEach(BiConsumer<? super K, ? super V> c) { s.forEach(c); }
+        @Override public void replaceAll(BiFunction<? super K, ? super V, ? extends V> function) {
+            s.replaceAll(function); }
+        @Override
+        public @Nullable V putIfAbsent(K key, V value) { return s.putIfAbsent(key, value); }
+        @Override public boolean remove(Object key, Object value) { return s.remove(key, value); }
+        @Override public boolean replace(K key, V oldValue, V newValue) {
+            return s.replace(key, oldValue, newValue); }
+        @Override public V replace(K key, V value) { return s.replace(key, value); }
+        @Override public V computeIfAbsent(K key, Function<? super K, ? extends V> f) {
+            return s.computeIfAbsent(key, f); }
+        @Override
+        public @Nullable V computeIfPresent(K k, BiFunction<? super K, ? super V, ? extends V> f) {
+            return s.computeIfPresent(k, f); }
+        @Override
+        public @Nullable V compute(K key, BiFunction<? super K, ? super V, ? extends V> f) {
+            return s.compute(key, f); }
+        @Override
+        public @Nullable V merge(K key, V value, BiFunction<? super V, ? super V, ? extends V> f) {
+            return s.merge(key, value, f); }
+        @Override public int hashCode() { return s.hashCode(); }
+        @Override public boolean equals(Object obj) { return s.equals(obj); }
+        @Override public String toString() { return s.toString(); }
+    }
+
+    static final class MapViewWithMutableIteratorsWithUniqueEntries<K, V>
+            extends MapViewWithMutableIterators<K, V> {
+        MapViewWithMutableIteratorsWithUniqueEntries(SmoothieMap<K, V> smoothie) {
+            super(smoothie);
+        }
+
+        @Override
+        public Set<Entry<K, V>> entrySet() {
+            @MonotonicNonNull Set<Entry<K, V>> es = entrySet;
+            if (es != null) {
+                return es;
+            } else {
+                return entrySet = new EntrySetWithMutableIteratorWithUniqueEntries<>(s);
+            }
         }
     }
 
@@ -5263,20 +5458,19 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
     //region Iterators
 
-    abstract static class ImmutableSmoothieIterator<K, V, E> implements Iterator<E> {
+    abstract static class SmoothieIterator<K, V, E> implements Iterator<E> {
+        static final int ITER_ALLOC_INDEX__NO_ORDINARY_SEGMENT = -1;
         /**
          * ImmutableSmoothieIterator has this explicit field rather than just uses inner class
          * functionality to avoid unintended access to the SmoothieMap's state, for example, using
          * {@link SmoothieMap#modCount} instead of {@link #expectedModCount}.
          */
-        private final SmoothieMap<K, V> smoothie;
-        private final int expectedModCount;
-        private final Object[] segmentsArray;
+        final SmoothieMap<K, V> smoothie;
+        int expectedModCount;
+        final Object[] segmentsArray;
         private final int segmentsArrayOrder;
+        @SuppressWarnings("NullableProblems") // https://youtrack.jetbrains.com/issue/IDEABKL-7280
         Segment<K, V> currentSegment;
-        /* if Interleaved segments Supported intermediateSegments */
-        int currentSegment_isFullCapacity;
-        /* endif */
         @Nullable Iterator<Node<K, V>> inflatedSegmentIterator;
 
         /**
@@ -5287,26 +5481,36 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         private @Nullable Segment<K, V> nextSegment;
 
         long bitSet;
+        /**
+         * Value {@link #ITER_ALLOC_INDEX__NO_ORDINARY_SEGMENT} (-1) means that {@link
+         * #currentSegment} is {@link InflatedSegment}, or that we have reached the end of the
+         * SmoothieMap's iteration in the last ordinary {@link #currentSegment}. A non-null object
+         * in {@link #inflatedSegmentIterator} indicates the former case, null in {@link
+         * #inflatedSegmentIterator} indicates the latter case. A non-negative value in
+         * iterAllocIndex indicates that {@link #currentSegment} is an ordinary segment and that
+         * there are more entries to iterate in this segment.
+         */
         int iterAllocIndex;
 
-        ImmutableSmoothieIterator(SmoothieMap<K, V> smoothie) {
+        SmoothieIterator(SmoothieMap<K, V> smoothie) {
             this.smoothie = smoothie;
             this.expectedModCount = smoothie.modCount;
             Object[] segmentsArray = smoothie.getNonNullSegmentsArrayOrThrowIse();
             this.segmentsArray = segmentsArray;
             this.segmentsArrayOrder = order(segmentsArray.length);
-            Segment<K, V> firstSegment = segmentByIndexDuringBulkOperations(segmentsArray, 0);
+            Segment<K, V> firstSegment = segmentCheckedByIndex(segmentsArray, 0);
             initCurrentSegment(0, firstSegment);
         }
 
+        @AmortizedPerSegment
         @EnsuresNonNull("currentSegment")
         private void initCurrentSegment(int currentSegmentIndex, Segment<K, V> currentSegment) {
+            /* if Flag|Always doShrink */currentSegmentIndexHook(currentSegmentIndex);/* endif */
             this.currentSegment = currentSegment;
-            /* if Interleaved segments Supported intermediateSegments */
-            this.currentSegment_isFullCapacity =
-                    smoothie.isFullCapacitySegmentByIndex(currentSegmentIndex);
-            /* endif */
-            long currentSegment_bitSetAndState = getBitSetAndState(currentSegment);
+            // Deliberately extracting currentSegment's bitSetAndState as a normal field read rather
+            // than by calling getBitSetAndState() to throw NPE if currentSegment appears to be null
+            // here.
+            long currentSegment_bitSetAndState = currentSegment.bitSetAndState;
 
             // findNextSegment() must be called before advancements
             // (advanceOrdinarySegmentIteration() and advanceInflatedSegmentIteration() calls below)
@@ -5322,13 +5526,22 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 advanceOrdinarySegmentIteration(bitSet, Long.SIZE);
             } else {
                 // Current segment is inflated:
-                this.iterAllocIndex = -1;
+                this.iterAllocIndex = ITER_ALLOC_INDEX__NO_ORDINARY_SEGMENT;
                 Iterator<Node<K, V>> inflatedSegmentIterator =
                         ((InflatedSegment<K, V>) currentSegment).delegate.keySet().iterator();
                 this.inflatedSegmentIterator = inflatedSegmentIterator;
                 advanceInflatedSegmentIteration(inflatedSegmentIterator);
             }
         }
+
+        /* if Flag|Always doShrink */
+        /**
+         * A hook for {@link MutableSmoothieIterator} to store the currentSegmentIndex in a field.
+         */
+        void currentSegmentIndexHook(int currentSegmentIndex) {
+            // Intentionally left blank.
+        }
+        /* endif */
 
         @AmortizedPerSegment
         private void findNextSegment(int currentSegmentIndex, Segment<K, V> currentSegment) {
@@ -5339,7 +5552,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             // segments" contract of the field.
             this.nextSegmentIndex = nextSegmentIndex;
             if (nextSegmentIndex >= 0) {
-                nextSegment = segmentByIndexDuringBulkOperations(segmentsArray, nextSegmentIndex);
+                nextSegment = segmentCheckedByIndex(segmentsArray, nextSegmentIndex);
             } else {
                 nextSegment = null;
             }
@@ -5365,14 +5578,16 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 this.iterAllocIndex = prevAllocIndex - iterAllocIndexStep;
                 this.bitSet = bitSet << iterAllocIndexStep;
             } else {
-                // Logically, there should be `this.iterAllocIndex = -1;` statement here before calling
-                // to advanceSegment(), but instead it is pushed to advanceSegment() and
-                // initCurrentSegment() to avoid unnecessary writes: see a comment in
+                // Logically, there should be
+                // `this.iterAllocIndex = ITER_ALLOC_INDEX__NO_ORDINARY_SEGMENT;` statement here
+                // before calling to advanceSegment(), but instead it is pushed to advanceSegment()
+                // and initCurrentSegment() to avoid unnecessary writes: see a comment in
                 // advanceSegment().
                 advanceSegment();
             }
         }
 
+        @RarelyCalledAmortizedPerSegment
         final void advanceInflatedSegmentIteration(
                 Iterator<Node<K, V>> inflatedSegmentIterator) {
             if (inflatedSegmentIterator.hasNext()) { // [Positive likely branch]
@@ -5389,32 +5604,33 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
         private void advanceSegment() {
             int nextSegmentIndex = this.nextSegmentIndex;
             if (nextSegmentIndex < 0) {
-                // Logically, writing iterAllocIndex to -1 belongs to
-                // advanceOrdinarySegmentIteration(), but instead doing it here and in
-                // initCurrentSegment() in the [Current segment is inflated] branch to avoid
+                // Logically, writing iterAllocIndex to ITER_ALLOC_INDEX__NO_ORDINARY_SEGMENT should
+                // belong to advanceOrdinarySegmentIteration(), but instead we are doing it here and
+                // in initCurrentSegment() in the [Current segment is inflated] branch to avoid
                 // unnecessary field writes when an ordinary segment is followed by another ordinary
                 // segment (almost every time) in the expense of a single unnecessary field write
                 // (here) in the end of the iteration if the last iterated segment was inflated
                 // (which should almost never happen).
-                this.iterAllocIndex = -1;
-                // Don't advance, the iteration is complete. iterAllocIndex stores -1 and
-                // inflatedSegmentIterator stores null at this point.
+                this.iterAllocIndex = ITER_ALLOC_INDEX__NO_ORDINARY_SEGMENT;
+                // Don't advance, the iteration is complete. iterAllocIndex stores
+                // ITER_ALLOC_INDEX__NO_ORDINARY_SEGMENT and inflatedSegmentIterator stores null at
+                // this point.
                 return;
             }
             @Nullable Segment<K, V> nextSegment = this.nextSegment;
-            /* if Enabled extraChecks */
-            verifyNonNull(nextSegment);/* endif */
+            /* if Enabled extraChecks */nonNullOrThrowCme(nextSegment);/* endif */
             initCurrentSegment(nextSegmentIndex, nextSegment);
         }
 
+        @HotPath
         final void checkModCount() {
             if (expectedModCount != smoothie.modCount) {
                 throw new ConcurrentModificationException();
             }
         }
 
-        final Node<K, V> nextInflatedSegmentEntry(
-                Iterator<Node<K, V>> inflatedSegmentIterator) {
+        @RarelyCalledAmortizedPerSegment
+        final Node<K, V> nextInflatedSegmentEntry(Iterator<Node<K, V>> inflatedSegmentIterator) {
             try {
                 return inflatedSegmentIterator.next();
             } catch (NoSuchElementException e) {
@@ -5425,6 +5641,25 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             }
         }
 
+        @HotPath
+        @Override
+        public final E next() {
+            checkModCount();
+            int allocIndex = this.iterAllocIndex;
+            if (allocIndex >= 0) { // [Positive likely branch]
+                return nextElementInOrdinarySegment(allocIndex);
+            } else {
+                return nextElementInInflatedSegment();
+            }
+        }
+
+        @HotPath
+        abstract E nextElementInOrdinarySegment(int allocIndex);
+
+        @RarelyCalledAmortizedPerSegment
+        abstract E nextElementInInflatedSegment();
+
+        @HotPath
         @Override
         public final boolean hasNext() {
             if (iterAllocIndex >= 0) { // [Positive likely branch]
@@ -5433,41 +5668,16 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             return inflatedSegmentIterator != null;
         }
 
-        @Override
-        public final void remove() {
-            //noinspection SSBasedInspection
-            throw new UnsupportedOperationException(
-                    "remove() operation is not supported by this Iterator");
-        }
-    }
-
-    static final class ImmutableKeyIterator<K, V> extends ImmutableSmoothieIterator<K, V, K> {
-        ImmutableKeyIterator(SmoothieMap<K, V> smoothie) {
-            super(smoothie);
+        /** To be overridden in {@link MutableSmoothieIterator}. */
+        @HotPath
+        Segment<K, V> getCurrentSegmentAndUpdatePrevState(int allocIndex) {
+            return currentSegment;
         }
 
-        @Override
-        public K next() {
-            checkModCount();
-            int allocIndex = this.iterAllocIndex;
-            if (allocIndex >= 0) { // [Positive likely branch]
-                return nextKeyInOrdinarySegment(allocIndex);
-            } else {
-                return nextKeyInInflatedSegment();
-            }
-        }
-
-        private K nextKeyInOrdinarySegment(int allocIndex) {
-            K key = readKeyCheckedAtIndex(currentSegment, (long) allocIndex
-                    /* if Interleaved segments Supported intermediateSegments */
-                    , (long) currentSegment_isFullCapacity/* endif */);
-            advanceOrdinarySegmentIteration(this.bitSet, allocIndex);
-            return key;
-        }
-
-        private K nextKeyInInflatedSegment() {
-            @Nullable Iterator<Node<K, V>> inflatedSegmentIterator =
-                    this.inflatedSegmentIterator;
+        /** To be overridden in {@link MutableSmoothieIterator}. */
+        @RarelyCalledAmortizedPerSegment
+        Iterator<Node<K, V>> getInflatedSegmentIteratorAndUpdatePrevState() {
+            @Nullable Iterator<Node<K, V>> inflatedSegmentIterator = this.inflatedSegmentIterator;
             if (inflatedSegmentIterator == null) {
                 // NoSuchElementException or concurrent modification: this condition may also be
                 // caused by a concurrent modification, if a concurrent call to Iterator.next()
@@ -5475,116 +5685,523 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 // and setting inflatedSegmentIterator to null.
                 throw new NoSuchElementException();
             }
+            return inflatedSegmentIterator;
+        }
+
+        @HotPath
+        final K nextKeyInOrdinarySegment(int allocIndex) {
+            Segment<K, V> segment = getCurrentSegmentAndUpdatePrevState(allocIndex);
+            /* if Interleaved segments Supported intermediateSegments */
+            // [Not storing isFullCapacitySegment during iteration]
+            long isFullCapacitySegment = segment instanceof FullCapacitySegment ? 1L : 0L;
+            /* endif */
+            K key = readKeyCheckedAtIndex(segment, (long) allocIndex
+                    /* if Interleaved segments Supported intermediateSegments */
+                    , isFullCapacitySegment/* endif */);
+            advanceOrdinarySegmentIteration(this.bitSet, allocIndex);
+            return key;
+        }
+
+        @RarelyCalledAmortizedPerSegment
+        final K nextKeyInInflatedSegment() {
+            Iterator<Node<K, V>> inflatedSegmentIterator =
+                    getInflatedSegmentIteratorAndUpdatePrevState();
             Node<K, V> inflatedSegmentNode = nextInflatedSegmentEntry(inflatedSegmentIterator);
             K key = inflatedSegmentNode.getKey();
             advanceInflatedSegmentIteration(inflatedSegmentIterator);
             return key;
         }
+
+        @HotPath
+        final V nextValueInOrdinarySegment(int allocIndex) {
+            Segment<K, V> segment = getCurrentSegmentAndUpdatePrevState(allocIndex);
+            /* if Interleaved segments Supported intermediateSegments */
+            // [Not storing isFullCapacitySegment during iteration]
+            long isFullCapacitySegment = segment instanceof FullCapacitySegment ? 1L : 0L;
+            /* endif */
+            V value = readValueCheckedAtIndex(segment, (long) allocIndex
+                    /* if Interleaved segments Supported intermediateSegments */
+                    , isFullCapacitySegment/* endif */);
+            advanceOrdinarySegmentIteration(this.bitSet, allocIndex);
+            return value;
+        }
+
+        @RarelyCalledAmortizedPerSegment
+        final V nextValueInInflatedSegment() {
+            Iterator<Node<K, V>> inflatedSegmentIterator =
+                    getInflatedSegmentIteratorAndUpdatePrevState();
+            Node<K, V> inflatedSegmentNode = nextInflatedSegmentEntry(inflatedSegmentIterator);
+            V value = inflatedSegmentNode.getValue();
+            advanceInflatedSegmentIteration(inflatedSegmentIterator);
+            return value;
+        }
+
+        @HotPath
+        final Map.Entry<K, V> nextEntryInOrdinarySegment(int allocIndex) {
+            Segment<K, V> segment = getCurrentSegmentAndUpdatePrevState(allocIndex);
+            checkAllocIndex(segment, (long) allocIndex);
+            /* if Interleaved segments Supported intermediateSegments */
+            // [Not storing isFullCapacitySegment during iteration]
+            long isFullCapacitySegment = segment instanceof FullCapacitySegment ? 1L : 0L;
+            /* endif */
+            long allocOffset = allocOffset((long) allocIndex
+                    /* if Interleaved segments Supported intermediateSegments */
+                    , isFullCapacitySegment/* endif */);
+            K key = readKeyAtOffset(segment, allocOffset);
+            V value = readValueAtOffset(segment, allocOffset);
+            advanceOrdinarySegmentIteration(this.bitSet, allocIndex);
+            return createOrdinarySegmentEntry(key, value);
+        }
+
+        @HotPath
+        Map.Entry<K, V> createOrdinarySegmentEntry(K key, V value) {
+            return new AbstractMap.SimpleImmutableEntry<>(key, value);
+        }
+
+        @RarelyCalledAmortizedPerSegment
+        final Map.Entry<K, V> nextEntryInInflatedSegment() {
+            Iterator<Node<K, V>> inflatedSegmentIterator =
+                    getInflatedSegmentIteratorAndUpdatePrevState();
+            Node<K, V> inflatedSegmentNode = nextInflatedSegmentEntry(inflatedSegmentIterator);
+            advanceInflatedSegmentIteration(inflatedSegmentIterator);
+            return createInflatedSegmentEntry(inflatedSegmentNode);
+        }
+
+        @RarelyCalledAmortizedPerSegment
+        Map.Entry<K, V> createInflatedSegmentEntry(Node<K, V> inflatedSegmentNode) {
+            K key = inflatedSegmentNode.getKey();
+            V value = inflatedSegmentNode.getValue();
+            return new AbstractMap.SimpleImmutableEntry<>(key, value);
+        }
     }
 
-    static final class ImmutableValueIterator<K, V> extends ImmutableSmoothieIterator<K, V, V> {
+    abstract static class MutableSmoothieIterator<K, V, E> extends SmoothieIterator<K, V, E> {
+        private static final int PREV_ITER_ALLOC_INDEX__NO_ELEMENT = -2;
+
+        /* if Flag|Always doShrink */
+        private int currentSegmentIndex;
+        private int prevSegmentIndex;
+        /* endif */
+        @Nullable Segment<K, V> prevSegment;
+        /**
+         * Value {@link #PREV_ITER_ALLOC_INDEX__NO_ELEMENT} (-2) means that {@link #next} hasn't
+         * been called yet on this iterator, or {@link #remove} has been called since the last call
+         * to {@link #next}. Value {@link #ITER_ALLOC_INDEX__NO_ORDINARY_SEGMENT} (-1) means that
+         * {@link #prevSegment} is {@link InflatedSegment} and {@link #prevInflatedSegmentIterator}
+         * must be non-null. A non-negative value means that {@link #prevSegment} is an ordinary
+         * segment.
+         */
+        int prevIterAllocIndex = PREV_ITER_ALLOC_INDEX__NO_ELEMENT;
+        @Nullable Iterator<Node<K, V>> prevInflatedSegmentIterator;
+
+        MutableSmoothieIterator(SmoothieMap<K, V> smoothie) {
+            super(smoothie);
+        }
+
+        /* if Flag|Always doShrink */
+        @Override
+        void currentSegmentIndexHook(int currentSegmentIndex) {
+            this.currentSegmentIndex = currentSegmentIndex;
+        }
+        /* endif */
+
+        /** This method must be called only from {@link #nextElementInOrdinarySegment}. */
+        @HotPath
+        @Override
+        final Segment<K, V> getCurrentSegmentAndUpdatePrevState(int allocIndex) {
+            this.prevIterAllocIndex = allocIndex;
+            Segment<K, V> segment = currentSegment;
+            // changingPrevSegment condition on every iteration: checking this condition on every
+            // iteration seems wasteful, but it looks impossible to update prevSegment and
+            // prevInflatedSegmentIterator "at the right moments" without branches within the
+            // current SmoothieIterator design and its advancement logic. To avoid the condition on
+            // each iteration, MutableSmoothieIterator should be redesigned from scratch, but that
+            // may also create unnecessary repetitive work or extra conditions in the
+            // next()/hasNext() pair of methods.
+            //noinspection ObjectEquality: identity comparison is intended
+            boolean changingPrevSegment = segment != prevSegment;
+            // This branch is unlikely. Cannot follow the [Positive likely branch] principle because
+            // there is no `else` branch.
+            if (changingPrevSegment) {
+                /* if Flag doShrink */if (smoothie.doShrink) {/* endif */
+                    /* if Flag|Always doShrink */
+                    shrinkPrevSegmentIfNeeded();
+                    this.prevSegmentIndex = currentSegmentIndex;
+                    /* endif */
+                /* if Flag doShrink */}/* endif */
+                this.prevSegment = segment;
+                this.prevInflatedSegmentIterator = null;
+            }
+            return segment;
+        }
+
+        /** This method must be called only from {@link #nextElementInInflatedSegment()}. */
+        @RarelyCalledAmortizedPerSegment
+        @Override
+        final Iterator<Node<K, V>> getInflatedSegmentIteratorAndUpdatePrevState() {
+            @Nullable Iterator<Node<K, V>> inflatedSegmentIterator =
+                    this.inflatedSegmentIterator;
+            // Checking for no-element condition and throwing NoSuchElementException before changing
+            // the iterator's state.
+            if (inflatedSegmentIterator == null) {
+                // [NoSuchElementException or concurrent modification]
+                throw new NoSuchElementException();
+            }
+            this.prevIterAllocIndex = ITER_ALLOC_INDEX__NO_ORDINARY_SEGMENT;
+            Segment<K, V> segment = currentSegment;
+            //noinspection ObjectEquality: identity comparison is intended
+            boolean changingPrevSegment = segment != prevSegment;
+            if (changingPrevSegment) {
+                /* if Flag doShrink */if (smoothie.doShrink) {/* endif */
+                    /* if Flag|Always doShrink */
+                    shrinkPrevSegmentIfNeeded();
+                    this.prevSegmentIndex = currentSegmentIndex;
+                    /* endif */
+                /* if Flag doShrink */}/* endif */
+                this.prevSegment = segment;
+                this.prevInflatedSegmentIterator = inflatedSegmentIterator;
+            }
+            return inflatedSegmentIterator;
+        }
+
+        @AmortizedPerSegment
+        private void shrinkPrevSegmentIfNeeded() {
+            @Nullable Segment<K, V> prevSegment = this.prevSegment;
+            if (prevSegment == null) {
+                // No previous segment in the iteration yet.
+                return;
+            }
+            if (prevSegment instanceof InflatedSegment) { // Unlikely branch
+                int prevSegmentSize = ((InflatedSegment<K, V>) prevSegment).delegate.size();
+                if (!InflatedSegment.shouldDeflateSmall(prevSegmentSize)) {
+                    return;
+                }
+                int prevSegmentOrder = segmentOrder(prevSegment.bitSetAndState);
+                int prevSegment_firstIndex =
+                        firstSegmentIndexByIndexAndOrder(prevSegmentIndex, prevSegmentOrder);
+                smoothie.deflateSmallWithSegmentIndex(
+                        (InflatedSegment<K, V>) prevSegment, prevSegment_firstIndex);
+                // Matches smoothie.modCount increment in deflateSmallWithSegmentIndex().
+                expectedModCount++;
+                prevSegment = segmentCheckedByIndex(segmentsArray, prevSegment_firstIndex);
+            }
+            shrinkIteratedSegmentsRecursively(prevSegment, prevSegmentIndex);
+        }
+
+        @AmortizedPerSegment
+        private void shrinkIteratedSegmentsRecursively(Segment<K, V> segment, int segmentIndex) {
+            while (true) {
+                long bitSetAndState = segment.bitSetAndState;
+                int segmentOrder = segmentOrder(bitSetAndState);
+                segmentIndex = firstSegmentIndexByIndexAndOrder(segmentIndex, segmentOrder);
+                int siblingSegmentIndex = siblingSegmentIndex(segmentIndex, segmentOrder);
+                if (segmentIndex < siblingSegmentIndex) { // (*)
+                    // Will revisit this procedure after iterating over the sibling segment.
+                    return;
+                }
+                int modCountChange = smoothie.tryShrink3(
+                        segment, bitSetAndState, segmentOrder, segmentIndex);
+                if (modCountChange == 0) {
+                    return;
+                }
+                expectedModCount += modCountChange;
+                // Semantically, segmentIndex should be assigned to
+                // `min(segmentIndex, siblingSegmentIndex)` here, but we know that
+                // siblingSegmentIndex is less than segmentIndex after the guard condition (*)
+                // above.
+                segmentIndex = siblingSegmentIndex;
+                // Recurse shrinking segments.
+                segment = segmentCheckedByIndex(segmentsArray, segmentIndex);
+            }
+        }
+
+        @HotPath
+        @Override
+        public final void remove() {
+            int prevIterAllocIndex = this.prevIterAllocIndex;
+            if (prevIterAllocIndex == PREV_ITER_ALLOC_INDEX__NO_ELEMENT) {
+                throw new IllegalStateException("next() hasn't been called yet on this Iterator, " +
+                        "or remove() has already been called on this Iterator since the last " +
+                        "call to next()");
+            }
+            this.prevIterAllocIndex = PREV_ITER_ALLOC_INDEX__NO_ELEMENT;
+            if (prevIterAllocIndex >= 0) { // [Positive likely branch]
+                // The last iterated entry was in an ordinary segment.
+                Segment<K, V> prevSegment = verifyNonNull(this.prevSegment);
+                smoothie.removeDuringIterationFromOrdinarySegment(
+                        prevSegment, (long) prevIterAllocIndex);
+            } else {
+                // The last iterated entry was in an inflated segment.
+                Iterator<Node<K, V>> inflatedSegmentIterator =
+                        verifyNonNull(prevInflatedSegmentIterator);
+                smoothie.decrementSize();
+                inflatedSegmentIterator.remove();
+            }
+            // Matches smoothie.modCount increment in removeDuringIterationFromOrdinarySegment() or
+            // smoothie.decrementSize().
+            expectedModCount++;
+        }
+    }
+
+    static final class ImmutableKeyIterator<K, V> extends SmoothieIterator<K, V, K> {
+        ImmutableKeyIterator(SmoothieMap<K, V> smoothie) {
+            super(smoothie);
+        }
+
+        @Override
+        K nextElementInOrdinarySegment(int allocIndex) {
+            return nextKeyInOrdinarySegment(allocIndex);
+        }
+
+        @Override
+        K nextElementInInflatedSegment() {
+            return nextKeyInInflatedSegment();
+        }
+
+        @Override
+        public void remove() {
+            throw new UnsupportedOperationException("remove() operation is not supported by this " +
+                    "Iterator. Use SmoothieMap.removeIf(), or SmoothieMap.mutableKeyIterator(), " +
+                    "or SmoothieMap.keySetWithMutableIterator() view.");
+        }
+    }
+
+    static final class MutableKeyIterator<K, V> extends MutableSmoothieIterator<K, V, K> {
+        MutableKeyIterator(SmoothieMap<K, V> smoothie) {
+            super(smoothie);
+        }
+
+        @Override
+        K nextElementInOrdinarySegment(int allocIndex) {
+            return nextKeyInOrdinarySegment(allocIndex);
+        }
+
+        @Override
+        K nextElementInInflatedSegment() {
+            return nextKeyInInflatedSegment();
+        }
+    }
+
+    static final class ImmutableValueIterator<K, V> extends SmoothieIterator<K, V, V> {
         ImmutableValueIterator(SmoothieMap<K, V> smoothie) {
             super(smoothie);
         }
 
         @Override
-        public V next() {
-            checkModCount();
-            int allocIndex = this.iterAllocIndex;
-            if (allocIndex >= 0) { // [Positive likely branch]
-                return nextValueInOrdinarySegment(allocIndex);
-            } else {
-                return nextValueInInflatedSegment();
-            }
-        }
-
-        private V nextValueInOrdinarySegment(int allocIndex) {
-            V value = readValueCheckedAtIndex(currentSegment, (long) allocIndex
-                    /* if Interleaved segments Supported intermediateSegments */
-                    , (long) currentSegment_isFullCapacity/* endif */);
-            advanceOrdinarySegmentIteration(this.bitSet, allocIndex);
-            return value;
-        }
-
-        private V nextValueInInflatedSegment() {
-            @Nullable Iterator<Node<K, V>> inflatedSegmentIterator =
-                    this.inflatedSegmentIterator;
-            if (inflatedSegmentIterator == null) {
-                // [NoSuchElementException or concurrent modification]
-                throw new NoSuchElementException();
-            }
-            Node<K, V> inflatedSegmentNode = nextInflatedSegmentEntry(inflatedSegmentIterator);
-            V value = inflatedSegmentNode.getValue();
-            advanceInflatedSegmentIteration(inflatedSegmentIterator);
-            return value;
-        }
-    }
-
-    static final class ImmutableEntryIterator<K, V>
-            extends ImmutableSmoothieIterator<K, V, Entry<K, V>> {
-        private final SimpleMutableEntry<K, V> entry;
-
-        ImmutableEntryIterator(SmoothieMap<K, V> smoothie) {
-            super(smoothie);
-            entry = new SimpleMutableEntry<>(smoothie);
+        V nextElementInOrdinarySegment(int allocIndex) {
+            return nextValueInOrdinarySegment(allocIndex);
         }
 
         @Override
-        public Entry<K, V> next() {
-            checkModCount();
-            int allocIndex = this.iterAllocIndex;
-            if (allocIndex >= 0) { // [Positive likely branch]
-                return nextEntryInOrdinarySegment(allocIndex);
-            } else {
-                return nextValueInInflatedSegment();
-            }
+        V nextElementInInflatedSegment() {
+            return nextValueInInflatedSegment();
         }
 
-        private Entry<K, V> nextEntryInOrdinarySegment(int allocIndex) {
-            Segment<K, V> currentSegment = this.currentSegment;
-            checkAllocIndex(currentSegment, (long) allocIndex);
-            long allocOffset = allocOffset((long) allocIndex
-                    /* if Interleaved segments Supported intermediateSegments */
-                    , (long) this.currentSegment_isFullCapacity/* endif */);
-            K key = readKeyAtOffset(currentSegment, allocOffset);
-            V value = readValueAtOffset(currentSegment, allocOffset);
-            advanceOrdinarySegmentIteration(this.bitSet, allocIndex);
-            return entry.withKeyAndValue(key, value);
-        }
-
-        private Entry<K, V> nextValueInInflatedSegment() {
-            @Nullable Iterator<Node<K, V>> inflatedSegmentIterator =
-                    this.inflatedSegmentIterator;
-            if (inflatedSegmentIterator == null) {
-                // [NoSuchElementException or concurrent modification]
-                throw new NoSuchElementException();
-            }
-            Node<K, V> inflatedSegmentNode = nextInflatedSegmentEntry(inflatedSegmentIterator);
-            K key = inflatedSegmentNode.getKey();
-            V value = inflatedSegmentNode.getValue();
-            advanceInflatedSegmentIteration(inflatedSegmentIterator);
-            return entry.withKeyAndValue(key, value);
+        @Override
+        public void remove() {
+            throw new UnsupportedOperationException("remove() operation is not supported by this " +
+                    "Iterator. Use SmoothieMap.removeIf(), or SmoothieMap.mutableValueIterator()," +
+                    " or SmoothieMap.valuesWithMutableIterator() view.");
         }
     }
 
-    @SuppressWarnings("unused") // To be used in non-Immutable iterators
-    final class SmoothieEntry extends SimpleEntry<K, V> {
-        final Object segment;
-        final long allocOffset;
-        final int mc = modCount;
+    static final class MutableValueIterator<K, V> extends MutableSmoothieIterator<K, V, V> {
+        MutableValueIterator(SmoothieMap<K, V> smoothie) {
+            super(smoothie);
+        }
 
-        SmoothieEntry(Object segment, long allocOffset) {
-            super(readKeyAtOffset(segment, allocOffset), readValueAtOffset(segment, allocOffset));
-            this.segment = segment;
-            this.allocOffset = allocOffset;
+        @Override
+        V nextElementInOrdinarySegment(int allocIndex) {
+            return nextValueInOrdinarySegment(allocIndex);
+        }
+
+        @Override
+        V nextElementInInflatedSegment() {
+            return nextValueInInflatedSegment();
+        }
+    }
+
+    static final class ImmutableEntryIterator<K, V> extends SmoothieIterator<K, V, Entry<K, V>> {
+        ImmutableEntryIterator(SmoothieMap<K, V> smoothie) {
+            super(smoothie);
+        }
+
+        @Override
+        Entry<K, V> nextElementInOrdinarySegment(int allocIndex) {
+            return nextEntryInOrdinarySegment(allocIndex);
+        }
+
+        @Override
+        Entry<K, V> nextElementInInflatedSegment() {
+            return nextEntryInInflatedSegment();
+        }
+
+        @Override
+        public void remove() {
+            throw new UnsupportedOperationException("remove() operation is not supported by this " +
+                    "Iterator. Use SmoothieMap.removeIf() or " +
+                    "SmoothieMap.entrySetWithMutableIterator() view.");
+        }
+    }
+
+    static final class MutableEntryIterator<K, V>
+            extends MutableSmoothieIterator<K, V, Entry<K, V>> {
+        private final ReusableOrdinarySegmentMutableEntry<K, V> ordinarySegmentEntry =
+                new ReusableOrdinarySegmentMutableEntry<>(this);
+        private @MonotonicNonNull ReusableInflatedSegmentMutableEntry<K, V> inflatedSegmentEntry;
+
+        MutableEntryIterator(SmoothieMap<K, V> smoothie) {
+            super(smoothie);
+        }
+
+        @Override
+        Entry<K, V> nextElementInOrdinarySegment(int allocIndex) {
+            return nextEntryInOrdinarySegment(allocIndex);
+        }
+
+        @Override
+        Entry<K, V> nextElementInInflatedSegment() {
+            return nextEntryInInflatedSegment();
+        }
+
+        @Override
+        Entry<K, V> createOrdinarySegmentEntry(K key, V value) {
+            return ordinarySegmentEntry.with(key, value);
+        }
+
+        @Override
+        Entry<K, V> createInflatedSegmentEntry(Node<K, V> inflatedSegmentNode) {
+            @MonotonicNonNull ReusableInflatedSegmentMutableEntry<K, V> inflatedSegmentEntry =
+                    this.inflatedSegmentEntry;
+            if (inflatedSegmentEntry == null) {
+                inflatedSegmentEntry = new ReusableInflatedSegmentMutableEntry<>(smoothie);
+                this.inflatedSegmentEntry = inflatedSegmentEntry;
+            }
+            return inflatedSegmentEntry.with(inflatedSegmentNode);
+        }
+    }
+
+    static final class MutableEntryIteratorWithUniqueEntries<K, V>
+            extends MutableSmoothieIterator<K, V, Entry<K, V>> {
+
+        MutableEntryIteratorWithUniqueEntries(SmoothieMap<K, V> smoothie) {
+            super(smoothie);
+        }
+
+        @Override
+        Entry<K, V> nextElementInOrdinarySegment(int allocIndex) {
+            return nextEntryInOrdinarySegment(allocIndex);
+        }
+
+        @Override
+        Entry<K, V> nextElementInInflatedSegment() {
+            return nextEntryInInflatedSegment();
+        }
+
+        @Override
+        Entry<K, V> createOrdinarySegmentEntry(K key, V value) {
+            return new ReusableOrdinarySegmentMutableEntry<>(this).with(key, value);
+        }
+
+        @Override
+        Entry<K, V> createInflatedSegmentEntry(Node<K, V> inflatedSegmentNode) {
+            return new ReusableInflatedSegmentMutableEntry<>(smoothie).with(inflatedSegmentNode);
+        }
+    }
+
+    static final class ReusableOrdinarySegmentMutableEntry<K, V> extends AbstractEntry<K, V> {
+        private final MutableSmoothieIterator<K, V, ?> iterator;
+
+        private @MonotonicNonNull K key;
+        private @MonotonicNonNull V value;
+        private int modCountCopy;
+
+        ReusableOrdinarySegmentMutableEntry(MutableSmoothieIterator<K, V, ?> iterator) {
+            this.iterator = iterator;
+        }
+
+        @EnsuresNonNull({"key", "value"})
+        ReusableOrdinarySegmentMutableEntry<K, V> with(K key, V value) {
+            this.key = key;
+            this.value = value;
+            this.modCountCopy = iterator.smoothie.modCount;
+            return this;
+        }
+
+        @Override
+        public K getKey() {
+            return nonNullOrThrowCme(key);
+        }
+
+        @Override
+        public V getValue() {
+            return nonNullOrThrowCme(value);
         }
 
         @Override
         public V setValue(V value) {
-            if (mc != modCount)
+            checkNonNull(value);
+            if (modCountCopy != iterator.smoothie.modCount)
                 throw new ConcurrentModificationException();
+            Segment<K, V> segment = nonNullOrThrowCme(iterator.prevSegment);
+            int allocIndex = iterator.prevIterAllocIndex;
+            checkAllocIndex(segment, (long) allocIndex);
+            /* if Interleaved segments Supported intermediateSegments */
+            // [Not storing isFullCapacitySegment during iteration]
+            long isFullCapacitySegment = segment instanceof FullCapacitySegment ? 1L : 0L;
+            /* endif */
+            long allocOffset = allocOffset((long) allocIndex
+                    /* if Interleaved segments Supported intermediateSegments */
+                    , isFullCapacitySegment/* endif */);
             writeValueAtOffset(segment, allocOffset, value);
-            return super.setValue(value);
+            V oldValue = getValue();
+            this.value = value;
+            return oldValue;
+        }
+    }
+
+    /**
+     * Cannot use {@link Node} directly as an entry because its equals() and hashCode()
+     * implementations depend only on the key and don't satisfy to the {@link Map.Entry}'s
+     * contracts for these methods. See also {@link KeyValue}.
+     *
+     * This class is made static rather than an inner class of {@link SmoothieMap} to make its usage
+     * in {@link MutableEntryIterator} less cumbersome.
+     */
+    static final class ReusableInflatedSegmentMutableEntry<K, V> extends AbstractEntry<K, V> {
+        private final SmoothieMap<K, V> smoothie;
+        private @MonotonicNonNull Node<K, V> node;
+        private int modCountCopy;
+
+        ReusableInflatedSegmentMutableEntry(SmoothieMap<K, V> smoothie) {
+            this.smoothie = smoothie;
+        }
+
+        @EnsuresNonNull("node")
+        ReusableInflatedSegmentMutableEntry<K, V> with(Node<K, V> node) {
+            this.node = node;
+            this.modCountCopy = smoothie.modCount;
+            return this;
+        }
+
+        @Override
+        public K getKey() {
+            return nonNullOrThrowCme(node).getKey();
+        }
+
+        @Override
+        public V getValue() {
+            return nonNullOrThrowCme(node).getValue();
+        }
+
+        @Override
+        public V setValue(V value) {
+            if (modCountCopy != smoothie.modCount)
+                throw new ConcurrentModificationException();
+            Node<K, V> node = nonNullOrThrowCme(this.node);
+            V oldValue = node.getValue();
+            node.setValue(value);
+            return oldValue;
         }
     }
 
@@ -5731,6 +6348,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             }
         }
 
+        /**
+         * This method is called from iterators, either directly or via {@link
+         * #removeDuringIterationFromOrdinarySegment}. The Javadoc for {@link #checkAllocIndex}
+         * describes some races that are possible due to improper concurrent use of Iterator objects
+         * themselves. In addition, there may be some modifications to the SmoothieMap concurrent to
+         * the iteration. This may result in reading a null key at the given {@code allocIndex}.
+         * This method throws a {@link ConcurrentModificationException} in this case.
+         */
         static <K> K readKeyCheckedAtIndex(Object segment, @NonNegative long allocIndex
                 /* if Interleaved segments Supported intermediateSegments */
                 , long isFullCapacitySegment/* endif */) {
@@ -5767,6 +6392,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             return value;
         }
 
+        /** @see #readKeyCheckedAtIndex */
         static <V> V readValueCheckedAtIndex(Object segment, @NonNegative long allocIndex
                 /* if Interleaved segments Supported intermediateSegments */
                 , long isFullCapacitySegment/* endif */) {
@@ -6197,7 +6823,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 // ConcurrentModificationException was thrown from readKeyAtOffset() or
                 // readValueAtOffset().
                 if (modCount != initialModCount) {
-                    setBitSetAndState(this, bitSetAndState);
+                    this.bitSetAndState = bitSetAndState;
                 }
             }
             return modCount;
@@ -6386,14 +7012,14 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
             // structural modifications happen to a map, which, unfortunately, permits patterns such
             // as calling to computeIfPresent() within an iteration loop over the same map. See
             // also [Don't increment SmoothieMap's modCount on non-structural modification].
-            if (shouldDeflate(delegate.size())) {
+            if (shouldDeflateSmall(delegate.size())) {
                 smoothie.deflateSmall(hash, this);
             } else if (shouldBeSplit(smoothie, segmentOrder(bitSetAndState))) {
                 smoothie.splitInflated(hash, this);
             }
         }
 
-        private static boolean shouldDeflate(int delegateSize) {
+        private static boolean shouldDeflateSmall(int delegateSize) {
             return delegateSize <=
                     SEGMENT_MAX_ALLOC_CAPACITY - MIN_LEFTOVER_ALLOC_CAPACITY_AFTER_DEFLATION;
         }

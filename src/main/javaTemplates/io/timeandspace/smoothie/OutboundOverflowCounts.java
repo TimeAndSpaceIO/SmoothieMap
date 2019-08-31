@@ -105,12 +105,11 @@ final class OutboundOverflowCounts {
     }
 
     @AmortizedPerSegment
-    static void addOutboundOverflowCountsPerGroup(Object segment,
-            /* if Interleaved segments Supported intermediateSegments */int isFullCapacitySegment,
-            /* endif */
+    static void addOutboundOverflowCountsPerGroup(SmoothieMap.Segment<?, ?> segment,
             long outboundOverflowCount_perGroupAdditions) {
         addOutboundOverflowCountsPerGroup(segment,
-                /* if Interleaved segments Supported intermediateSegments */isFullCapacitySegment,
+                /* if Interleaved segments Supported intermediateSegments */
+                segment instanceof InterleavedSegments.FullCapacitySegment ? 1 : 0,
                 /* endif */
                 outboundOverflowCount_perGroupAdditions,
                 matchChanges(outboundOverflowCount_perGroupAdditions));
@@ -180,13 +179,14 @@ final class OutboundOverflowCounts {
     }
 
     @AmortizedPerSegment
-    static void subtractOutboundOverflowCountsPerGroupAndUpdateAllGroups(Object segment,
+    static void subtractOutboundOverflowCountsPerGroupAndUpdateAllGroups(
+            SmoothieMap.Segment<?, ?> segment,
             /* if Interleaved segments Supported intermediateSegments */int isFullCapacitySegment,
             /* endif */
             long outboundOverflowCount_perGroupDeductions) {
-        long outboundOverflowCountsPerGroup = getOutboundOverflowCountsPerGroup(segment);
+        long outboundOverflowCountsPerGroup = segment.outboundOverflowCountsPerGroup;
         outboundOverflowCountsPerGroup -= outboundOverflowCount_perGroupDeductions;
-        setOutboundOverflowCountsPerGroup(segment, outboundOverflowCountsPerGroup);
+        segment.outboundOverflowCountsPerGroup = outboundOverflowCountsPerGroup;
 
         // Update DATA__OUTBOUND_OVERFLOW_BIT (see HashTable class) in all slots in the hash table
         // in a branchless manner.

@@ -778,9 +778,6 @@ final class InflatedSegmentQueryContext<K, V> {
             return nonNullOrThrowCme(value);
         }
 
-        /**
-         * Method to be used in {@link SmoothieMap.InflatedSegment#replaceAll} implementation.
-         */
         void setValue(V newValue) {
             checkNonNull(newValue);
             this.value = newValue;
