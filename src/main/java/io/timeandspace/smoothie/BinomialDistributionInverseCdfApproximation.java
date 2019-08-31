@@ -230,10 +230,13 @@ final class BinomialDistributionInverseCdfApproximation {
      *
      * Computed in {@link BinomialDistributionInverseCdfNormalApproximationBias}, copied from
      * {@link io.timeandspace.smoothie.BinomialDistributionInverseCdfNormalApproximationBias.Output}.
+     * See the comment for this class regarding the 10-digit precision of float values in inner
+     * arrays.
      *
      * TODO in warmup procedure, access all values in all arrays to ensure they are mapped into
      *  memory
      */
+    @SuppressWarnings("FloatingPointLiteralPrecision")
     private static final float[][] CORRECTIONS_PER_SKEW_PROB = {
             // Prob: 0.19341265286193732
             {-0.0293498039f, -0.0199182779f, -0.0106528075f, 0.0003727727f, 0.0107068541f,

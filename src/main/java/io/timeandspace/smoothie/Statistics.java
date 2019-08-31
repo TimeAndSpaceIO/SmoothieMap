@@ -31,7 +31,7 @@ import java.util.function.DoubleUnaryOperator;
  *
  * Copyright (C) The Apache Software Foundation
  */
-@SuppressWarnings("ImplicitNumericConversion")
+@SuppressWarnings({"ImplicitNumericConversion", "FloatingPointLiteralPrecision"})
 final class Statistics {
 
     private Statistics() {}
