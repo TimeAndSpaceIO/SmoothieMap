@@ -2178,7 +2178,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                     V internalVal = readValueAtOffset(segment, allocOffset);
                     @Nullable V newValue = remappingFunction.apply(key, internalVal);
                     if (newValue != null) {
-                        writeValueAtOffset(segment, allocOffset, internalVal);
+                        writeValueAtOffset(segment, allocOffset, newValue);
                     } else {
                         // Computing outboundOverflowCount_perGroupDecrements in the end: not
                         // computing outboundOverflowCount_perGroupDecrements along with the key

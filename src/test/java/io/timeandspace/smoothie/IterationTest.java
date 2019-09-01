@@ -29,7 +29,7 @@ import static org.junit.Assert.assertTrue;
 
 public class IterationTest {
 
-    SmoothieMap<Integer, Integer> map = SmoothieMap.<Integer, Integer>newBuilder().build();
+    Map<Integer, Integer> map = SmoothieMap.<Integer, Integer>newBuilder().build().asMapWithMutableIterators();
     HashSet<Integer> keys = new HashSet<>();
     Random random = new Random(53);
 
