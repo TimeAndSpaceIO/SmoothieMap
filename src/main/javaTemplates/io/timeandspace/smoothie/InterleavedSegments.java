@@ -4,8 +4,6 @@ package io.timeandspace.smoothie;
 import io.timeandspace.smoothie.BitSetAndState.DebugBitSetAndState;
 import org.checkerframework.checker.nullness.qual.Nullable;
 
-import java.io.IOException;
-import java.io.ObjectOutputStream;
 import java.util.ConcurrentModificationException;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
@@ -1215,32 +1213,6 @@ final class InterleavedSegments {
         }
 
         /**
-         * Mirror of {@link SmoothieMap.Segment#writeAllEntries}.
-         *
-         * [Method cloned in FullCapacitySegment and IntermediateCapacitySegment]
-         */
-        @Override
-        void writeAllEntries(ObjectOutputStream s) throws IOException {
-            long bitSet = extractBitSetForIteration(bitSetAndState);
-            // [Iteration in bulk segment methods]
-            for (int iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1,
-                 iterAllocIndex = Long.SIZE;
-                 (iterAllocIndex -= iterAllocIndexStep) >= 0;) {
-                long iterAllocOffset = allocOffset((long) iterAllocIndex);
-                K key = readKeyAtOffset(this, iterAllocOffset);
-                V value = readValueAtOffset(this, iterAllocOffset);
-
-                // TODO check what is better - these two statements before or after writing the
-                //  objects to the output stream, or one before and one after, or both after?
-                bitSet = bitSet << iterAllocIndexStep;
-                iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1;
-
-                s.writeObject(key);
-                s.writeObject(value);
-            }
-        }
-
-        /**
          * Mirror of {@link SmoothieMap.Segment#removeIf}.
          *
          * Unlike other similar methods above belonging to the category
@@ -2006,32 +1978,6 @@ final class InterleavedSegments {
                 }
             }
             return false;
-        }
-
-        /**
-         * Mirror of {@link SmoothieMap.Segment#writeAllEntries}.
-         *
-         * [Method cloned in FullCapacitySegment and IntermediateCapacitySegment]
-         */
-        @Override
-        void writeAllEntries(ObjectOutputStream s) throws IOException {
-            long bitSet = extractBitSetForIteration(bitSetAndState);
-            // [Iteration in bulk segment methods]
-            for (int iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1,
-                 iterAllocIndex = Long.SIZE;
-                 (iterAllocIndex -= iterAllocIndexStep) >= 0;) {
-                long iterAllocOffset = allocOffset((long) iterAllocIndex);
-                K key = readKeyAtOffset(this, iterAllocOffset);
-                V value = readValueAtOffset(this, iterAllocOffset);
-
-                // TODO check what is better - these two statements before or after writing the
-                //  objects to the output stream, or one before and one after, or both after?
-                bitSet = bitSet << iterAllocIndexStep;
-                iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1;
-
-                s.writeObject(key);
-                s.writeObject(value);
-            }
         }
 
         /**

@@ -29,7 +29,7 @@ import java.util.function.BiFunction;
 import java.util.function.BiPredicate;
 import java.util.function.Function;
 
-public interface ObjObjMap<K, V> extends Map<K, V>, Cloneable {
+public interface ObjObjMap<K, V> extends Map<K, V> {
 
     /**
      * Returns the equivalence strategy for keys for this map. All methods in the {@link Map}
@@ -391,16 +391,6 @@ public interface ObjObjMap<K, V> extends Map<K, V>, Cloneable {
      */
     @Override
     boolean containsValue(Object value);
-
-    /**
-     * Returns a shallow copy of this {@code ObjObjMap} instance: the keys and values themselves
-     * are not cloned.
-     *
-     * @return a shallow copy of this map
-     * @throws ConcurrentModificationException if any structural modification of the map (new entry
-     * insertion or an entry removal) is detected during operation
-     */
-    ObjObjMap<K, V> clone();
 
     /**
      * Copies all of the mappings from the specified map to this map. The effect of this call is

@@ -50,18 +50,15 @@ public class GrowTest {
 
     @Test
     public void growTest() {
+        verifyAllKeys();
+    }
+
+    private void verifyAllKeys() {
         for (int i = 0; i < keys.size(); i++) {
             Integer key = keys.get(i);
             if (!key.equals(map.get(key))) {
                 throw new AssertionError("" + i);
             }
         }
-    }
-
-    @Ignore
-    @Test
-    public void testClone() {
-        SmoothieMap<Integer, Integer> clone = map.clone();
-        assertEquals(map, clone);
     }
 }

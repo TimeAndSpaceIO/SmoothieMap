@@ -31,10 +31,6 @@ import org.checkerframework.checker.nullness.qual.Nullable;
 import org.checkerframework.common.value.qual.IntRange;
 import org.jetbrains.annotations.Contract;
 
-import java.io.IOException;
-import java.io.InvalidObjectException;
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
 import java.io.Serializable;
 import java.util.AbstractCollection;
 import java.util.AbstractMap;
@@ -233,8 +229,7 @@ import static sun.misc.Unsafe.ARRAY_OBJECT_INDEX_SCALE;
  * @author Roman Leventov
  * TODO don't extend AbstractMap
  */
-public class SmoothieMap<K, V> extends AbstractMap<K, V>
-        implements ObjObjMap<K, V>, Cloneable, Serializable {
+public class SmoothieMap<K, V> extends AbstractMap<K, V> implements ObjObjMap<K, V> {
     private static final long SIZE_IN_BYTES = classSizeInBytes(SmoothieMap.class);
 
     private static final long KEY_SET__SIZE_IN_BYTES = classSizeInBytes(SmoothieMap.KeySet.class);
@@ -4915,93 +4910,6 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
     }
 
     @Override
-    public final SmoothieMap<K, V> clone() {
-        throw new UnsupportedOperationException("TODO");
-        // TODO clone object fields: isFullCapacitySegmentBitSet, hashCodeDistribution,
-        //  segmentCountsByOrder, keySet, values, entrySet, (something else?)
-//        int modCount = getModCountOpaque();
-//        Object[] segmentsArray = getNonNullSegmentsArrayOrThrowIse();
-//        int segmentArrayLength = segmentsArray.length;
-//        int segmentsArrayOrder = order(segmentArrayLength);
-//        SmoothieMap<K, V> result;
-//        try {
-//            //noinspection unchecked
-//            result = (SmoothieMap<K, V>) super.clone();
-//        } catch (CloneNotSupportedException e) {
-//            throw new AssertionError(e);
-//        }
-//        result.keySet = null;
-//        result.values = null;
-//        result.entrySet = null;
-//        // TODO review concurrency of this method
-//        Object[] resultSegmentsArray = segmentsArray.clone();
-//        result.segmentsArray = resultSegmentsArray;
-//        Segment<K, V> segment;
-//        for (int segmentIndex = 0; segmentIndex >= 0;
-//             segmentIndex = nextSegmentIndex(
-//                     segmentArrayLength, segmentsArrayOrder, segmentIndex, segment)) {
-//            segment = segmentByIndexDuringBulkOperations(segmentsArray, segmentIndex);
-//            int segmentOrder = segmentOrder(getBitSetAndState(segment));
-//            Segment<K, V> segmentClone = segment.clone();
-//            // TODO check if segmentIndex is really the first index as required by
-//            //  replaceInSegmentsArray()?
-//            result.replaceInSegmentsArray(
-//                    resultSegmentsArray, segmentIndex, segmentOrder, segmentClone);
-//        }
-//        checkModCountOrThrowCme(modCount);
-//        // Safe publication of result.
-//        U.storeFence();
-//        return result;
-    }
-
-    private void writeObject(ObjectOutputStream s) throws IOException {
-        /* if Supported intermediateSegments */
-        s.writeBoolean(allocateIntermediateSegments);
-        /* endif */
-        /* if Flag doShrink */
-        s.writeBoolean(doShrink);
-        /* endif */
-        s.writeLong(size);
-        writeAllEntries(s);
-    }
-
-    /** To be called from {@link #writeObject}. */
-    @SuppressWarnings("unused")
-    private void writeAllEntries(ObjectOutputStream s) throws IOException {
-        int modCount = getModCountOpaque();
-        Object[] segmentsArray = getNonNullSegmentsArrayOrThrowIse();
-        int segmentArrayLength = segmentsArray.length;
-        int segmentsArrayOrder = order(segmentArrayLength);
-        Segment<K, V> segment;
-        for (int segmentIndex = 0; segmentIndex >= 0;
-             segmentIndex = nextSegmentIndex(
-                     segmentArrayLength, segmentsArrayOrder, segmentIndex, segment)) {
-            segment = segmentCheckedByIndex(segmentsArray, segmentIndex);
-            segment.writeAllEntries(s);
-        }
-        checkModCountOrThrowCme(modCount);
-    }
-
-    private void readObject(ObjectInputStream s) throws IOException, ClassNotFoundException {
-        /* if Supported intermediateSegments */
-        allocateIntermediateSegments = s.readBoolean();
-        /* endif */
-        /* if Flag doShrink */
-        doShrink = s.readBoolean();
-        /* endif */
-        long numMappings = s.readLong();
-        if (numMappings < 0) {
-            throw new InvalidObjectException("Illegal mappings count: " + numMappings);
-        }
-        initArrays(chooseInitialSegmentsArrayLengthInternal(numMappings));
-        for (long i = 0; i < numMappings; i++) {
-            @SuppressWarnings("unchecked") K key = (K) s.readObject();
-            @SuppressWarnings("unchecked") V value = (V) s.readObject();
-            put(key, value);
-        }
-    }
-
-    @Override
     // Not interested in this.put() results because putAll() returns void.
     @SuppressWarnings("CheckReturnValue")
     public final void putAll(Map<? extends K, ? extends V> m) {
@@ -6727,33 +6635,6 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
 
         /* if !(Interleaved segments Supported intermediateSegments) */
         /**
-         * Mirror of {@link InterleavedSegments.FullCapacitySegment#writeAllEntries} and
-         * {@link IntermediateCapacitySegment#writeAllEntries}.
-         */
-        @Override
-        void writeAllEntries(ObjectOutputStream s) throws IOException {
-            long bitSet = extractBitSetForIteration(bitSetAndState);
-            // [Iteration in bulk segment methods]
-            for (int iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1,
-                 iterAllocIndex = Long.SIZE;
-                 (iterAllocIndex -= iterAllocIndexStep) >= 0;) {
-                long iterAllocOffset = allocOffset((long) iterAllocIndex);
-                K key = readKeyAtOffset(this, iterAllocOffset);
-                V value = readValueAtOffset(this, iterAllocOffset);
-
-                // TODO check what is better - these two statements before or after writing the
-                //  objects to the output stream, or one before and one after, or both after?
-                bitSet = bitSet << iterAllocIndexStep;
-                iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1;
-
-                s.writeObject(key);
-                s.writeObject(value);
-            }
-        }
-        /* endif */
-
-        /* if !(Interleaved segments Supported intermediateSegments) */
-        /**
          * Mirror of {@link InterleavedSegments.FullCapacitySegment#removeIf} and
          * {@link IntermediateCapacitySegment#removeIf}.
          */
@@ -7361,19 +7242,6 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V>
                 //noinspection ObjectEquality: identity comparision is intended
                 boolean valuesIdentical = queriedValue == internalVal;
                 return valuesIdentical || map.valuesEqual(queriedValue, internalVal);
-            });
-        }
-
-        @SuppressWarnings("RedundantThrows")
-        @Override
-        void writeAllEntries(ObjectOutputStream s) throws IOException {
-            delegate.keySet().forEach(node -> {
-                try {
-                    s.writeObject(node.getKey());
-                    s.writeObject(node.getValue());
-                } catch (IOException e) {
-                    rethrowUnchecked(e);
-                }
             });
         }
 

@@ -1,7 +1,5 @@
 package io.timeandspace.smoothie;
 
-import java.io.IOException;
-import java.io.ObjectOutputStream;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 import java.util.function.BiPredicate;
@@ -27,8 +25,6 @@ abstract class AbstractSegment<K, V> {
     abstract void replaceAll(BiFunction<? super K, ? super V, ? extends V> function);
 
     abstract boolean containsValue(SmoothieMap<K, V> map, V queriedValue);
-
-    abstract void writeAllEntries(ObjectOutputStream s) throws IOException;
 
     abstract int removeIf(
             SmoothieMap<K, V> map, BiPredicate<? super K, ? super V> filter, int modCount);
