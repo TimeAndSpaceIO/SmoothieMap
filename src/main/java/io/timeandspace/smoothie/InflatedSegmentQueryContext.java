@@ -28,7 +28,6 @@ import java.util.function.BiFunction;
 import java.util.function.Function;
 
 import static io.timeandspace.smoothie.ObjectSize.classSizeInBytes;
-import static io.timeandspace.smoothie.ObjectSize.objectSizeInBytes;
 import static io.timeandspace.smoothie.Utils.checkNonNull;
 import static io.timeandspace.smoothie.Utils.verifyNonNull;
 import static io.timeandspace.smoothie.Utils.verifyThat;
@@ -73,7 +72,7 @@ import static io.timeandspace.smoothie.Utils.nonNullOrThrowCme;
  *     layer of {@link Node} (see below), under a hash DoS attack an inflated segment is slower and
  *     consumes more memory than a plain HashMap. The proper ways to protect a SmoothieMap against
  *     hash DoS attacks are configuring a randomly seeded hash function (see an example in {@link
- *     SmoothieMapBuilder#hashFunctionFactory} Javadoc), or removing malicious keys in a {@link
+ *     SmoothieMapBuilder#keyHashFunctionFactory} Javadoc), or removing malicious keys in a {@link
  *     PoorHashCodeDistributionOccasion} callback (see an example in {@link
  *     SmoothieMapBuilder#reportPoorHashCodeDistribution} Javadoc).
  *

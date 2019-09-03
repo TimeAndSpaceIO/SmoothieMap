@@ -44,6 +44,7 @@ dependencies {
     testImplementation 'com.google.guava:guava:28.1-jre'
     testImplementation 'com.google.guava:guava-testlib:28.1-jre'
     testImplementation 'org.apache.commons:commons-math3:3.2'
+    testImplementation 'net.openhft:zero-allocation-hashing:0.8'
 
     errorprone 'com.google.errorprone:error_prone_core:2.3.3'
     errorproneJavac 'org.codehaus.plexus:plexus-compiler-javac-errorprone:2.8.5'
@@ -122,7 +123,7 @@ tasks.withType(io.timeandspace.jpsg.JpsgTask) {
     with 'Tracking segmentOrderStats'
     with 'Disabled moveToMapWithShrunkArray'
     with 'Interleaved segments'
-    with 'NotSupported intermediateSegments'
+    with 'Supported intermediateSegments'
 
     exclude 'Continuous segments'
 }

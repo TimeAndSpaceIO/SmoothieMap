@@ -17,6 +17,7 @@
 package io.timeandspace.smoothie;
 
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import io.timeandspace.collect.Equivalence;
 import org.checkerframework.checker.nullness.qual.Nullable;
 import org.jetbrains.annotations.Contract;
 
@@ -25,24 +26,32 @@ import java.util.function.Supplier;
 import java.util.function.ToLongFunction;
 
 import static io.timeandspace.smoothie.Utils.checkNonNegative;
+import static io.timeandspace.smoothie.Utils.checkNonNull;
+import static io.timeandspace.smoothie.Utils.verifyThat;
 
 public final class SmoothieMapBuilder<K, V> {
 
     static final long UNKNOWN_SIZE = Long.MAX_VALUE;
 
     @Contract(value = " -> new", pure = true)
-    public static <K, V> SmoothieMapBuilder<K, V> newBuilder() {
+    public static <K, V> SmoothieMapBuilder<K, V> create() {
         return new SmoothieMapBuilder<>();
     }
 
+    /* if Supported intermediateSegments */
     /** Mirror field: {@link SmoothieMap#allocateIntermediateSegments}. */
     private boolean allocateIntermediateSegments;
     /** Mirror field: {@link SmoothieMap#splitBetweenTwoNewSegments}. */
     private boolean splitBetweenTwoNewSegments;
+    /* endif */
+    /* if Flag doShrink */
     /** Mirror field: {@link SmoothieMap#doShrink}. */
     private boolean doShrink;
+    /* endif */
 
-    private @Nullable Supplier<ToLongFunction<K>> hashFunctionFactory = null;
+    private Equivalence<K> keyEquivalence = Equivalence.defaultEquality();
+    private @Nullable Supplier<ToLongFunction<K>> keyHashFunctionFactory = null;
+    private Equivalence<V> valueEquivalence = Equivalence.defaultEquality();
 
     private long expectedSize = UNKNOWN_SIZE;
     private long minExpectedSize = UNKNOWN_SIZE;
@@ -61,14 +70,22 @@ public final class SmoothieMapBuilder<K, V> {
     public SmoothieMapBuilder<K, V> optimizeFor(OptimizationObjective optimizationObjective) {
         switch (optimizationObjective) {
             case ALLOCATION_RATE:
+                /* if Supported intermediateSegments */
                 this.allocateIntermediateSegments = false;
                 this.splitBetweenTwoNewSegments = false;
+                /* endif */
+                /* if Flag doShrink */
                 this.doShrink = false;
+                /* endif */
                 break;
             case MEMORY_FOOTPRINT:
+                /* if Supported intermediateSegments */
                 this.allocateIntermediateSegments = true;
                 this.splitBetweenTwoNewSegments = true;
+                /* endif */
+                /* if Flag doShrink */
                 this.doShrink = true;
+                /* endif */
                 break;
             default:
                 throw new AssertionError("Unknown OptimizationObjective: " + optimizationObjective);
@@ -83,12 +100,17 @@ public final class SmoothieMapBuilder<K, V> {
     @CanIgnoreReturnValue
     @Contract(" -> this")
     public SmoothieMapBuilder<K, V> defaultOptimizationConfiguration() {
+        /* if Supported intermediateSegments */
         this.allocateIntermediateSegments = true;
         this.splitBetweenTwoNewSegments = false;
+        /* endif */
+        /* if Flag doShrink */
         this.doShrink = true;
+        /* endif */
         return this;
     }
 
+    /* if Supported intermediateSegments */
     @CanIgnoreReturnValue
     @Contract("_ -> this")
     public SmoothieMapBuilder<K, V> allocateIntermediateSegments(
@@ -103,29 +125,127 @@ public final class SmoothieMapBuilder<K, V> {
         this.splitBetweenTwoNewSegments = splitBetweenTwoNewSegments;
         return this;
     }
+    /* endif */
 
+    /* if Flag doShrink */
     @CanIgnoreReturnValue
     @Contract("_ -> this")
     public SmoothieMapBuilder<K, V> doShrink(boolean doShrink) {
         this.doShrink = doShrink;
         return this;
     }
+    /* endif */
 
     @CanIgnoreReturnValue
     @Contract("_ -> this")
-    public SmoothieMapBuilder<K, V> hashFunctionFactory(
+    public SmoothieMapBuilder<K, V> keyEquivalence(Equivalence<K> keyEquivalence) {
+        checkNonNull(keyEquivalence);
+        this.keyEquivalence = keyEquivalence;
+        return this;
+    }
+
+    /**
+     * Sets the {@link Equivalence} used for comparing keys in SmoothieMaps created by this builder
+     * to {@link Equivalence#defaultEquality()}.
+     *
+     * @return this builder back
+     */
+    @CanIgnoreReturnValue
+    @Contract(" -> this")
+    public SmoothieMapBuilder<K, V> defaultKeyEquivalence() {
+        this.keyEquivalence = Equivalence.defaultEquality();
+        return this;
+    }
+
+    /**
+     * Sets a key hash function to be used in SmoothieMaps created by this builder.
+     *
+     * <p>The specified hash function must be consistent with {@link Object#equals} on the key
+     * objects, or a custom key equivalence if specified via {@link #keyEquivalence(Equivalence)} in
+     * the same way as {@link Object#hashCode()} must be consistent with {@code equals()}. This is
+     * the user's responsibility to ensure this. When {@link #keyEquivalence(Equivalence)} is called
+     * on a builder object, the key hash function, if already configured to a non-default, is
+     * <i>not</i> reset. On the other hand, if {@code keyHashFunction()} (or {@link
+     * #keyHashFunctionFactory(Supplier)}) is never called on a builder, or {@link
+     * #defaultKeyHashFunction()} is called, it's not necessary to configure the key hash function
+     * along with any custom {@link #keyEquivalence(Equivalence)} because by default {@code
+     * SmoothieMapBuilder} does respect {@link Equivalence#hash}.
+     *
+     * @param hashFunction a key hash function for each SmoothieMap created using this builder
+     * @return this builder back
+     * @see #keyHashFunctionFactory(Supplier)
+     * @see #defaultKeyHashFunction()
+     * @see #keyEquivalence(Equivalence)
+     */
+    @CanIgnoreReturnValue
+    @Contract("_ -> this")
+    public SmoothieMapBuilder<K, V> keyHashFunction(ToLongFunction<K> hashFunction) {
+        checkNonNull(hashFunction);
+        this.keyHashFunctionFactory = () -> hashFunction;
+        return this;
+    }
+
+    /**
+     * Sets a factory to obtain a key hash function for each SmoothieMap created using this builder.
+     * Compared to {@link #keyHashFunction(ToLongFunction)}, this method allows to insert randomness
+     * into the hash function:
+     * <pre>{@code
+     * builder.keyHashFunctionFactory(() -> {
+     *     LongHashFunction hashF = LongHashFunction.xx(ThreadLocalRandom.current().nextLong());
+     *     return hashF::hashChars;
+     * });}</pre>
+     *
+     * <p>Hash functions returned by the specified factory must be consistent with {@link
+     * Object#equals} on the key objects, or a custom key equivalence if specified via {@link
+     * #keyEquivalence(Equivalence)} in the same way as {@link Object#hashCode()} must be consistent
+     * with {@code equals()}. This is the user's responsibility to ensure this. When {@link
+     * #keyEquivalence(Equivalence)} is called on a builder object, the key hash function factory,
+     * if already configured to a non-default, is <i>not</i> reset. See the Javadoc comment for
+     * {@link #keyHashFunction(ToLongFunction)} for more info.
+     *
+     * @param hashFunctionFactory the factory to create a key hash function for each SmoothieMap
+     * created using this builder
+     * @return this builder back
+     * @see #keyHashFunction(ToLongFunction)
+     * @see #defaultKeyHashFunction()
+     */
+    @CanIgnoreReturnValue
+    @Contract("_ -> this")
+    public SmoothieMapBuilder<K, V> keyHashFunctionFactory(
             Supplier<ToLongFunction<K>> hashFunctionFactory) {
-        Utils.checkNonNull(hashFunctionFactory);
-        this.hashFunctionFactory = hashFunctionFactory;
+        checkNonNull(hashFunctionFactory);
+        this.keyHashFunctionFactory = hashFunctionFactory;
         return this;
     }
 
     @CanIgnoreReturnValue
     @Contract(" -> this")
-    public SmoothieMapBuilder<K, V> defaultHashFunctionFactory() {
-        this.hashFunctionFactory = null;
+    public SmoothieMapBuilder<K, V> defaultKeyHashFunction() {
+        this.keyHashFunctionFactory = null;
         return this;
     }
+
+    @CanIgnoreReturnValue
+    @Contract("_ -> this")
+    public SmoothieMapBuilder<K, V> valueEquivalence(Equivalence<V> valueEquivalence) {
+        checkNonNull(valueEquivalence);
+        this.valueEquivalence = valueEquivalence;
+        return this;
+    }
+
+    /**
+     * Sets the {@link Equivalence} used for comparing values in SmoothieMaps created by this
+     * builder to {@link Equivalence#defaultEquality()}.
+     *
+     * @return this builder back
+     */
+    @CanIgnoreReturnValue
+    @Contract(" -> this")
+    public SmoothieMapBuilder<K, V> defaultValueEquivalence() {
+        this.valueEquivalence = Equivalence.defaultEquality();
+        return this;
+    }
+
 
     @CanIgnoreReturnValue
     @Contract("_ -> this")
@@ -202,13 +322,12 @@ public final class SmoothieMapBuilder<K, V> {
     public SmoothieMapBuilder<K, V> reportPoorHashCodeDistribution(
             double maxProbabilityOfOccasionIfHashFunctionWasRandom,
             Consumer<PoorHashCodeDistributionOccasion<K, V>> reportingAction) {
-        Utils.checkNonNull(reportingAction);
+        checkNonNull(reportingAction);
         this.maxProbabilityOfOccasionIfHashFunctionWasRandom =
                 maxProbabilityOfOccasionIfHashFunctionWasRandom;
         this.reportingAction = reportingAction;
         return this;
     }
-    /* endif */
 
     @CanIgnoreReturnValue
     @Contract(" -> this")
@@ -216,12 +335,29 @@ public final class SmoothieMapBuilder<K, V> {
         this.reportingAction = null;
         return this;
     }
+    /* endif */
 
     @Contract(" -> new")
     public SmoothieMap<K, V> build() {
-        return new SmoothieMap<>(this);
+        boolean isDefaultKeyEquivalence = keyEquivalence.equals(Equivalence.defaultEquality());
+        boolean isDefaultValueEquivalence = valueEquivalence.equals(Equivalence.defaultEquality());
+        if (keyHashFunctionFactory == null && isDefaultKeyEquivalence &&
+                isDefaultValueEquivalence) {
+            return new SmoothieMap<>(this);
+        } else if (keyHashFunctionFactory != null && isDefaultKeyEquivalence &&
+                isDefaultValueEquivalence) {
+            return new SmoothieMapWithCustomKeyHashFunction<>(this);
+        } else if (!isDefaultKeyEquivalence && isDefaultValueEquivalence) {
+            return new SmoothieMapWithCustomKeyEquivalence<>(this);
+        } else if (keyHashFunctionFactory == null && isDefaultKeyEquivalence) {
+            Utils.verifyThat(!isDefaultValueEquivalence);
+            return new SmoothieMapWithCustomValueEquivalence<>(this);
+        } else {
+            return new SmoothieMapWithCustomKeyAndValueEquivalences<>(this);
+        }
     }
 
+    /* if Supported intermediateSegments */
     boolean allocateIntermediateSegments() {
         return allocateIntermediateSegments;
     }
@@ -229,13 +365,30 @@ public final class SmoothieMapBuilder<K, V> {
     boolean splitBetweenTwoNewSegments() {
         return splitBetweenTwoNewSegments;
     }
+    /* endif */
 
+    /* if Flag doShrink */
     boolean doShrink() {
         return doShrink;
     }
+    /* endif */
 
-    @Nullable Supplier<ToLongFunction<K>> hashFunctionFactory() {
-        return hashFunctionFactory;
+    Equivalence<K> keyEquivalence() {
+        return keyEquivalence;
+    }
+
+    ToLongFunction<K> keyHashFunction() {
+        if (keyHashFunctionFactory != null) {
+            return keyHashFunctionFactory.get();
+        }
+        if (keyEquivalence.equals(Equivalence.defaultEquality())) {
+            return DefaultHashFunction.instance();
+        }
+        return new EquivalenceBasedHashFunction<>(keyEquivalence);
+    }
+
+    Equivalence<V> valueEquivalence() {
+        return valueEquivalence;
     }
 
     long expectedSize() {
@@ -246,6 +399,7 @@ public final class SmoothieMapBuilder<K, V> {
         return minExpectedSize;
     }
 
+    /* if Tracking hashCodeDistribution */
     double maxProbabilityOfOccasionIfHashFunctionWasRandom() {
         return maxProbabilityOfOccasionIfHashFunctionWasRandom;
     }
@@ -253,4 +407,5 @@ public final class SmoothieMapBuilder<K, V> {
     @Nullable Consumer<PoorHashCodeDistributionOccasion<K, V>> reportingAction() {
         return reportingAction;
     }
+    /* endif */
 }

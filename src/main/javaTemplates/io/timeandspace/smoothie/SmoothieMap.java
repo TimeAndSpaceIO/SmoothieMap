@@ -159,7 +159,6 @@ import static io.timeandspace.smoothie.UnsafeUtils.storeStoreFence;
 import static io.timeandspace.smoothie.Utils.checkNonNull;
 import static io.timeandspace.smoothie.Utils.duplicateArray;
 import static io.timeandspace.smoothie.Utils.nonNullOrThrowCme;
-import static io.timeandspace.smoothie.Utils.rethrowUnchecked;
 import static io.timeandspace.smoothie.Utils.verifyEqual;
 import static io.timeandspace.smoothie.Utils.verifyIsPowerOfTwo;
 import static io.timeandspace.smoothie.Utils.verifyNonNull;
@@ -227,9 +226,8 @@ import static sun.misc.Unsafe.ARRAY_OBJECT_INDEX_SCALE;
  * @param <V> the type of mapped values
  *
  * @author Roman Leventov
- * TODO don't extend AbstractMap
  */
-public class SmoothieMap<K, V> extends AbstractMap<K, V> implements ObjObjMap<K, V> {
+public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
     private static final long SIZE_IN_BYTES = classSizeInBytes(SmoothieMap.class);
 
     private static final long KEY_SET__SIZE_IN_BYTES = classSizeInBytes(SmoothieMap.KeySet.class);
@@ -241,7 +239,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements ObjObjMap<K,
     static final double MIN__POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB = 0.00001;
 
     public static <K, V> SmoothieMapBuilder<K, V> newBuilder() {
-        return SmoothieMapBuilder.newBuilder();
+        return SmoothieMapBuilder.create();
     }
 
     /**
@@ -539,7 +537,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements ObjObjMap<K,
      * hashing-the-optimization-that-the-world-forgot-or-a-better-alternative-to-integer-modulo/
      * for explanation why this constant is good.
      */
-    protected static final long LONG_PHI_MAGIC = -7046029254386353131L;
+    static final long LONG_PHI_MAGIC = -7046029254386353131L;
 
     /**
      * This field is a {@link java.util.concurrent.locks.StampedLock}-inspired stamp which protects
@@ -671,6 +669,9 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements ObjObjMap<K,
         this.allocateIntermediateSegments = builder.allocateIntermediateSegments();
         this.splitBetweenTwoNewSegments = builder.splitBetweenTwoNewSegments();
         /* endif */
+        /* if Flag doShrink */
+        this.doShrink = builder.doShrink();
+        /* endif */
 
         SegmentsArrayLengthAndNumSegments initialSegmentsArrayLengthAndNumSegments =
                 chooseInitialSegmentsArrayLength(builder);
@@ -687,8 +688,13 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements ObjObjMap<K,
         U.storeFence();
     }
 
-    public long sizeInBytes() {
-        return SIZE_IN_BYTES +
+    /**
+     * Returns the approximate footprint of this {@code SmoothieMap} instance in the heap of the JVM
+     * process, in bytes. Does <i>not</i> include the footprints of the keys and values stored in
+     * the {@code SmoothieMap}.
+     */
+    public final long sizeInBytes() {
+        return smoothieMapClassSizeInBytes() +
                 objectSizeInBytes(segmentsArray) +
                 /* if Interleaved segments Supported intermediateSegments */
                 objectSizeInBytes(isFullCapacitySegmentBitSet) +
@@ -705,6 +711,10 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements ObjObjMap<K,
                 (keySet != null ? KEY_SET__SIZE_IN_BYTES : 0) +
                 (values != null ? VALUES__SIZE_IN_BYTES : 0) +
                 (entrySet != null ? ENTRY_SET__SIZE_IN_BYTES : 0);
+    }
+
+    long smoothieMapClassSizeInBytes() {
+        return SIZE_IN_BYTES;
     }
 
     /**
@@ -804,32 +814,25 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements ObjObjMap<K,
      * @return the hash code for the given key
      * @see #keysEqual(Object, Object)
      */
-    protected long keyHashCode(Object key) {
-        long x = ((long) key.hashCode()) * LONG_PHI_MAGIC;
+    long keyHashCode(Object key) {
+        return defaultKeyHashCode(key);
+    }
+
+    static long defaultKeyHashCode(Object key) {
+        return intToLongHashCode(key.hashCode());
+    }
+
+    static long intToLongHashCode(int intHashCode) {
+        long x = ((long) intHashCode) * LONG_PHI_MAGIC;
         return x ^ (x >>> (Long.SIZE - SEGMENT_LOOKUP_HASH_SHIFT));
     }
 
-    /**
-     * The standard procedure to convert from SmoothieMap's internally used 64-bit hash code to a
-     * 32-bit hash code to be used for methods such as {@link #hashCode()}, implement {@link
-     * Entry#hashCode}, etc.
-     */
-    static int longKeyHashCodeToIntHashCode(long keyHashCode) {
-        return Long.hashCode(keyHashCode);
+    int keyHashCodeForMapAndEntryHashCode(Object key) {
+        return key.hashCode();
     }
 
     ToLongFunction<K> getKeyHashFunction() {
-        return new ToLongFunction<K>() {
-            @Override
-            public long applyAsLong(K key) {
-                return keyHashCode(key);
-            }
-
-            @Override
-            public String toString() {
-                return "default key hash function";
-            }
-        };
+        return DefaultHashFunction.instance();
     }
 
     /**
@@ -872,7 +875,7 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements ObjObjMap<K,
         return Equivalence.defaultEquality();
     }
 
-    int valueHashCode(V value) {
+    int valueHashCodeForMapAndEntryHashCode(V value) {
         return value.hashCode();
     }
 
@@ -4813,6 +4816,24 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements ObjObjMap<K,
     }
 
     @Override
+    public boolean equals(Object obj) {
+        if (obj == null) {
+            return false;
+        }
+        if (!(obj instanceof Map)) {
+            return false;
+        }
+        Map<?, ?> otherMap = (Map<?, ?>) obj;
+        if ((long) otherMap.size() != size) {
+            return false;
+        }
+        return forEachWhile((k, valueInThisMap) -> {
+            @Nullable Object valueInOtherMap = otherMap.get(k);
+            return valueInOtherMap != null && valuesEqual(valueInOtherMap, valueInThisMap);
+        });
+    }
+
+    @Override
     public final int hashCode() {
         int h = 0;
         int modCount = getModCountOpaque();
@@ -4907,6 +4928,18 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements ObjObjMap<K,
         }
         checkModCountOrThrowCme(modCount);
         return found;
+    }
+
+    @Override
+    public final String toString() {
+        if (size == 0) {
+            return "{}";
+        }
+        StringBuilder sb = new StringBuilder("{");
+        forEach((k, v) -> sb.append(k).append('=').append(v).append(", "));
+        sb.setCharAt(sb.length() - 2, '}');
+        sb.setLength(sb.length() - 1);
+        return sb.toString();
     }
 
     @Override
@@ -6466,7 +6499,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements ObjObjMap<K,
                 bitSet = bitSet << iterAllocIndexStep;
                 iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1;
 
-                h += longKeyHashCodeToIntHashCode(map.keyHashCode(key)) ^ map.valueHashCode(value);
+                h += map.keyHashCodeForMapAndEntryHashCode(key) ^
+                        map.valueHashCodeForMapAndEntryHashCode(value);
             }
             return h;
         }
@@ -7194,11 +7228,8 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements ObjObjMap<K,
         int hashCode(SmoothieMap<K, V> map) {
             int h = 0;
             for (Node<K, V> node : delegate.keySet()) {
-                // Note: not using `node.hashCode()` here because although the current
-                // implementation happens to be the same, Node.hashCode() is not bound to be the
-                // same in theory.
-                int keyHashCode = longKeyHashCodeToIntHashCode(node.hash);
-                h += keyHashCode ^ map.valueHashCode(node.getValue());
+                h += map.keyHashCodeForMapAndEntryHashCode(node.getKey()) ^
+                        map.valueHashCodeForMapAndEntryHashCode(node.getValue());
             }
             return h;
         }

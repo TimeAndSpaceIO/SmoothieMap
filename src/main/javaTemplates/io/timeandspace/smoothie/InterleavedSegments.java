@@ -47,7 +47,6 @@ import static io.timeandspace.smoothie.OutboundOverflowCounts.computeOutboundOve
 import static io.timeandspace.smoothie.Segments.valueOffsetFromAllocOffset;
 import static io.timeandspace.smoothie.SmoothieMap.SEGMENT_INTERMEDIATE_ALLOC_CAPACITY;
 import static io.timeandspace.smoothie.SmoothieMap.SEGMENT_MAX_ALLOC_CAPACITY;
-import static io.timeandspace.smoothie.SmoothieMap.longKeyHashCodeToIntHashCode;
 import static io.timeandspace.smoothie.UnsafeUtils.ARRAY_OBJECT_INDEX_SCALE_AS_LONG;
 import static io.timeandspace.smoothie.UnsafeUtils.U;
 import static io.timeandspace.smoothie.UnsafeUtils.minInstanceFieldOffset;
@@ -1052,7 +1051,8 @@ final class InterleavedSegments {
                 bitSet = bitSet << iterAllocIndexStep;
                 iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1;
 
-                h += longKeyHashCodeToIntHashCode(map.keyHashCode(key)) ^ map.valueHashCode(value);
+                h += map.keyHashCodeForMapAndEntryHashCode(key) ^
+                        map.valueHashCodeForMapAndEntryHashCode(value);
             }
             return h;
         }
@@ -1820,7 +1820,8 @@ final class InterleavedSegments {
                 bitSet = bitSet << iterAllocIndexStep;
                 iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1;
 
-                h += longKeyHashCodeToIntHashCode(map.keyHashCode(key)) ^ map.valueHashCode(value);
+                h += map.keyHashCodeForMapAndEntryHashCode(key) ^
+                        map.valueHashCodeForMapAndEntryHashCode(value);
             }
             return h;
         }
