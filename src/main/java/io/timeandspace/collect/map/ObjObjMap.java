@@ -17,10 +17,12 @@
 package io.timeandspace.collect.map;
 
 import io.timeandspace.collect.Equivalence;
+import io.timeandspace.collect.ObjSet;
 import org.checkerframework.checker.nullness.qual.Nullable;
 
 import java.util.Collection;
 import java.util.ConcurrentModificationException;
+import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -34,7 +36,10 @@ public interface ObjObjMap<K, V> extends Map<K, V> {
     /**
      * Returns the equivalence strategy for keys for this map. All methods in the {@link Map}
      * interface which are defined in terms of {@link Object#equals(Object)} equality of key
-     * objects use this Equivalence instead.
+     * objects use this Equivalence instead (including {@link #equals}, {@link #hashCode()}, and
+     * {@link #keySet}'s and {@link #entrySet}'s {@code equals()} and {@code hashCode()}, but
+     * excluding {@code equals()} and {@code hashCode()} of {@link Map.Entry} objects which can be
+     * obtained from the {@link #entrySet}).
      *
      * @return the equivalence strategy for keys for this map
      */
@@ -44,7 +49,9 @@ public interface ObjObjMap<K, V> extends Map<K, V> {
      * Returns the equivalence strategy for values for this map. All methods in the {@link Map}
      * interface which defined in terms of {@link Object#equals(Object)} equality of value objects,
      * such as {@link #containsValue(Object)} and {@link #remove(Object, Object)} use this
-     * Equivalence instead.
+     * Equivalence instead (including {@link #equals}, {@link #hashCode()}, and {@link #entrySet}'s
+     * {@code equals()} and {@code hashCode()}, but excluding {@code equals()} and {@code
+     * hashCode()} of {@link Map.Entry} objects which can be obtained from the {@link #entrySet}).
      *
      * @return the equivalence strategy for values for this map
      */
@@ -71,6 +78,7 @@ public interface ObjObjMap<K, V> extends Map<K, V> {
      * @see #size
      * @see #sizeAsLong
      */
+    @SuppressWarnings("unused")
     default long mappingCount() {
         return sizeAsLong();
     }
@@ -103,20 +111,19 @@ public interface ObjObjMap<K, V> extends Map<K, V> {
     boolean containsEntry(Object key, Object value);
 
     /**
-     * Returns the key object held by this map internally if it contains a mapping for the specified
-     * key (there can be at most one such key), or {@code null} if this map contains no mapping for
-     * the key.
+     * Returns the key object held by this map internally and equivalent to the specified key, if
+     * there is one, or {@code null} if this map contains no mapping for the key.
      *
-     * <p>This method could be used to deduplicate the key objects in the application, to reduce the
-     * memory footprint and make the application to conform to the "most objects die young"
-     * hypothesis that most GC algorithms are optimized for. This method is functionally similar to
-     * {@link String#intern()} and Guava's Interner, but allows to piggy-back a map data structure
-     * already existing in an application.
+     * <p>This method could be used to deduplicate objects in the application, to reduce the memory
+     * footprint and make the application to conform to the "most objects die young" hypothesis that
+     * most GC algorithms are optimized for. This method is functionally similar to {@link
+     * String#intern()} and Guava's Interner, but allows to piggy-back a map data structure which
+     * may already exist in an application.
      *
      * <p>{@link #keySet()}.{@link ObjSet#getInternal(Object) getInternal(key)} delegates to this
      * method.
      *
-     * @param key they key whose equivalent held by this map internally is to be returned
+     * @param key the key whose equivalent held by this map internally is to be returned
      * @return the map-internal equivalent of the specified key, or {@code null} if the map contains
      * no mapping for the specified key
      */
@@ -335,8 +342,8 @@ public interface ObjObjMap<K, V> extends Map<K, V> {
      * the action throws an exception. Actions are performed in the order of {@linkplain #entrySet()
      * entry set} iteration. Exceptions thrown by the action are relayed to the caller.
      *
-     * <p>The entries will be processed in the same order as the entry set iterator, and {@link
-     * #forEachWhile(BiPredicate)} order.
+     * <p>The entries will be processed in the same order as they appear the entry set's iterator
+     * and {@link #forEachWhile(BiPredicate)}.
      *
      * @param action The action to be performed for each entry
      * @throws NullPointerException if the specified action is null
@@ -352,14 +359,14 @@ public interface ObjObjMap<K, V> extends Map<K, V> {
      * processed or the predicate returns false for some entry, or throws an Exception. Exceptions
      * thrown by the predicate are relayed to the caller.
      *
-     * <p>The entries will be processed in the same order as the entry set iterator, and {@link
-     * #forEach(BiConsumer)} order.
+     * <p>The entries will be processed in the same order as they appear in the entry set's iterator
+     * and {@link #forEach(BiConsumer)}.
      *
      * <p>If the map is empty, this method returns {@code true} immediately.
      *
      * @param predicate the predicate to be checked for each entry
-     * @return {@code true} if the predicate returned {@code true} for all entries of the map,
-     * {@code false} if it returned {@code false} for some entry
+     * @return {@code true} if the map is empty, or if the predicate returned {@code true} for all
+     * entries of the map, {@code false} if the predicate returned {@code false} for some entry
      * @throws NullPointerException if the specified predicate is null
      * @throws ConcurrentModificationException if any structural modification of the map (new entry
      * insertion or an entry removal) is detected during iteration
@@ -437,13 +444,19 @@ public interface ObjObjMap<K, V> extends Map<K, V> {
      * {@code remove} operation), {@link ConcurrentModificationException} is thrown.
      *
      * <p>The set supports element removal, which removes the corresponding mapping from the map,
-     * via the {@code Iterator.remove}, {@code Set.remove}, {@code removeAll}, {@code retainAll},
-     * and {@code clear} operations. These operations and queries ({@code contains()}, {@code
-     * containsAll()}) respect the map's {@link #keyEquivalence()}, but set's own {@code equals()}
-     * and {@code hashCode()} use built-in Java object equality and hash code for the key objects.
-     * TODO ensure this last guarantee
+     * via the {@link Iterator#remove} (optionally), {@link Set#remove}, {@link Set#removeAll},
+     * {@link Set#retainAll}, and {@link Set#clear} operations.
      *
-     * <p>The key set does not support the {@code add} or {@code addAll} operations.
+     * <p>{@link Set#remove}, {@link Set#contains}, and {@link Set#containsAll} operations on the
+     * returned set as well as key set's own {@code equals()} and {@code hashCode()} respect the
+     * map's {@link #keyEquivalence()}. When this map has a custom {@link #keyEquivalence()}, {@code
+     * equals()} on the key set works as follows: another object is considered equal to the key set
+     * if it is a {@link Set} which has the same size as this map and for all elements in another
+     * set, {@code keySet.contains(elementOfAnotherSet)} returns true. {@code hashCode()} on the key
+     * set returns a sum of results of calls to {@link Equivalence#hash} on all elements in the key
+     * set.
+     *
+     * <p>The key set does not support the {@link Set#add} and {@link Set#addAll} operations.
      *
      * <p>The set is created the first time this method is called, and returned in response to all
      * subsequent calls. No synchronization is performed, so there is a slight chance that multiple
@@ -452,7 +465,7 @@ public interface ObjObjMap<K, V> extends Map<K, V> {
      * @return a set view of the keys contained in this map
      */
     @Override
-    Set<K> keySet();
+    ObjSet<K> keySet();
 
     /**
      * Returns a {@link Collection} view of the values contained in this map. The collection is
@@ -463,9 +476,11 @@ public interface ObjObjMap<K, V> extends Map<K, V> {
      * own {@code remove} operation), {@link ConcurrentModificationException} is thrown.
      *
      * <p>The collection supports element removal, which removes the corresponding mapping from the
-     * map, via the {@code Iterator.remove}, {@code Collection.remove}, {@code removeAll}, {@code
-     * retainAll} and {@code clear} operations. These operations and queries ({@code contains()},
-     * {@code containsAll()}) respect the map's {@link #valueEquivalence()}.
+     * map, via the {@link Iterator#remove} (optionally), {@link Collection#remove}, {@link
+     * Collection#removeAll}, {@link Collection#retainAll} and {@link Collection#clear} operations.
+     *
+     * <p>{@link Collection#remove}, {@link Collection#contains}, and {@link Collection#containsAll}
+     * on the returned collection respect the map's {@link #valueEquivalence()}.
      *
      * <p>The values collection does not support the {@code add} or {@code addAll} operations.
      *
@@ -487,16 +502,25 @@ public interface ObjObjMap<K, V> extends Map<K, V> {
      * {@code remove} operation), {@link ConcurrentModificationException} is thrown.
      *
      * <p>The set supports element removal, which removes the corresponding mapping from the map,
-     * via the {@code Iterator.remove}, {@code Set.remove}, {@code removeAll}, {@code retainAll} and
-     * {@code clear} operations. These operations respect the map's {@link #keyEquivalence()} and
-     * {@link #valueEquivalence()}, but set's own {@code equals()} and {@code hashCode()}, as well
-     * as implementations of {@code equals()} and {@code hashCode()} for the entries returned by the
-     * entry set use built-in Java object equality and hash code for the map's key and value
-     * objects.
-     * TODO ensure this last guarantee
-     * TODO assess viability; compare with Koloboke
+     * via the {@link Iterator#remove} (optionally), {@link Set#remove}, {@link Set#removeAll},
+     * {@link Set#retainAll}, and {@link Set#clear} operations.
      *
-     * <p>The entry set does not support the {@code add} or {@code addAll} operations.
+     * <p>{@link Set#remove}, {@link Set#contains}, and {@link Set#containsAll} operations on the
+     * returned set as well as entry set's own {@code equals()} and {@code hashCode()} respect the
+     * map's {@link #keyEquivalence()} and {@link #valueEquivalence()}, but the implementations of
+     * {@code equals()} and {@code hashCode()} for the {@link Map.Entry} objects which can be
+     * obtained from the set use built-in Java object equality and hash code for the map's keys and
+     * values.
+     *
+     * <p>When this map has a custom {@link #keyEquivalence()} or {@link #valueEquivalence()},
+     * {@code equals()} on the entry set works as follows: another object is considered equal to the
+     * entry set if it is a {@link Set} which has the same size as this map; all elements in another
+     * set are {@link Map.Entry} objects; and for all the entries in another set, {@code
+     * thisMap.containsEntry(entryFromAnotherSet.getKey(), entryFromAnotherSet.getValue())} returns
+     * true. {@code hashCode()} on the entry set is the same as on the map itself, see {@link
+     * #hashCode()}.
+     *
+     * <p>The entry set does not support the {@code Set#add} and {@link Set#addAll} operations.
      *
      * <p>The set is created the first time this method is called, and returned in response to all
      * subsequent calls. No synchronization is performed, so there is a slight chance that multiple
@@ -505,5 +529,26 @@ public interface ObjObjMap<K, V> extends Map<K, V> {
      * @return a set view of the mappings contained in this map
      */
     @Override
-    Set<Entry<K, V>> entrySet();
+    ObjSet<Entry<K, V>> entrySet();
+
+    /**
+     * Returns true if the other object is a {@link Map}; this map and the given map have the same
+     * {@linkplain #sizeAsLong size}; and for all entries in the other map, {@link #containsEntry
+     * containsEntry(e.getKey(), e.getValue())} called on this map returns true.
+     *
+     * <p>Note that the specification above means that {@code equals()} depends on {@link
+     * #keyEquivalence()} and {@link #valueEquivalence()} of this map, if they are custom. This may
+     * be inconsistent with the general {@link Map#equals} contract.
+     */
+    @Override
+    boolean equals(Object o);
+
+    /**
+     * Returns a sum of the following expressions: {@code keyEquivalence().hash(key) ^
+     * valueEquivalence().hash(value)} applied to all entries in this map. Note that if this map has
+     * a custom {@link #keyEquivalence()} or {@link #valueEquivalence()}, the resulting hash code
+     * may be inconsistent with the general {@link Map#hashCode()} contract.
+     */
+    @Override
+    int hashCode();
 }

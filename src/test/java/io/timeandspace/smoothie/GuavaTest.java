@@ -69,7 +69,7 @@ public class GuavaTest extends TestCase {
                 Map.Entry e = (Map.Entry) obj;
                 map.put((String) e.getKey(), (String) e.getValue());
             }
-            return map.asMapWithMutableIteratorsWithUniqueEntries();
+            return map.asMapWithMutableIterators();
         }
 
         @Override

@@ -116,7 +116,15 @@ tasks.withType(JavaCompile) {
 //}
 
 tasks.withType(io.timeandspace.jpsg.JpsgTask) {
+    // Extra sanity/state checks throughout the code, sometimes relatively heavyweight. Should be
+    // enabled primarily for debugging purposes.
     with 'Disabled extraChecks'
+    // Extra checks that keys and values are non-null specifically upon reading from the
+    // SmoothieMap's memory. They might be nearly (or completely) free if a certain combination of
+    // JVM and GC algorithm doesn't access object's memory on a null check (see
+    // [Protecting null comparisons]). On the other hand, the benefit from enabling these checks is
+    // also small - perhaps just replacing NPEs with CMEs and throwing them earlier, which may make
+    // investigation of some bugs easier.
     with 'Disabled extraConcurrencyChecks'
     with 'Tracking hashCodeDistribution'
     with 'Flag doShrink'

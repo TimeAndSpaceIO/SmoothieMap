@@ -18,9 +18,8 @@ package io.timeandspace.smoothie;
 
 
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
-import org.jetbrains.annotations.Contract;
-
 import org.checkerframework.checker.nullness.qual.Nullable;
+import org.jetbrains.annotations.Contract;
 
 import java.util.ConcurrentModificationException;
 

@@ -32,7 +32,7 @@ final class SmoothieMapWithCustomKeyAndValueEquivalences<K, V>
     }
 
     @Override
-    int valueHashCodeForMapAndEntryHashCode(Object value) {
+    int valueHashCodeForAggregateHashCodes(Object value) {
         //noinspection unchecked
         return valueEquivalence.hash((V) value);
     }

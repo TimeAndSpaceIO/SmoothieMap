@@ -4,6 +4,11 @@ import io.timeandspace.collect.Equivalence;
 
 import static io.timeandspace.smoothie.ObjectSize.classSizeInBytes;
 
+/**
+ * If a custom key has function is not specified in the {@link SmoothieMapBuilder}, there is another
+ * specialization possible which overrides {@link #keyHashCode} directly without an indirection via
+ * a {@link java.util.function.ToLongFunction} hash function object. TODO implement this
+ */
 class SmoothieMapWithCustomKeyEquivalence<K, V> extends SmoothieMapWithCustomKeyHashFunction<K, V> {
     private static final long SIZE_IN_BYTES =
             classSizeInBytes(SmoothieMapWithCustomKeyEquivalence.class);
@@ -27,7 +32,7 @@ class SmoothieMapWithCustomKeyEquivalence<K, V> extends SmoothieMapWithCustomKey
     }
 
     @Override
-    int keyHashCodeForMapAndEntryHashCode(Object key) {
+    int keyHashCodeForAggregateHashCodes(Object key) {
         //noinspection unchecked
         return keyEquivalence.hash((K) key);
     }

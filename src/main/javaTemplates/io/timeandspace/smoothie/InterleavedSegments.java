@@ -9,6 +9,7 @@ import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 import java.util.function.BiPredicate;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 
 import static io.timeandspace.smoothie.BitSetAndState.clearBitSet;
 import static io.timeandspace.smoothie.BitSetAndState.extractBitSetForIteration;
@@ -17,13 +18,6 @@ import static io.timeandspace.smoothie.BitSetAndState.makeNewBitSetAndState;
 import static io.timeandspace.smoothie.BitSetAndState.segmentOrder;
 import static io.timeandspace.smoothie.BitSetAndState.segmentSize;
 import static io.timeandspace.smoothie.BitSetAndState.setAllocBit;
-// comment // Dummy templating to make this class "compilable" in IntelliJ before code generation
-/**/
-/* if Continuous segments */
-import static io.timeandspace.smoothie.ContinuousSegment_BitSetAndStateArea.getOutboundOverflowCountsPerGroup;
-/* elif Interleaved segments //
-import static io.timeandspace.smoothie.InterleavedSegment_BitSetAndStateArea.getOutboundOverflowCountsPerGroup;
-// endif */
 import static io.timeandspace.smoothie.HashTable.EMPTY_DATA_GROUP;
 import static io.timeandspace.smoothie.HashTable.GROUP_SLOTS;
 import static io.timeandspace.smoothie.HashTable.HASH_TABLE_GROUPS;
@@ -938,10 +932,10 @@ final class InterleavedSegments {
 
         /**
          * Method cloned in FullCapacitySegment and IntermediateCapacitySegment: this method is an
-         * exact clone of {@link IntermediateCapacitySegment#aggregateStats}. The effective
-         * difference between these methods is that they call to different static methods with the
-         * same names defined in FullCapacitySegment and {@link IntermediateCapacitySegment}
-         * respectively.
+         * exact textual clone of {@link IntermediateCapacitySegment#aggregateStats}. The effective
+         * (bytecode) difference between these methods is that they call to different static methods
+         * with the same names defined in FullCapacitySegment and {@link
+         * IntermediateCapacitySegment} respectively.
          */
         @Override
         void aggregateStats(SmoothieMap<K, V> map, OrdinarySegmentStats ordinarySegmentStats) {
@@ -1029,16 +1023,7 @@ final class InterleavedSegments {
         int hashCode(SmoothieMap<K, V> map) {
             int h = 0;
             long bitSet = extractBitSetForIteration(bitSetAndState);
-            // Iteration in bulk segment methods:
-            // 1. Using [Branchless entries iteration] here rather than checking every bit of the
-            // bitSet because the predictability of the bit checking branch would be the same as for
-            // [Branchless entries iteration in iterators]. However, bulk iteration's execution
-            // model may appear to be more or less favorable for consuming the cost of
-            // numberOfLeadingZeros() in the CPU pipeline, so the tradeoff should be evaluated
-            // separately from iterators. TODO compare the approaches
-            // 2. [Backward entries iteration]
-            // 3. [Int-indexed loop to avoid a safepoint poll].
-            // TODO check that Hotspot actually removes a safepoint poll for this unusual loop shape
+            // [Iteration in bulk segment methods]
             for (int iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1,
                  iterAllocIndex = Long.SIZE;
                  (iterAllocIndex -= iterAllocIndexStep) >= 0;) {
@@ -1051,8 +1036,35 @@ final class InterleavedSegments {
                 bitSet = bitSet << iterAllocIndexStep;
                 iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1;
 
-                h += map.keyHashCodeForMapAndEntryHashCode(key) ^
-                        map.valueHashCodeForMapAndEntryHashCode(value);
+                h += map.keyHashCodeForAggregateHashCodes(key) ^
+                        map.valueHashCodeForAggregateHashCodes(value);
+            }
+            return h;
+        }
+
+        /**
+         * Mirror of {@link SmoothieMap.Segment#keySetHashCode}.
+         *
+         * [Method cloned in FullCapacitySegment and IntermediateCapacitySegment]
+         */
+        @Override
+        int keySetHashCode(SmoothieMap.KeySet<K, V> keySet) {
+            SmoothieMap<K, V> map = keySet.smoothie;
+            int h = 0;
+            long bitSet = extractBitSetForIteration(bitSetAndState);
+            // [Iteration in bulk segment methods]
+            for (int iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1,
+                 iterAllocIndex = Long.SIZE;
+                 (iterAllocIndex -= iterAllocIndexStep) >= 0;) {
+                long iterAllocOffset = allocOffset((long) iterAllocIndex);
+                K key = readKeyAtOffset(this, iterAllocOffset);
+
+                // TODO check what is better - these two statements before or after
+                //  the hash code computation, or one before and one after, or both after?
+                bitSet = bitSet << iterAllocIndexStep;
+                iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1;
+
+                h += map.keyHashCodeForAggregateHashCodes(key);
             }
             return h;
         }
@@ -1083,6 +1095,34 @@ final class InterleavedSegments {
         }
 
         /**
+         * Mirror of {@link SmoothieMap.Segment#forEachWhile}.
+         *
+         * [Method cloned in FullCapacitySegment and IntermediateCapacitySegment]
+         */
+        @Override
+        boolean forEachWhile(BiPredicate<? super K, ? super V> predicate) {
+            long bitSet = extractBitSetForIteration(bitSetAndState);
+            // [Iteration in bulk segment methods]
+            for (int iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1,
+                 iterAllocIndex = Long.SIZE;
+                 (iterAllocIndex -= iterAllocIndexStep) >= 0;) {
+                long iterAllocOffset = allocOffset((long) iterAllocIndex);
+                K key = readKeyAtOffset(this, iterAllocOffset);
+                V value = readValueAtOffset(this, iterAllocOffset);
+
+                // TODO check what is better - these two statements before or after
+                //  the predicate check, or one before and one after, or both after?
+                bitSet = bitSet << iterAllocIndexStep;
+                iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1;
+
+                if (!predicate.test(key, value)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /**
          * Mirror of {@link SmoothieMap.Segment#forEachKey}.
          *
          * [Method cloned in FullCapacitySegment and IntermediateCapacitySegment]
@@ -1104,6 +1144,33 @@ final class InterleavedSegments {
 
                 action.accept(key);
             }
+        }
+
+        /**
+         * Mirror of {@link SmoothieMap.Segment#forEachKeyWhile}.
+         *
+         * [Method cloned in FullCapacitySegment and IntermediateCapacitySegment]
+         */
+        @Override
+        boolean forEachKeyWhile(Predicate<? super K> predicate) {
+            long bitSet = extractBitSetForIteration(bitSetAndState);
+            // [Iteration in bulk segment methods]
+            for (int iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1,
+                 iterAllocIndex = Long.SIZE;
+                 (iterAllocIndex -= iterAllocIndexStep) >= 0;) {
+                long iterAllocOffset = allocOffset((long) iterAllocIndex);
+                K key = readKeyAtOffset(this, iterAllocOffset);
+
+                // TODO check what is better - these two statements before or after
+                //  the predicate check, or one before and one after, or both after?
+                bitSet = bitSet << iterAllocIndexStep;
+                iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1;
+
+                if (!predicate.test(key)) {
+                    return false;
+                }
+            }
+            return true;
         }
 
         /**
@@ -1131,27 +1198,26 @@ final class InterleavedSegments {
         }
 
         /**
-         * Mirror of {@link SmoothieMap.Segment#forEachWhile}.
+         * Mirror of {@link SmoothieMap.Segment#forEachValueWhile}.
          *
          * [Method cloned in FullCapacitySegment and IntermediateCapacitySegment]
          */
         @Override
-        boolean forEachWhile(BiPredicate<? super K, ? super V> predicate) {
+        boolean forEachValueWhile(Predicate<? super V> predicate) {
             long bitSet = extractBitSetForIteration(bitSetAndState);
             // [Iteration in bulk segment methods]
             for (int iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1,
                  iterAllocIndex = Long.SIZE;
                  (iterAllocIndex -= iterAllocIndexStep) >= 0;) {
                 long iterAllocOffset = allocOffset((long) iterAllocIndex);
-                K key = readKeyAtOffset(this, iterAllocOffset);
                 V value = readValueAtOffset(this, iterAllocOffset);
 
                 // TODO check what is better - these two statements before or after
-                //  the action, or one before and one after, or both after?
+                //  the predicate check, or one before and one after, or both after?
                 bitSet = bitSet << iterAllocIndexStep;
                 iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1;
 
-                if (!predicate.test(key, value)) {
+                if (!predicate.test(value)) {
                     return false;
                 }
             }
@@ -1798,16 +1864,7 @@ final class InterleavedSegments {
         int hashCode(SmoothieMap<K, V> map) {
             int h = 0;
             long bitSet = extractBitSetForIteration(bitSetAndState);
-            // Iteration in bulk segment methods:
-            // 1. Using [Branchless entries iteration] here rather than checking every bit of the
-            // bitSet because the predictability of the bit checking branch would be the same as for
-            // [Branchless entries iteration in iterators]. However, bulk iteration's execution
-            // model may appear to be more or less favorable for consuming the cost of
-            // numberOfLeadingZeros() in the CPU pipeline, so the tradeoff should be evaluated
-            // separately from iterators. TODO compare the approaches
-            // 2. [Backward entries iteration]
-            // 3. [Int-indexed loop to avoid a safepoint poll].
-            // TODO check that Hotspot actually removes a safepoint poll for this unusual loop shape
+            // [Iteration in bulk segment methods]
             for (int iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1,
                  iterAllocIndex = Long.SIZE;
                  (iterAllocIndex -= iterAllocIndexStep) >= 0;) {
@@ -1820,8 +1877,35 @@ final class InterleavedSegments {
                 bitSet = bitSet << iterAllocIndexStep;
                 iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1;
 
-                h += map.keyHashCodeForMapAndEntryHashCode(key) ^
-                        map.valueHashCodeForMapAndEntryHashCode(value);
+                h += map.keyHashCodeForAggregateHashCodes(key) ^
+                        map.valueHashCodeForAggregateHashCodes(value);
+            }
+            return h;
+        }
+
+        /**
+         * Mirror of {@link SmoothieMap.Segment#keySetHashCode}.
+         *
+         * [Method cloned in FullCapacitySegment and IntermediateCapacitySegment]
+         */
+        @Override
+        int keySetHashCode(SmoothieMap.KeySet<K, V> keySet) {
+            SmoothieMap<K, V> map = keySet.smoothie;
+            int h = 0;
+            long bitSet = extractBitSetForIteration(bitSetAndState);
+            // [Iteration in bulk segment methods]
+            for (int iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1,
+                 iterAllocIndex = Long.SIZE;
+                 (iterAllocIndex -= iterAllocIndexStep) >= 0;) {
+                long iterAllocOffset = allocOffset((long) iterAllocIndex);
+                K key = readKeyAtOffset(this, iterAllocOffset);
+
+                // TODO check what is better - these two statements before or after
+                //  the hash code computation, or one before and one after, or both after?
+                bitSet = bitSet << iterAllocIndexStep;
+                iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1;
+
+                h += map.keyHashCodeForAggregateHashCodes(key);
             }
             return h;
         }
@@ -1852,6 +1936,34 @@ final class InterleavedSegments {
         }
 
         /**
+         * Mirror of {@link SmoothieMap.Segment#forEachWhile}.
+         *
+         * [Method cloned in FullCapacitySegment and IntermediateCapacitySegment]
+         */
+        @Override
+        boolean forEachWhile(BiPredicate<? super K, ? super V> predicate) {
+            long bitSet = extractBitSetForIteration(bitSetAndState);
+            // [Iteration in bulk segment methods]
+            for (int iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1,
+                 iterAllocIndex = Long.SIZE;
+                 (iterAllocIndex -= iterAllocIndexStep) >= 0;) {
+                long iterAllocOffset = allocOffset((long) iterAllocIndex);
+                K key = readKeyAtOffset(this, iterAllocOffset);
+                V value = readValueAtOffset(this, iterAllocOffset);
+
+                // TODO check what is better - these two statements before or after
+                //  the predicate check, or one before and one after, or both after?
+                bitSet = bitSet << iterAllocIndexStep;
+                iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1;
+
+                if (!predicate.test(key, value)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /**
          * Mirror of {@link SmoothieMap.Segment#forEachKey}.
          *
          * [Method cloned in FullCapacitySegment and IntermediateCapacitySegment]
@@ -1873,6 +1985,33 @@ final class InterleavedSegments {
 
                 action.accept(key);
             }
+        }
+
+        /**
+         * Mirror of {@link SmoothieMap.Segment#forEachKeyWhile}.
+         *
+         * [Method cloned in FullCapacitySegment and IntermediateCapacitySegment]
+         */
+        @Override
+        boolean forEachKeyWhile(Predicate<? super K> predicate) {
+            long bitSet = extractBitSetForIteration(bitSetAndState);
+            // [Iteration in bulk segment methods]
+            for (int iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1,
+                 iterAllocIndex = Long.SIZE;
+                 (iterAllocIndex -= iterAllocIndexStep) >= 0;) {
+                long iterAllocOffset = allocOffset((long) iterAllocIndex);
+                K key = readKeyAtOffset(this, iterAllocOffset);
+
+                // TODO check what is better - these two statements before or after
+                //  the predicate check, or one before and one after, or both after?
+                bitSet = bitSet << iterAllocIndexStep;
+                iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1;
+
+                if (!predicate.test(key)) {
+                    return false;
+                }
+            }
+            return true;
         }
 
         /**
@@ -1900,27 +2039,26 @@ final class InterleavedSegments {
         }
 
         /**
-         * Mirror of {@link SmoothieMap.Segment#forEachWhile}.
+         * Mirror of {@link SmoothieMap.Segment#forEachValueWhile}.
          *
          * [Method cloned in FullCapacitySegment and IntermediateCapacitySegment]
          */
         @Override
-        boolean forEachWhile(BiPredicate<? super K, ? super V> predicate) {
+        boolean forEachValueWhile(Predicate<? super V> predicate) {
             long bitSet = extractBitSetForIteration(bitSetAndState);
             // [Iteration in bulk segment methods]
             for (int iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1,
                  iterAllocIndex = Long.SIZE;
                  (iterAllocIndex -= iterAllocIndexStep) >= 0;) {
                 long iterAllocOffset = allocOffset((long) iterAllocIndex);
-                K key = readKeyAtOffset(this, iterAllocOffset);
                 V value = readValueAtOffset(this, iterAllocOffset);
 
                 // TODO check what is better - these two statements before or after
-                //  the action, or one before and one after, or both after?
+                //  the predicate check, or one before and one after, or both after?
                 bitSet = bitSet << iterAllocIndexStep;
                 iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1;
 
-                if (!predicate.test(key, value)) {
+                if (!predicate.test(value)) {
                     return false;
                 }
             }

@@ -19,8 +19,10 @@ package io.timeandspace.smoothie;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.errorprone.annotations.DoNotCall;
 import io.timeandspace.collect.Equivalence;
+import io.timeandspace.collect.ObjCollection;
 import io.timeandspace.collect.map.KeyValue;
 import io.timeandspace.collect.map.ObjObjMap;
+import io.timeandspace.collect.ObjSet;
 import io.timeandspace.smoothie.InterleavedSegments.FullCapacitySegment;
 import io.timeandspace.smoothie.InterleavedSegments.IntermediateCapacitySegment;
 import org.checkerframework.checker.index.qual.NonNegative;
@@ -33,8 +35,6 @@ import org.jetbrains.annotations.Contract;
 
 import java.io.Serializable;
 import java.util.AbstractCollection;
-import java.util.AbstractMap;
-import java.util.AbstractSet;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -44,13 +44,17 @@ import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Objects;
 import java.util.Set;
+import java.util.Spliterator;
+import java.util.Spliterators;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 import java.util.function.BiPredicate;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.function.ToLongFunction;
 
 import static io.timeandspace.smoothie.BitSetAndState.SEGMENT_ORDER_UNIT;
@@ -657,9 +661,9 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
     private byte maxSegmentOrder;
     /* endif */
 
-    private @MonotonicNonNull Set<K> keySet;
+    private @MonotonicNonNull ObjSet<K> keySet;
     private @MonotonicNonNull Collection<V> values;
-    private @MonotonicNonNull Set<Entry<K, V>> entrySet;
+    private @MonotonicNonNull ObjSet<Entry<K, V>> entrySet;
 
     /**
      * Creates a new, empty {@code SmoothieMap}.
@@ -827,7 +831,11 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         return x ^ (x >>> (Long.SIZE - SEGMENT_LOOKUP_HASH_SHIFT));
     }
 
-    int keyHashCodeForMapAndEntryHashCode(Object key) {
+    /**
+     * To be used in {@link #hashCode()}, {@link EntrySet#hashCode()} and {@link KeySet#hashCode()}.
+     * @see #valueHashCodeForAggregateHashCodes
+     */
+    int keyHashCodeForAggregateHashCodes(Object key) {
         return key.hashCode();
     }
 
@@ -875,7 +883,11 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         return Equivalence.defaultEquality();
     }
 
-    int valueHashCodeForMapAndEntryHashCode(V value) {
+    /**
+     * To be used in {@link #hashCode()} and {@link EntrySet#hashCode()}.
+     * @see #keyHashCodeForAggregateHashCodes
+     */
+    int valueHashCodeForAggregateHashCodes(V value) {
         return value.hashCode();
     }
 
@@ -4827,10 +4839,24 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         if ((long) otherMap.size() != size) {
             return false;
         }
-        return forEachWhile((k, valueInThisMap) -> {
-            @Nullable Object valueInOtherMap = otherMap.get(k);
-            return valueInOtherMap != null && valuesEqual(valueInOtherMap, valueInThisMap);
-        });
+        if (otherMap instanceof ObjObjMap) {
+            return ((ObjObjMap<?, ?>) otherMap).forEachWhile(
+                    (@Nullable Object otherKey, @Nullable Object otherValue) ->
+                            otherKey != null && otherValue != null &&
+                                    containsEntry(otherKey, otherValue)
+            );
+        }
+        // Cannot call forEachWhile() on this map and test if the entry from this map is in the
+        // other map to conform to the contract of ObjObjMap.equals(), which specifies the usage of
+        // containsEntry() on the receiver map to respect its keyEquivalence and valueEquivalence.
+        for (Entry<?, ?> e : otherMap.entrySet()) {
+            @Nullable Object otherKey = e.getKey();
+            @Nullable Object otherValue = e.getValue();
+            if (otherKey == null || otherValue == null || !containsEntry(otherKey, otherValue)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     @Override
@@ -5052,18 +5078,11 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
 
     //region Collection views: keySet(), values(), entrySet()
 
-    @EnsuresNonNull("keySet")
-    @Override
-    public final Set<K> keySet() {
-        @MonotonicNonNull Set<K> ks = keySet;
-        return ks != null ? ks : (keySet = new KeySet<>(this));
-    }
-
-    /** TODO don't extend AbstractSet */
-    static class KeySet<K, V> extends AbstractSet<K> {
+    private abstract static class AbstractMapView<T, K, V> extends AbstractCollection<T>
+            implements ObjCollection<T> {
         final SmoothieMap<K, V> smoothie;
 
-        KeySet(SmoothieMap<K, V> smoothie) {
+        private AbstractMapView(SmoothieMap<K, V> smoothie) {
             this.smoothie = smoothie;
         }
 
@@ -5073,13 +5092,34 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         }
 
         @Override
-        public void clear() {
-            smoothie.clear();
+        public long sizeAsLong() {
+            return smoothie.sizeAsLong();
         }
 
         @Override
-        public Iterator<K> iterator() {
-            return new ImmutableKeyIterator<>(smoothie);
+        public void clear() {
+            smoothie.clear();
+        }
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Calling {@link Set#iterator} on the key set returns an iterator that may not support
+     * {@link Iterator#remove}. Use {@link #asMapWithMutableIterators()}{@code .keySet()} or {@link
+     * #mutableKeyIterator()} methods instead if you need to remove entries while iterating a
+     * SmoothieMap.
+     */
+    @EnsuresNonNull("keySet")
+    @Override
+    public final ObjSet<K> keySet() {
+        @MonotonicNonNull ObjSet<K> ks = keySet;
+        return ks != null ? ks : (keySet = new KeySet<>(this));
+    }
+
+    static class KeySet<K, V> extends AbstractMapView<K, K, V> implements ObjSet<K> {
+        KeySet(SmoothieMap<K, V> smoothie) {
+            super(smoothie);
         }
 
         @Override
@@ -5088,10 +5128,54 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         }
 
         @Override
+        public @Nullable K getInternal(K k) {
+            return smoothie.getInternalKey(k);
+        }
+
+        @Override
         public boolean remove(Object key) {
             // TODO specialize to avoid access into value's memory: see
             //  [Protecting null comparisons].
             return smoothie.remove(key) != null;
+        }
+
+        @Override
+        public Iterator<K> iterator() {
+            return immutableIterator();
+        }
+
+        Iterator<K> immutableIterator() {
+            return new ImmutableKeyIterator<>(smoothie);
+        }
+
+        @Override
+        public Spliterator<K> spliterator() {
+            // TODO implement spliterator that supports splitting
+            int characteristics = Spliterator.DISTINCT;
+            return Spliterators.spliterator(immutableIterator(), smoothie.size, characteristics);
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return smoothie.equalsForSetViews(this, o);
+        }
+
+        @Override
+        public int hashCode() {
+            int h = 0;
+            int modCount = smoothie.getModCountOpaque();
+            Object[] segmentsArray = smoothie.getNonNullSegmentsArrayOrThrowIse();
+            int segmentArrayLength = segmentsArray.length;
+            int segmentsArrayOrder = order(segmentArrayLength);
+            Segment<K, V> segment;
+            for (int segmentIndex = 0; segmentIndex >= 0;
+                 segmentIndex = nextSegmentIndex(
+                         segmentArrayLength, segmentsArrayOrder, segmentIndex, segment)) {
+                segment = segmentCheckedByIndex(segmentsArray, segmentIndex);
+                h += segment.keySetHashCode(this);
+            }
+            smoothie.checkModCountOrThrowCme(modCount);
+            return h;
         }
 
         @Override
@@ -5112,14 +5196,39 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         }
 
         @Override
+        public boolean forEachWhile(Predicate<? super K> predicate) {
+            checkNonNull(predicate);
+            boolean interrupted = false;
+            int modCount = smoothie.getModCountOpaque();
+            Object[] segmentsArray = smoothie.getNonNullSegmentsArrayOrThrowIse();
+            int segmentArrayLength = segmentsArray.length;
+            int segmentsArrayOrder = order(segmentArrayLength);
+            Segment<K, V> segment;
+            for (int segmentIndex = 0; segmentIndex >= 0;
+                 segmentIndex = nextSegmentIndex(
+                         segmentArrayLength, segmentsArrayOrder, segmentIndex, segment)) {
+                segment = segmentCheckedByIndex(segmentsArray, segmentIndex);
+                if (!segment.forEachKeyWhile(predicate)) {
+                    interrupted = true;
+                    break;
+                }
+            }
+            smoothie.checkModCountOrThrowCme(modCount);
+            return !interrupted;
+        }
+
+        @Override
         public boolean removeAll(Collection<?> c) {
-            if (size() > c.size() &&
-                    // This condition ensures keyHashCode() is not overridden.
-                    // Otherwise this optimization might make the removeAll() impl violating
-                    // the contract, "remove all elements from this, containing in the given
-                    // collection".
-                    // TODO review with the new SmoothieMap extension model.
-                    smoothie.getClass() == SmoothieMap.class) {
+            if (sizeAsLong() > (long) c.size() &&
+                    // Optimization of removeAll() in a set view: removeAll()'s contract--"remove
+                    // all elements from this, containing in the given collection"--leaves ambiguity
+                    // about the proper implementation when either of the collections, the receiver
+                    // or the argument, has a non-standard equality. Here, we take the logic of
+                    // IdentityHashMap.KeySet.removeAll() (as implemented in OpenJDK 11), which just
+                    // abandons the AbstractSet's reverse iteration optimization of removeAll() if
+                    // the key equivalence in this SmoothieMap is non-standard, not trying to do
+                    // anything smarter than that though.
+                    smoothie.keyEquivalence().equals(Equivalence.defaultEquality())) {
                 for (Iterator<?> it = c.iterator(); it.hasNext();) {
                     if (remove(it.next())) {
                         // Employing streaming method forEachRemaining() which may be optimized
@@ -5144,8 +5253,28 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
             checkNonNull(c);
             return smoothie.removeIf((k, v) -> !c.contains(k));
         }
+
+        @Override
+        public boolean removeIf(Predicate<? super K> filter) {
+            checkNonNull(filter);
+            return smoothie.removeIf((k, v) -> filter.test(k));
+        }
     }
 
+    /**
+     * Returns an iterator over the keys in this SmoothieMap that supports {@link Iterator#remove}
+     * operation. This method may be usable because iterator of {@link #keySet()} may not support
+     * {@link Iterator#remove}.
+     */
+    @SuppressWarnings("unused") // Public API method, TODO add tests to make it used
+    public Iterator<K> mutableKeyIterator() {
+        return new MutableKeyIterator<>(this);
+    }
+
+    /**
+     * This class could also override {@link #toArray()} methods to use a more efficient immutable
+     * iterator.
+     */
     static final class KeySetWithMutableIterator<K, V> extends KeySet<K, V> {
         KeySetWithMutableIterator(SmoothieMap<K, V> smoothie) {
             super(smoothie);
@@ -5157,6 +5286,14 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Calling {@link Collection#iterator} on the values view returns an iterator that may not
+     * support {@link Iterator#remove}. Use {@link #asMapWithMutableIterators()}{@code .values()} or
+     * {@link #mutableValueIterator()} methods instead if you need to remove entries while iterating
+     * a SmoothieMap.
+     */
     @EnsuresNonNull("values")
     @Override
     public final Collection<V> values() {
@@ -5164,32 +5301,46 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         return vs != null ? vs : (values = new Values<>(this));
     }
 
-    /** TODO don't extend AbstractCollection */
-    static class Values<K, V> extends AbstractCollection<V> {
-        final SmoothieMap<K, V> smoothie;
-
+    static class Values<K, V> extends AbstractMapView<V, K, V> {
         public Values(SmoothieMap<K, V> smoothie) {
-            this.smoothie = smoothie;
-        }
-
-        @Override
-        public int size() {
-            return smoothie.size();
-        }
-
-        @Override
-        public void clear() {
-            smoothie.clear();
-        }
-
-        @Override
-        public Iterator<V> iterator() {
-            return new ImmutableValueIterator<>(smoothie);
+            super(smoothie);
         }
 
         @Override
         public boolean contains(Object o) {
             return smoothie.containsValue(o);
+        }
+
+        @Override
+        public boolean remove(Object queriedValue) {
+            checkNonNull(queriedValue);
+            Iterator<V> it = new MutableValueIterator<>(smoothie);
+            while (it.hasNext()) {
+                V internalVal = it.next();
+                //noinspection ObjectEquality: identity comparision is intended
+                boolean valuesIdentical = queriedValue == internalVal;
+                if (valuesIdentical || smoothie.valuesEqual(queriedValue, internalVal)) {
+                    it.remove();
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        @Override
+        public Iterator<V> iterator() {
+            return immutableIterator();
+        }
+
+        Iterator<V> immutableIterator() {
+            return new ImmutableValueIterator<>(smoothie);
+        }
+
+        @Override
+        public Spliterator<V> spliterator() {
+            // TODO implement spliterator that supports splitting
+            int characteristics = 0;
+            return Spliterators.spliterator(immutableIterator(), smoothie.size, characteristics);
         }
 
         @Override
@@ -5210,6 +5361,28 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         }
 
         @Override
+        public boolean forEachWhile(Predicate<? super V> predicate) {
+            checkNonNull(predicate);
+            boolean interrupted = false;
+            int modCount = smoothie.getModCountOpaque();
+            Object[] segmentsArray = smoothie.getNonNullSegmentsArrayOrThrowIse();
+            int segmentArrayLength = segmentsArray.length;
+            int segmentsArrayOrder = order(segmentArrayLength);
+            Segment<K, V> segment;
+            for (int segmentIndex = 0; segmentIndex >= 0;
+                 segmentIndex = nextSegmentIndex(
+                         segmentArrayLength, segmentsArrayOrder, segmentIndex, segment)) {
+                segment = segmentCheckedByIndex(segmentsArray, segmentIndex);
+                if (!segment.forEachValueWhile(predicate)) {
+                    interrupted = true;
+                    break;
+                }
+            }
+            smoothie.checkModCountOrThrowCme(modCount);
+            return !interrupted;
+        }
+
+        @Override
         public boolean removeAll(Collection<?> c) {
             checkNonNull(c);
             return smoothie.removeIf((k, v) -> c.contains(v));
@@ -5220,8 +5393,28 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
             checkNonNull(c);
             return smoothie.removeIf((k, v) -> !c.contains(v));
         }
+
+        @Override
+        public boolean removeIf(Predicate<? super V> filter) {
+            checkNonNull(filter);
+            return smoothie.removeIf((k, v) -> filter.test(v));
+        }
     }
 
+    /**
+     * Returns an iterator over the values in this SmoothieMap that supports {@link Iterator#remove}
+     * operation. This method may be usable because iterator of {@link #values()} may not support
+     * {@link Iterator#remove}.
+     */
+    @SuppressWarnings("unused") // Public API method, TODO add tests to make it used
+    public Iterator<V> mutableValueIterator() {
+        return new MutableValueIterator<>(this);
+    }
+
+    /**
+     * This class could also override {@link #toArray()} methods to use a more efficient immutable
+     * iterator.
+     */
     static final class ValuesWithMutableIterator<K, V> extends Values<K, V> {
         ValuesWithMutableIterator(SmoothieMap<K, V> smoothie) {
             super(smoothie);
@@ -5233,33 +5426,42 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Calling {@link Collection#iterator} on the entry set returns an iterator that may not
+     * support {@link Iterator#remove}. Use {@link #asMapWithMutableIterators()}{@code .entrySet()}
+     * or {@link #mutableEntryIterator()} methods instead if you need to remove entries while
+     * iterating a SmoothieMap.
+     *
+     * <p>An entry set view returned from this method also doesn't support {@link
+     * ObjSet#getInternal} operation.
+     */
     @EnsuresNonNull("entrySet")
     @Override
-    public final Set<Entry<K, V>> entrySet() {
-        @MonotonicNonNull Set<Entry<K, V>> es = entrySet;
+    public final ObjSet<Entry<K, V>> entrySet() {
+        @MonotonicNonNull ObjSet<Entry<K, V>> es = entrySet;
         return es != null ? es : (entrySet = new EntrySet<>(this));
     }
 
-    static class EntrySet<K, V> extends AbstractSet<Map.Entry<K, V>> {
-        final SmoothieMap<K, V> smoothie;
-
+    /**
+     * Unfortunately, this class often has to allocate unique entries on each iteration and using
+     * {@link MutableEntryIterator} (see {@link #iterator} impl) because users may do arbitrary
+     * things with the returned entries, e. g. save them in some temporary place and then call
+     * {@link Entry#setValue} on all those entries at once.
+     *
+     * In the current implementation of (entry) iterators in SmoothieMap, allocating unique entries
+     * is conflated with the mutability of the iterator (i. e. {@link Iterator#remove} support) in
+     * {@link MutableEntryIterator}. This must not necessarily be so and the EntrySet's iterator
+     * used e. g. in {@link #forEach} could take advantage of iterator immutability.
+     * TODO investigate if an immutable iterator of entries can be implemented more efficiently.
+     * The flip side of the current state of things is that we have fewer EntrySet and EntryIterator
+     * classes.
+     */
+    static class EntrySet<K, V> extends AbstractMapView<Entry<K, V>, K, V>
+            implements ObjSet<Map.Entry<K, V>> {
         EntrySet(SmoothieMap<K, V> smoothie) {
-            this.smoothie = smoothie;
-        }
-
-        @Override
-        public int size() {
-            return smoothie.size();
-        }
-
-        @Override
-        public void clear() {
-            smoothie.clear();
-        }
-
-        @Override
-        public Iterator<Entry<K, V>> iterator() {
-            return new ImmutableEntryIterator<>(smoothie);
+            super(smoothie);
         }
 
         @Override
@@ -5270,6 +5472,12 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
             return smoothie.containsEntry(e.getKey(), e.getValue());
         }
 
+        @Nullable
+        @Override
+        public Entry<K, V> getInternal(Entry<K, V> kvEntry) {
+            throw new UnsupportedOperationException("SmoothieMap doesn't hold entries internally");
+        }
+
         @Override
         public boolean remove(Object o) {
             if (o instanceof Entry) {
@@ -5278,44 +5486,131 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
             }
             return false;
         }
-    }
-
-    static final class EntrySetWithMutableIterator<K, V> extends EntrySet<K, V> {
-        EntrySetWithMutableIterator(SmoothieMap<K, V> smoothie) {
-            super(smoothie);
-        }
 
         @Override
         public Iterator<Entry<K, V>> iterator() {
             return new MutableEntryIterator<>(smoothie);
         }
-    }
 
-    static final class EntrySetWithMutableIteratorWithUniqueEntries<K, V> extends EntrySet<K, V> {
-        EntrySetWithMutableIteratorWithUniqueEntries(SmoothieMap<K, V> smoothie) {
-            super(smoothie);
+        @Override
+        public Spliterator<Entry<K, V>> spliterator() {
+            // TODO implement spliterator that supports splitting
+            int characteristics = Spliterator.DISTINCT;
+            return Spliterators.spliterator(iterator(), smoothie.size, characteristics);
         }
 
         @Override
-        public Iterator<Entry<K, V>> iterator() {
-            return new MutableEntryIteratorWithUniqueEntries<>(smoothie);
+        public boolean equals(Object o) {
+            return smoothie.equalsForSetViews(this, o);
         }
+
+        @Override
+        public int hashCode() {
+            return smoothie.hashCode();
+        }
+
+        @Override
+        public void forEach(Consumer<? super Entry<K, V>> action) {
+            // Cannot delegate to smoothie.forEach() because the action may call entry.setValue().
+            // See the Javadoc comment for EntrySet.
+            super.forEach(action);
+        }
+
+        @Override
+        public boolean forEachWhile(Predicate<? super Entry<K, V>> predicate) {
+            checkNonNull(predicate);
+            // Cannot delegate to smoothie.forEachWhile() because the predicate may call
+            // entry.setValue(). See the Javadoc comment for EntrySet.
+            for (Entry<K, V> e : this) {
+                if (!predicate.test(e)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        @Override
+        public boolean removeAll(Collection<?> c) {
+            Objects.requireNonNull(c);
+            if (sizeAsLong() > (long) c.size() &&
+                    // [Optimization of removeAll() in a set view]
+                    smoothie.keyEquivalence().equals(Equivalence.defaultEquality()) &&
+                    smoothie.valueEquivalence().equals(Equivalence.defaultEquality())) {
+                for (Iterator<?> it = c.iterator(); it.hasNext();) {
+                    if (remove(it.next())) {
+                        // Employing streaming method forEachRemaining() which may be optimized
+                        // better than element-by-element explicit iteration.
+                        it.forEachRemaining(entry -> {
+                            // We already know that we removed something from the map because of
+                            // the if block outside, so not interested in remove() results here.
+                            @SuppressWarnings({"CheckReturnValue", "unused"})
+                            boolean removed = remove(entry);
+                        });
+                        return true;
+                    }
+                }
+                return false;
+            } else {
+                SimpleMutableEntry<K, V> entry = new SimpleMutableEntry<>();
+                return smoothie.removeIf((k, v) -> c.contains(entry.with(k, v)));
+            }
+        }
+
+        @Override
+        public boolean retainAll(Collection<?> c) {
+            checkNonNull(c);
+            SimpleMutableEntry<K, V> entry = new SimpleMutableEntry<>();
+            return smoothie.removeIf((k, v) -> !c.contains(entry.with(k, v)));
+        }
+
+        @Override
+        public boolean removeIf(Predicate<? super Entry<K, V>> filter) {
+            checkNonNull(filter);
+            SimpleMutableEntry<K, V> entry = new SimpleMutableEntry<>();
+            return smoothie.removeIf((k, v) -> filter.test(entry.with(k, v)));
+        }
+    }
+
+    @SuppressWarnings("SuspiciousMethodCalls")
+    private <T> boolean equalsForSetViews(ObjSet<T> setView, Object other) {
+        if (!(other instanceof Set)) {
+            return false;
+        }
+        Set otherSet = (Set) other;
+        if (size != (long) otherSet.size()) {
+            return false;
+        }
+        if (otherSet instanceof ObjSet) {
+            return ((ObjSet<?>) otherSet).forEachWhile(
+                    (@Nullable Object e) -> e != null && setView.contains(e)
+            );
+        }
+        for (@Nullable Object e : otherSet) {
+            if (e == null || !setView.contains(e)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Returns an iterator over the entries in this SmoothieMap that supports {@link
+     * Iterator#remove} operation. This method may be usable because iterator of {@link #entrySet()}
+     * may not support {@link Iterator#remove}.
+     */
+    @SuppressWarnings({"unused", "WeakerAccess"}) // Public API method, TODO add tests to "use" it
+    public Iterator<Map.Entry<K, V>> mutableEntryIterator() {
+        return new MutableEntryIterator<>(this);
     }
 
     public Map<K, V> asMapWithMutableIterators() {
         return new MapViewWithMutableIterators<>(this);
     }
 
-    @VisibleForTesting
-    Map<K, V> asMapWithMutableIteratorsWithUniqueEntries() {
-        return new MapViewWithMutableIteratorsWithUniqueEntries<>(this);
-    }
-
     static class MapViewWithMutableIterators<K, V> implements Map<K, V> {
         final SmoothieMap<K, V> s;
         private @MonotonicNonNull KeySetWithMutableIterator<K, V> keySet;
         private @MonotonicNonNull ValuesWithMutableIterator<K, V> values;
-        @MonotonicNonNull EntrySet<K, V> entrySet;
 
         MapViewWithMutableIterators(SmoothieMap<K, V> smoothie) {
             this.s = smoothie;
@@ -5335,11 +5630,13 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
             return vs != null ? vs : (values = new ValuesWithMutableIterator<>(s));
         }
 
-        @EnsuresNonNull("entrySet")
+        /**
+         * So far, {@link EntrySet} has a mutable iterator (see the Javadoc comment for this class),
+         * so no special version of entry set is needed here.
+         */
         @Override
         public Set<Entry<K, V>> entrySet() {
-            @MonotonicNonNull Set<Entry<K, V>> es = entrySet;
-            return es != null ? es : (entrySet = new EntrySetWithMutableIterator<>(s));
+            return s.entrySet();
         }
 
         @Override public int size() { return s.size(); }
@@ -5376,23 +5673,6 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         @Override public int hashCode() { return s.hashCode(); }
         @Override public boolean equals(Object obj) { return s.equals(obj); }
         @Override public String toString() { return s.toString(); }
-    }
-
-    static final class MapViewWithMutableIteratorsWithUniqueEntries<K, V>
-            extends MapViewWithMutableIterators<K, V> {
-        MapViewWithMutableIteratorsWithUniqueEntries(SmoothieMap<K, V> smoothie) {
-            super(smoothie);
-        }
-
-        @Override
-        public Set<Entry<K, V>> entrySet() {
-            @MonotonicNonNull Set<Entry<K, V>> es = entrySet;
-            if (es != null) {
-                return es;
-            } else {
-                return entrySet = new EntrySetWithMutableIteratorWithUniqueEntries<>(s);
-            }
-        }
     }
 
     //endregion
@@ -5512,9 +5792,10 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
                 // have a fairly unpredictable branch. However, the expected branch profile would be
                 // different from the expected profile in doShrinkInto(), and it's more likely that
                 // checking every bitSet's bit is a better strategy in iterators than in
-                // doShrinkInto().
-                // TODO compare the approaches for iterators
-                // [Backward entries iteration]
+                // doShrinkInto(). TODO compare the approaches for iterators
+                // [Backward entries iteration]. Note that this must correspond to the direction of
+                // iteration in [Iteration in bulk segment methods] to satisfy the contract of
+                // ObjObjMap.forEach(), ObjObjMap.forEachWhile(), and ObjSet.forEachWhile().
                 int iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1;
                 this.iterAllocIndex = prevAllocIndex - iterAllocIndexStep;
                 this.bitSet = bitSet << iterAllocIndexStep;
@@ -5675,44 +5956,6 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
             V value = inflatedSegmentNode.getValue();
             advanceInflatedSegmentIteration(inflatedSegmentIterator);
             return value;
-        }
-
-        @HotPath
-        final Map.Entry<K, V> nextEntryInOrdinarySegment(int allocIndex) {
-            Segment<K, V> segment = getCurrentSegmentAndUpdatePrevState(allocIndex);
-            checkAllocIndex(segment, (long) allocIndex);
-            /* if Interleaved segments Supported intermediateSegments */
-            // [Not storing isFullCapacitySegment during iteration]
-            long isFullCapacitySegment = segment instanceof FullCapacitySegment ? 1L : 0L;
-            /* endif */
-            long allocOffset = allocOffset((long) allocIndex
-                    /* if Interleaved segments Supported intermediateSegments */
-                    , isFullCapacitySegment/* endif */);
-            K key = readKeyAtOffset(segment, allocOffset);
-            V value = readValueAtOffset(segment, allocOffset);
-            advanceOrdinarySegmentIteration(this.bitSet, allocIndex);
-            return createOrdinarySegmentEntry(key, value);
-        }
-
-        @HotPath
-        Map.Entry<K, V> createOrdinarySegmentEntry(K key, V value) {
-            return new AbstractMap.SimpleImmutableEntry<>(key, value);
-        }
-
-        @RarelyCalledAmortizedPerSegment
-        final Map.Entry<K, V> nextEntryInInflatedSegment() {
-            Iterator<Node<K, V>> inflatedSegmentIterator =
-                    getInflatedSegmentIteratorAndUpdatePrevState();
-            Node<K, V> inflatedSegmentNode = nextInflatedSegmentEntry(inflatedSegmentIterator);
-            advanceInflatedSegmentIteration(inflatedSegmentIterator);
-            return createInflatedSegmentEntry(inflatedSegmentNode);
-        }
-
-        @RarelyCalledAmortizedPerSegment
-        Map.Entry<K, V> createInflatedSegmentEntry(Node<K, V> inflatedSegmentNode) {
-            K key = inflatedSegmentNode.getKey();
-            V value = inflatedSegmentNode.getValue();
-            return new AbstractMap.SimpleImmutableEntry<>(key, value);
         }
     }
 
@@ -5962,34 +6205,8 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         }
     }
 
-    static final class ImmutableEntryIterator<K, V> extends SmoothieIterator<K, V, Entry<K, V>> {
-        ImmutableEntryIterator(SmoothieMap<K, V> smoothie) {
-            super(smoothie);
-        }
-
-        @Override
-        Entry<K, V> nextElementInOrdinarySegment(int allocIndex) {
-            return nextEntryInOrdinarySegment(allocIndex);
-        }
-
-        @Override
-        Entry<K, V> nextElementInInflatedSegment() {
-            return nextEntryInInflatedSegment();
-        }
-
-        @Override
-        public void remove() {
-            throw new UnsupportedOperationException("remove() operation is not supported by this " +
-                    "Iterator. Use SmoothieMap.removeIf() or " +
-                    "SmoothieMap.entrySetWithMutableIterator() view.");
-        }
-    }
-
     static final class MutableEntryIterator<K, V>
             extends MutableSmoothieIterator<K, V, Entry<K, V>> {
-        private final ReusableOrdinarySegmentMutableEntry<K, V> ordinarySegmentEntry =
-                new ReusableOrdinarySegmentMutableEntry<>(this);
-        private @MonotonicNonNull ReusableInflatedSegmentMutableEntry<K, V> inflatedSegmentEntry;
 
         MutableEntryIterator(SmoothieMap<K, V> smoothie) {
             super(smoothie);
@@ -5997,95 +6214,66 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
 
         @Override
         Entry<K, V> nextElementInOrdinarySegment(int allocIndex) {
-            return nextEntryInOrdinarySegment(allocIndex);
+            Segment<K, V> segment = getCurrentSegmentAndUpdatePrevState(allocIndex);
+            checkAllocIndex(segment, (long) allocIndex);
+            /* if Interleaved segments Supported intermediateSegments */
+            // [Not storing isFullCapacitySegment during iteration]
+            long isFullCapacitySegment = segment instanceof FullCapacitySegment ? 1L : 0L;
+            /* endif */
+            long allocOffset = allocOffset((long) allocIndex
+                    /* if Interleaved segments Supported intermediateSegments */
+                    , isFullCapacitySegment/* endif */);
+            K key = readKeyAtOffset(segment, allocOffset);
+            V value = readValueAtOffset(segment, allocOffset);
+            advanceOrdinarySegmentIteration(this.bitSet, allocIndex);
+            return new MutableEntryInOrdinarySegment<>(this, key, value);
         }
 
         @Override
         Entry<K, V> nextElementInInflatedSegment() {
-            return nextEntryInInflatedSegment();
-        }
-
-        @Override
-        Entry<K, V> createOrdinarySegmentEntry(K key, V value) {
-            return ordinarySegmentEntry.with(key, value);
-        }
-
-        @Override
-        Entry<K, V> createInflatedSegmentEntry(Node<K, V> inflatedSegmentNode) {
-            @MonotonicNonNull ReusableInflatedSegmentMutableEntry<K, V> inflatedSegmentEntry =
-                    this.inflatedSegmentEntry;
-            if (inflatedSegmentEntry == null) {
-                inflatedSegmentEntry = new ReusableInflatedSegmentMutableEntry<>(smoothie);
-                this.inflatedSegmentEntry = inflatedSegmentEntry;
-            }
-            return inflatedSegmentEntry.with(inflatedSegmentNode);
+            Iterator<Node<K, V>> inflatedSegmentIterator =
+                    getInflatedSegmentIteratorAndUpdatePrevState();
+            Node<K, V> inflatedSegmentNode = nextInflatedSegmentEntry(inflatedSegmentIterator);
+            advanceInflatedSegmentIteration(inflatedSegmentIterator);
+            return new MutableEntryInInflatedSegment<>(smoothie, inflatedSegmentNode);
         }
     }
 
-    static final class MutableEntryIteratorWithUniqueEntries<K, V>
-            extends MutableSmoothieIterator<K, V, Entry<K, V>> {
+    static final class MutableEntryInOrdinarySegment<K, V> extends AbstractEntry<K, V> {
+        private final SmoothieMap<K, V> smoothie;
+        private final K key;
+        private V value;
+        private final Segment<K, V> segment;
+        private final int allocIndex;
+        private final int modCountCopy;
 
-        MutableEntryIteratorWithUniqueEntries(SmoothieMap<K, V> smoothie) {
-            super(smoothie);
-        }
-
-        @Override
-        Entry<K, V> nextElementInOrdinarySegment(int allocIndex) {
-            return nextEntryInOrdinarySegment(allocIndex);
-        }
-
-        @Override
-        Entry<K, V> nextElementInInflatedSegment() {
-            return nextEntryInInflatedSegment();
-        }
-
-        @Override
-        Entry<K, V> createOrdinarySegmentEntry(K key, V value) {
-            return new ReusableOrdinarySegmentMutableEntry<>(this).with(key, value);
-        }
-
-        @Override
-        Entry<K, V> createInflatedSegmentEntry(Node<K, V> inflatedSegmentNode) {
-            return new ReusableInflatedSegmentMutableEntry<>(smoothie).with(inflatedSegmentNode);
-        }
-    }
-
-    static final class ReusableOrdinarySegmentMutableEntry<K, V> extends AbstractEntry<K, V> {
-        private final MutableSmoothieIterator<K, V, ?> iterator;
-
-        private @MonotonicNonNull K key;
-        private @MonotonicNonNull V value;
-        private int modCountCopy;
-
-        ReusableOrdinarySegmentMutableEntry(MutableSmoothieIterator<K, V, ?> iterator) {
-            this.iterator = iterator;
-        }
-
-        @EnsuresNonNull({"key", "value"})
-        ReusableOrdinarySegmentMutableEntry<K, V> with(K key, V value) {
+        MutableEntryInOrdinarySegment(MutableEntryIterator<K, V> iterator, K key, V value) {
+            this.smoothie = iterator.smoothie;
             this.key = key;
             this.value = value;
-            this.modCountCopy = iterator.smoothie.modCount;
-            return this;
+            this.segment = nonNullOrThrowCme(iterator.prevSegment);
+            this.allocIndex = iterator.prevIterAllocIndex;
+            this.modCountCopy = smoothie.modCount;
         }
 
         @Override
         public K getKey() {
-            return nonNullOrThrowCme(key);
+            return key;
         }
 
         @Override
         public V getValue() {
-            return nonNullOrThrowCme(value);
+            return value;
         }
 
         @Override
         public V setValue(V value) {
             checkNonNull(value);
-            if (modCountCopy != iterator.smoothie.modCount)
+            if (modCountCopy != smoothie.modCount) {
                 throw new ConcurrentModificationException();
-            Segment<K, V> segment = nonNullOrThrowCme(iterator.prevSegment);
-            int allocIndex = iterator.prevIterAllocIndex;
+            }
+            Segment<K, V> segment = this.segment;
+            int allocIndex = this.allocIndex;
             checkAllocIndex(segment, (long) allocIndex);
             /* if Interleaved segments Supported intermediateSegments */
             // [Not storing isFullCapacitySegment during iteration]
@@ -6109,37 +6297,33 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
      * This class is made static rather than an inner class of {@link SmoothieMap} to make its usage
      * in {@link MutableEntryIterator} less cumbersome.
      */
-    static final class ReusableInflatedSegmentMutableEntry<K, V> extends AbstractEntry<K, V> {
+    static final class MutableEntryInInflatedSegment<K, V> extends AbstractEntry<K, V> {
         private final SmoothieMap<K, V> smoothie;
-        private @MonotonicNonNull Node<K, V> node;
-        private int modCountCopy;
+        private final Node<K, V> node;
+        private final int modCountCopy;
 
-        ReusableInflatedSegmentMutableEntry(SmoothieMap<K, V> smoothie) {
+        MutableEntryInInflatedSegment(SmoothieMap<K, V> smoothie, Node<K, V> node) {
             this.smoothie = smoothie;
-        }
-
-        @EnsuresNonNull("node")
-        ReusableInflatedSegmentMutableEntry<K, V> with(Node<K, V> node) {
             this.node = node;
             this.modCountCopy = smoothie.modCount;
-            return this;
         }
 
         @Override
         public K getKey() {
-            return nonNullOrThrowCme(node).getKey();
+            return node.getKey();
         }
 
         @Override
         public V getValue() {
-            return nonNullOrThrowCme(node).getValue();
+            return node.getValue();
         }
 
         @Override
         public V setValue(V value) {
-            if (modCountCopy != smoothie.modCount)
+            if (modCountCopy != smoothie.modCount) {
                 throw new ConcurrentModificationException();
-            Node<K, V> node = nonNullOrThrowCme(this.node);
+            }
+            Node<K, V> node = this.node;
             V oldValue = node.getValue();
             node.setValue(value);
             return oldValue;
@@ -6484,7 +6668,10 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
             // model may appear to be more or less favorable for consuming the cost of
             // numberOfLeadingZeros() in the CPU pipeline, so the tradeoff should be evaluated
             // separately from iterators. TODO compare the approaches
-            // 2. [Backward entries iteration]
+            // 2. [Backward entries iteration]. Note that this must be the same as the iteration
+            // order in iterators (see a comment in
+            // SmoothieIterator.advanceOrdinarySegmentIteration()) to satisfy the contract of
+            // ObjObjMap.forEach(), ObjObjMap.forEachWhile(), and ObjSet.forEachWhile().
             // 3. [Int-indexed loop to avoid a safepoint poll].
             // TODO check that Hotspot actually removes a safepoint poll for this unusual loop shape
             for (int iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1,
@@ -6499,8 +6686,36 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
                 bitSet = bitSet << iterAllocIndexStep;
                 iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1;
 
-                h += map.keyHashCodeForMapAndEntryHashCode(key) ^
-                        map.valueHashCodeForMapAndEntryHashCode(value);
+                h += map.keyHashCodeForAggregateHashCodes(key) ^
+                        map.valueHashCodeForAggregateHashCodes(value);
+            }
+            return h;
+        }
+        /* endif */
+
+        /* if !(Interleaved segments Supported intermediateSegments) */
+        /**
+         * Mirror of {@link InterleavedSegments.FullCapacitySegment#keySetHashCode} and
+         * {@link IntermediateCapacitySegment#keySetHashCode}.
+         */
+        @Override
+        int keySetHashCode(SmoothieMap.KeySet<K, V> keySet) {
+            SmoothieMap<K, V> map = keySet.smoothie;
+            int h = 0;
+            long bitSet = extractBitSetForIteration(bitSetAndState);
+            // [Iteration in bulk segment methods]
+            for (int iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1,
+                 iterAllocIndex = Long.SIZE;
+                 (iterAllocIndex -= iterAllocIndexStep) >= 0;) {
+                long iterAllocOffset = allocOffset((long) iterAllocIndex);
+                K key = readKeyAtOffset(this, iterAllocOffset);
+
+                // TODO check what is better - these two statements before or after
+                //  the hash code computation, or one before and one after, or both after?
+                bitSet = bitSet << iterAllocIndexStep;
+                iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1;
+
+                h += map.keyHashCodeForAggregateHashCodes(key);
             }
             return h;
         }
@@ -6534,6 +6749,35 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
 
         /* if !(Interleaved segments Supported intermediateSegments) */
         /**
+         * Mirror of {@link InterleavedSegments.FullCapacitySegment#forEachWhile} and
+         * {@link IntermediateCapacitySegment#forEachWhile}.
+         */
+        @Override
+        boolean forEachWhile(BiPredicate<? super K, ? super V> predicate) {
+            long bitSet = extractBitSetForIteration(bitSetAndState);
+            // [Iteration in bulk segment methods]
+            for (int iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1,
+                 iterAllocIndex = Long.SIZE;
+                 (iterAllocIndex -= iterAllocIndexStep) >= 0;) {
+                long iterAllocOffset = allocOffset((long) iterAllocIndex);
+                K key = readKeyAtOffset(this, iterAllocOffset);
+                V value = readValueAtOffset(this, iterAllocOffset);
+
+                // TODO check what is better - these two statements before or after
+                //  the predicate check, or one before and one after, or both after?
+                bitSet = bitSet << iterAllocIndexStep;
+                iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1;
+
+                if (!predicate.test(key, value)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        /* endif */
+
+        /* if !(Interleaved segments Supported intermediateSegments) */
+        /**
          * Mirror of {@link InterleavedSegments.FullCapacitySegment#forEachKey} and
          * {@link IntermediateCapacitySegment#forEachKey}.
          */
@@ -6554,6 +6798,34 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
 
                 action.accept(key);
             }
+        }
+        /* endif */
+
+        /* if !(Interleaved segments Supported intermediateSegments) */
+        /**
+         * Mirror of {@link InterleavedSegments.FullCapacitySegment#forEachKeyWhile} and
+         * {@link IntermediateCapacitySegment#forEachKeyWhile}.
+         */
+        @Override
+        boolean forEachKeyWhile(Predicate<? super K> predicate) {
+            long bitSet = extractBitSetForIteration(bitSetAndState);
+            // [Iteration in bulk segment methods]
+            for (int iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1,
+                 iterAllocIndex = Long.SIZE;
+                 (iterAllocIndex -= iterAllocIndexStep) >= 0;) {
+                long iterAllocOffset = allocOffset((long) iterAllocIndex);
+                K key = readKeyAtOffset(this, iterAllocOffset);
+
+                // TODO check what is better - these two statements before or after
+                //  the predicate check, or one before and one after, or both after?
+                bitSet = bitSet << iterAllocIndexStep;
+                iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1;
+
+                if (!predicate.test(key)) {
+                    return false;
+                }
+            }
+            return true;
         }
         /* endif */
 
@@ -6584,26 +6856,25 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
 
         /* if !(Interleaved segments Supported intermediateSegments) */
         /**
-         * Mirror of {@link InterleavedSegments.FullCapacitySegment#forEachWhile} and
-         * {@link IntermediateCapacitySegment#forEachWhile}.
+         * Mirror of {@link InterleavedSegments.FullCapacitySegment#forEachValueWhile} and
+         * {@link IntermediateCapacitySegment#forEachValueWhile}.
          */
         @Override
-        boolean forEachWhile(BiPredicate<? super K, ? super V> predicate) {
+        boolean forEachValueWhile(Predicate<? super V> predicate) {
             long bitSet = extractBitSetForIteration(bitSetAndState);
             // [Iteration in bulk segment methods]
             for (int iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1,
                  iterAllocIndex = Long.SIZE;
                  (iterAllocIndex -= iterAllocIndexStep) >= 0;) {
                 long iterAllocOffset = allocOffset((long) iterAllocIndex);
-                K key = readKeyAtOffset(this, iterAllocOffset);
                 V value = readValueAtOffset(this, iterAllocOffset);
 
                 // TODO check what is better - these two statements before or after
-                //  the action, or one before and one after, or both after?
+                //  the predicate check, or one before and one after, or both after?
                 bitSet = bitSet << iterAllocIndexStep;
                 iterAllocIndexStep = Long.numberOfLeadingZeros(bitSet) + 1;
 
-                if (!predicate.test(key, value)) {
+                if (!predicate.test(value)) {
                     return false;
                 }
             }
@@ -7228,8 +7499,8 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         int hashCode(SmoothieMap<K, V> map) {
             int h = 0;
             for (Node<K, V> node : delegate.keySet()) {
-                h += map.keyHashCodeForMapAndEntryHashCode(node.getKey()) ^
-                        map.valueHashCodeForMapAndEntryHashCode(node.getValue());
+                h += map.keyHashCodeForAggregateHashCodes(node.getKey()) ^
+                        map.valueHashCodeForAggregateHashCodes(node.getValue());
             }
             return h;
         }
