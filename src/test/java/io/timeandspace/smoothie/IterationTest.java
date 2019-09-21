@@ -16,25 +16,26 @@
 
 package io.timeandspace.smoothie;
 
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Random;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-public class IterationTest {
+class IterationTest {
 
-    Map<Integer, Integer> map = SmoothieMap.<Integer, Integer>newBuilder().build().asMapWithMutableIterators();
-    HashSet<Integer> keys = new HashSet<>();
-    Random random = new Random(53);
+    private static final Map<Integer, Integer> map =
+            SmoothieMap.<Integer, Integer>newBuilder().build().asMapWithMutableIterators();
+    private static final HashSet<Integer> keys = new HashSet<>();
+    private static final Random random = new Random(53);
 
-    @Before
-    public void setup() {
+    @BeforeAll
+    static void setup() {
         for (int i = 0; i < 1_000_000; i++) {
             int k = random.nextInt();
             map.put(k, k);
@@ -43,7 +44,7 @@ public class IterationTest {
     }
 
     @Test
-    public void testForEach() {
+    void testForEach() {
         int[] size = new int[1];
         map.forEach((k, v) -> {
             assertTrue(keys.contains(k));
@@ -54,7 +55,7 @@ public class IterationTest {
     }
 
     @Test
-    public void testEntrySetIteration() {
+    void testEntrySetIteration() {
         for (Map.Entry<Integer, Integer> e : map.entrySet()) {
             assertTrue(keys.contains(e.getKey()));
             assertEquals(e.getKey(), e.getValue());
@@ -62,7 +63,7 @@ public class IterationTest {
     }
 
     @Test
-    public void testKeySetIterationWithRemove() {
+    void testKeySetIterationWithRemove() {
         for (Iterator<Integer> iterator = map.keySet().iterator(); iterator.hasNext(); ) {
             iterator.next();
             iterator.remove();

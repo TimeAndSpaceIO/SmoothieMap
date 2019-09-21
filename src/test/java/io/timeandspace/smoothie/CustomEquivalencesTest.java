@@ -9,7 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-@SuppressWarnings({"StringOperationCanBeSimplified", "AutoBoxing", "UnnecessaryBoxing"})
+@SuppressWarnings({"StringOperationCanBeSimplified", "UnnecessaryBoxing"})
 final class CustomEquivalencesTest {
 
     private static void doTestCustomKeyEquivalence(SmoothieMap<String, Integer> m,
@@ -72,6 +72,7 @@ final class CustomEquivalencesTest {
         doTestCustomValueEquivalence(m);
     }
 
+    @SuppressWarnings("CachedNumberConstructorCall")
     private static void doTestCustomValueEquivalence(SmoothieMap<String, Integer> m) {
         Integer v1 = new Integer(1);
         Integer v2 = new Integer(1);

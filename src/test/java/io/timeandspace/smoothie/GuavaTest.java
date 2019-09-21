@@ -72,6 +72,7 @@ public class GuavaTest extends TestCase {
             return map.asMapWithMutableIterators();
         }
 
+        @SuppressWarnings("unchecked")
         @Override
         public Map.Entry<String, String>[] createArray(int length) {
             return new Map.Entry[length];

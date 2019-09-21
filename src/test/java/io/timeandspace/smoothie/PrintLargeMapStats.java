@@ -6,7 +6,6 @@ import java.util.Random;
 
 import static org.junit.Assert.assertTrue;
 
-@SuppressWarnings("AutoBoxing")
 final class PrintLargeMapStats {
     private static final SmoothieMap<Integer, Integer> map =
             SmoothieMap.<Integer, Integer>newBuilder().allocateIntermediateSegments(true).build();
