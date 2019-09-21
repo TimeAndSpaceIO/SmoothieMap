@@ -12,7 +12,7 @@ import java.util.stream.Collectors;
 
 /**
  * This class computes data for {@link
- * PrecomputedBinomialCdfValues#FIRST_TRACKED_NUM_SKEWED_SEGMENTS_PER_SPLITS}. and {@link
+ * PrecomputedBinomialCdfValues#NUM_SKEWED_SEGMENTS__FIRST_TRACKED_FOR_NUM_SPLITS}. and {@link
  * PrecomputedBinomialCdfValues#CDF_VALUES}
  */
 @SuppressForbidden
@@ -26,7 +26,8 @@ final class ComputeBinomialCdfValues {
                     0.05946337525377032307006, // 2 * (1 - CDF[same binomial, 30])
                     0.02930494672052930127392 }; // 2 * (1 - CDF[same binomial, 31])
 
-    private static final int MAX_TRIALS = PrecomputedBinomialCdfValues.MAX_SPLITS_WITH_PRECOMPUTED_CDF_VALUES;
+    private static final int MAX_TRIALS =
+            PrecomputedBinomialCdfValues.MAX_SPLITS_WITH_PRECOMPUTED_CDF_VALUES;
 
     /** As in SmoothieMap TODO javadoc link */
     private static final double MAX_POOR_HASH_CODE_DISTRIB_PROB_THRESHOLD = 0.2;
@@ -47,7 +48,7 @@ final class ComputeBinomialCdfValues {
     private static void computeBinomialCdfValues(double probabilityOfSuccess) {
         System.out.println("Prob: " + probabilityOfSuccess);
         List<List<Float>> trackedCdfValuesPerTrials = new ArrayList<>();
-        // Stored in PrecomputedBinomialCdfValues.FIRST_TRACKED_NUM_SKEWED_SEGMENTS_PER_SPLITS.
+        // Stored in PrecomputedBinomialCdfValues.NUM_SKEWED_SEGMENTS__FIRST_TRACKED_FOR_NUM_SPLITS.
         List<Integer> firstTrackedSkewedSegmentsPerTrials = new ArrayList<>();
         int nextStartSearchSkewedSegments = 0;
         for (int trials = 1; trials <= MAX_TRIALS; trials++) {

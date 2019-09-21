@@ -30,18 +30,18 @@ import static java.lang.Math.min;
  * {@link io.timeandspace.smoothie.Statistics.NormalDistribution#inverseCumulativeProbability} that
  * takes about 500 cycles, {@link #inverseCumulativeProbability}'s latency mainly comes from several
  * accesses to three large arrays (a second-level array in {@link
- * #FIRST_TRACKED_NUM_SKEWED_SEGMENTS_PER_SPLITS}, {@link
- * CdfValuesPerSplits#cdfValueOffsetsPerSplits}, and {@link CdfValuesPerSplits#allCdfValues}). There
+ * #NUM_SKEWED_SEGMENTS__FIRST_TRACKED_FOR_NUM_SPLITS}, {@link
+ * CdfValuesForNumSplits#cdfValues_offsetsForNumSplits}, and {@link CdfValuesForNumSplits#allCdfValues}). There
  * are no data dependency between the second level access to {@link
- * #FIRST_TRACKED_NUM_SKEWED_SEGMENTS_PER_SPLITS} and the access to {@link
- * CdfValuesPerSplits#cdfValueOffsetsPerSplits}, therefore, in the worst case, latency is determined
- * by L3 (the second-level access to {@link #FIRST_TRACKED_NUM_SKEWED_SEGMENTS_PER_SPLITS} _or_ the
- * access to {@link CdfValuesPerSplits#cdfValueOffsetsPerSplits} + main memory (the access to {@link
- * CdfValuesPerSplits#allCdfValues} which is the largest array), or even main memory + main memory.
- * Sometimes binary search may hit multiple different cache lines in {@link
- * CdfValuesPerSplits#allCdfValues}, resulting in total of three or even four main memory accesses:
+ * #NUM_SKEWED_SEGMENTS__FIRST_TRACKED_FOR_NUM_SPLITS} and the access to {@link
+ * CdfValuesForNumSplits#cdfValues_offsetsForNumSplits}, therefore, in the worst case, latency is determined
+ * by L3 (the second-level access to {@link #NUM_SKEWED_SEGMENTS__FIRST_TRACKED_FOR_NUM_SPLITS} _or_
+ * the access to {@link CdfValuesForNumSplits#cdfValues_offsetsForNumSplits} + main memory (the access to
+ * {@link  CdfValuesForNumSplits#allCdfValues} which is the largest array), or even main memory + main
+ * memory. Sometimes binary search may hit multiple different cache lines in {@link
+ * CdfValuesForNumSplits#allCdfValues}, resulting in total of three or even four main memory accesses:
  * the biggest {@code cdfValuesLengthForNumSplits} value (see {@link #inverseCumulativeProbability}
- * code) is 45, so the "embedded" array inside {@link CdfValuesPerSplits#allCdfValues} of 4-byte
+ * code) is 45, so the "embedded" array inside {@link CdfValuesForNumSplits#allCdfValues} of 4-byte
  * float elements spans 3 cache lines. (Note: all "L3" and "main memory" above are guesstimates of
  * what should fit in L3 of a modern server-class CPU; might be very off, I didn't evaluate that -
  * leventov.)
@@ -55,7 +55,7 @@ import static java.lang.Math.min;
  * BinomialDistributionInverseCdfApproximation#inverseCumulativeProbability}.
  *
  * TODO take advantage of high regularity of values in the "embedded" arrays inside {@link
- *  CdfValuesPerSplits#allCdfValues} to make binary search that converges faster and most likely
+ *  CdfValuesForNumSplits#allCdfValues} to make binary search that converges faster and most likely
  *  accesses just one cache line
  */
 final class PrecomputedBinomialCdfValues {
@@ -84,9 +84,9 @@ final class PrecomputedBinomialCdfValues {
      * @param poorHashCodeDistribution_badOccasion_minRequiredConfidence the argument for inverse
      *        CDF function, equals to `1.0 - maxProbabilityOfOccasionIfHashFunctionWasRandom`, as
      *        specified in {@link SmoothieMapBuilder#reportPoorHashCodeDistribution}
-     * @param prevMaxNonReportedSkewedSegments some result returned from this method earlier for the
-     *        same probIndex and poorHashCodeDistribution_badOccasion_minRequiredConfidence, but
-     *        smaller numSplits than in this call. This value is used as a hint for this method,
+     * @param numSkewedSegments_maxNonReported_prev some result returned from this method earlier
+     *        for the same probIndex and poorHashCodeDistribution_badOccasion_minRequiredConfidence,
+     *        but smaller numSplits than in this call. This value is used as a hint for this method,
      *        because the new result can't be smaller than the old one. Zero should be passed if
      *        inverseCumulativeProbability() hasn't yet been called with the same probIndex and
      *        poorHashCodeDistribution_badOccasion_minRequiredConfidence.
@@ -94,19 +94,19 @@ final class PrecomputedBinomialCdfValues {
      */
     static int inverseCumulativeProbability(int probIndex, int numSplits,
             float poorHashCodeDistribution_badOccasion_minRequiredConfidence,
-            int prevMaxNonReportedSkewedSegments) {
-        int firstTrackedNumSkewedSegmentsForSplits = Byte.toUnsignedInt(
-                FIRST_TRACKED_NUM_SKEWED_SEGMENTS_PER_SPLITS[probIndex][numSplits - 1]);
-        int nonReportedSkewedSegmentsToSearchFrom =
-                Math.max(prevMaxNonReportedSkewedSegments, firstTrackedNumSkewedSegmentsForSplits);
-        CdfValuesPerSplits cdfValuesPerSplits = CDF_VALUES[probIndex];
-        float[] cdfValues = cdfValuesPerSplits.allCdfValues;
-        int cdfValuesOffsetForNumSplits =
-                (int) cdfValuesPerSplits.cdfValueOffsetsPerSplits[numSplits - 1];
+            int numSkewedSegments_maxNonReported_prev) {
+        int numSkewedSegments_firstTrackedForNumSplits = Byte.toUnsignedInt(
+                NUM_SKEWED_SEGMENTS__FIRST_TRACKED_FOR_NUM_SPLITS[probIndex][numSplits - 1]);
+        int nonReportedSkewedSegmentsToSearchFrom = Math.max(
+                numSkewedSegments_maxNonReported_prev, numSkewedSegments_firstTrackedForNumSplits);
+        CdfValuesForNumSplits cdfValuesForNumSplits = CDF_VALUES[probIndex];
+        float[] cdfValues = cdfValuesForNumSplits.allCdfValues;
+        int cdfValues_offsetForNumSplits =
+                (int) cdfValuesForNumSplits.cdfValues_offsetsForNumSplits[numSplits - 1];
         int indexToSearchFrom =
-                nonReportedSkewedSegmentsToSearchFrom - firstTrackedNumSkewedSegmentsForSplits;
+                nonReportedSkewedSegmentsToSearchFrom - numSkewedSegments_firstTrackedForNumSplits;
 
-        if (cdfValues[cdfValuesOffsetForNumSplits + indexToSearchFrom] >=
+        if (cdfValues[cdfValues_offsetForNumSplits + indexToSearchFrom] >=
                 poorHashCodeDistribution_badOccasion_minRequiredConfidence) { // (*)
             return nonReportedSkewedSegmentsToSearchFrom; // see [Postcondition] below
         }
@@ -116,24 +116,22 @@ final class PrecomputedBinomialCdfValues {
         // find `maxNonReportedSkewedSegmentsIndex` because if the number of segments with skewed
         // distribution of entries between the halves is always on the edge of the reporting
         // probability threshold (maxProbabilityOfOccasionIfHashFunctionWasRandom) but doesn't cross
-        // it (so that {@link
-        // SmoothieMap.HashCodeDistributionRelatedState#hasReportedTooManySkewedSegmentSplits} is
-        // not set to false and a SmoothieMap continues to track statistics and calculate
-        // probabilities) then PrecomputedBinomialCdfValues.inverseCumulativeProbability() is called
-        // frequently with `numSplits` argument not much larger than during the previous call and
-        // this method returns results that are only a little larger than
-        // `prevMaxNonReportedSkewedSegments` (and sometimes are equal to it, that is covered by the
-        // short-circuit exit branch above), exponential search makes this method relatively cheaper
-        // by ensuring that only a single cache line within `cdfValues` is accessed (apart from the
-        // line with the array's header).
+        // it (so that HashCodeDistribution.hasReportedTooManySkewedSegmentSplits is not set to
+        // false and a SmoothieMap continues to track statistics and calculate probabilities) then
+        // PrecomputedBinomialCdfValues.inverseCumulativeProbability() is called frequently with
+        // `numSplits` argument not much larger than during the previous call and this method
+        // returns results that are only a little larger than numSkewedSegments_maxNonReported_prev
+        // (and sometimes are equal to it, that is covered by the short-circuit exit branch above),
+        // exponential search makes this method relatively cheaper by ensuring that only a single
+        // cache line within `cdfValues` is accessed (apart from the line with the array's header).
         {
             int bound = 1;
 
-            int cdfValuesLengthForNumSplits =
-                    (int) cdfValuesPerSplits.cdfValueOffsetsPerSplits[numSplits] -
-                            cdfValuesOffsetForNumSplits;
-            while (indexToSearchFrom + bound < cdfValuesLengthForNumSplits &&
-                    // If `cdfValues[cdfValuesOffsetForNumSplits + indexToSearchFrom + bound] ==
+            int cdfValues_lengthForNumSplits =
+                    (int) cdfValuesForNumSplits.cdfValues_offsetsForNumSplits[numSplits] -
+                            cdfValues_offsetForNumSplits;
+            while (indexToSearchFrom + bound < cdfValues_lengthForNumSplits &&
+                    // If `cdfValues[cdfValues_offsetForNumSplits + indexToSearchFrom + bound] ==
                     //         poorHashCodeDistribution_badOccasion_minRequiredConfidence`, this
                     // while loop exits and the bound index will be "rediscovered" in binarySearch()
                     // below. There is no point in making special-case code because values in
@@ -141,27 +139,27 @@ final class PrecomputedBinomialCdfValues {
                     // maxProbabilityOfOccasionIfHashFunctionWasRandom in
                     // reportPoorHashCodeDistribution() that the complement probability corresponds
                     // exactly to any of those cdf values.
-                    cdfValues[cdfValuesOffsetForNumSplits + indexToSearchFrom + bound] <
+                    cdfValues[cdfValues_offsetForNumSplits + indexToSearchFrom + bound] <
                             poorHashCodeDistribution_badOccasion_minRequiredConfidence) {
                 bound *= 2;
             }
 
             maxNonReportedSkewedSegmentsIndex = binarySearch(
                     cdfValues,
-                    cdfValuesOffsetForNumSplits,
+                    cdfValues_offsetForNumSplits,
                     // Could have been indexToSearchFrom + max(1, (bound >>> 1)) because
-                    // cdfValues[cdfValuesOffsetForNumSplits + indexToSearchFrom] is checked to be
+                    // cdfValues[cdfValues_offsetForNumSplits + indexToSearchFrom] is checked to be
                     // less than poorHashCodeDistribution_badOccasion_minRequiredConfidence in this
                     // branch (see (*) above), so this binarySearch() call will never return
                     // indexToSearchFrom. But the benefit doesn't worth the extra logic.
                     indexToSearchFrom + (bound >>> 1),
-                    min(indexToSearchFrom + bound + 1, cdfValuesLengthForNumSplits),
+                    min(indexToSearchFrom + bound + 1, cdfValues_lengthForNumSplits),
                     poorHashCodeDistribution_badOccasion_minRequiredConfidence);
         }
 
         //noinspection UnnecessaryLocalVariable
         int maxNonReportedSkewedSegments =
-                firstTrackedNumSkewedSegmentsForSplits + maxNonReportedSkewedSegmentsIndex;
+                numSkewedSegments_firstTrackedForNumSplits + maxNonReportedSkewedSegmentsIndex;
         // Postcondition: CDF[maxNonReportedSkewedSegments] >=
         //                    poorHashCodeDistribution_badOccasion_minRequiredConfidence
         return maxNonReportedSkewedSegments;
@@ -193,46 +191,48 @@ final class PrecomputedBinomialCdfValues {
     }
 
     /**
-     * Each value in {@link #cdfValueOffsetsPerSplits} (except the last one) identifies the offset
-     * to an "embedded" (flattened) array inside {@link #allCdfValues}. Each "embedded" array inside
-     * {@link #allCdfValues} corresponds to one number of segment splits, "n" or "numTrials" in
-     * binomial distribution terms.
+     * Each value in {@link #cdfValues_offsetsForNumSplits} (except the last one) identifies the
+     * offset to an "embedded" (flattened) array inside {@link #allCdfValues}. Each "embedded" array
+     * inside {@link #allCdfValues} corresponds to one number of segment splits, "n" or "numTrials"
+     * in binomial distribution terms.
      *
      * Each value in an "embedded" array inside {@link #allCdfValues} corresponds to cumulative
      * probability of having some number of skewed segments (from 0 to numSplits - 1). In order to
      * save space in memory and reduce the library size not all possible numSkewedSegments are
      * represented; only those whose cumulative probabilities fall into the range between
-     * 1.0 - {@link SmoothieMap#MAX__POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB}
+     * 1.0 - {@link SmoothieMap#POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MAX}
      * and
-     * 1.0 - {@link SmoothieMap#MIN__POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB}.
+     * 1.0 - {@link SmoothieMap#POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MIN}.
      *
-     * Values in {@link #FIRST_TRACKED_NUM_SKEWED_SEGMENTS_PER_SPLITS} help to identify the starting
-     * numSkewedSegments of this "window" for each numSplits (see the code in {@link
+     * Values in {@link #NUM_SKEWED_SEGMENTS__FIRST_TRACKED_FOR_NUM_SPLITS} help to identify the
+     * starting  numSkewedSegments of this "window" for each numSplits (see the code in {@link
      * #inverseCumulativeProbability}).
      *
      * @see #CDF_VALUES
      */
-    private static class CdfValuesPerSplits {
-        private final char[] cdfValueOffsetsPerSplits =
+    private static class CdfValuesForNumSplits {
+        private final char[] cdfValues_offsetsForNumSplits =
                 new char[MAX_SPLITS_WITH_PRECOMPUTED_CDF_VALUES + 1];
         private final float[] allCdfValues;
 
-        CdfValuesPerSplits(String filePrefix) {
+        CdfValuesForNumSplits(String filePrefix) {
             try (DataInputStream offsetsIn = new DataInputStream(
                     getClass().getResourceAsStream(filePrefix + ".offsets"))) {
-                byte[] offsetsData = new byte[cdfValueOffsetsPerSplits.length * Character.BYTES];
+                byte[] offsetsData =
+                        new byte[cdfValues_offsetsForNumSplits.length * Character.BYTES];
                 offsetsIn.readFully(offsetsData);
                 ByteBuffer
                         .wrap(offsetsData)
                         .order(ByteOrder.LITTLE_ENDIAN)
                         .asCharBuffer()
-                        .get(cdfValueOffsetsPerSplits);
+                        .get(cdfValues_offsetsForNumSplits);
             } catch (IOException e) {
                 throw new RuntimeException(e);
             }
 
-            allCdfValues =
-                    new float[(int) cdfValueOffsetsPerSplits[cdfValueOffsetsPerSplits.length - 1]];
+            int allCdfValuesLength =
+                    (int) cdfValues_offsetsForNumSplits[cdfValues_offsetsForNumSplits.length - 1];
+            allCdfValues = new float[allCdfValuesLength];
 
             try (DataInputStream cdfValuesIn = new DataInputStream(
                     getClass().getResourceAsStream(filePrefix + ".cdfValues"))) {
@@ -259,15 +259,15 @@ final class PrecomputedBinomialCdfValues {
      * "probabilityOfSuccess" in binomial distribution terms.
      *
      * Each value in inner arrays corresponds to one "embedded" array inside {@link
-     * CdfValuesPerSplits#allCdfValues}. The values are the numbers of skewed segments ("k", in
+     * CdfValuesForNumSplits#allCdfValues}. The values are the numbers of skewed segments ("k", in
      * binomial distribution terms) that have cumulative probability equal to the first element in
-     * the corresponding "embedded" array inside {@link CdfValuesPerSplits#allCdfValues}.
+     * the corresponding "embedded" array inside {@link CdfValuesForNumSplits#allCdfValues}.
      *
      * Computed and printed in {@link ComputeBinomialCdfValues#computeBinomialCdfValues}.
      *
-     * TODO move inner arrays into {@link CdfValuesPerSplits}
+     * TODO move inner arrays into {@link CdfValuesForNumSplits}
      */
-    static final byte[][] FIRST_TRACKED_NUM_SKEWED_SEGMENTS_PER_SPLITS = {
+    static final byte[][] NUM_SKEWED_SEGMENTS__FIRST_TRACKED_FOR_NUM_SPLITS = {
             // Prob: 0.19341265286193732
             {0, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6, 6, 7, 7, 7, 7,
                     8, 8, 8, 8, 8, 9, 9, 9, 9, 10, 10, 10, 10, 10, 11, 11, 11, 11, 12, 12, 12, 12,
@@ -495,22 +495,22 @@ final class PrecomputedBinomialCdfValues {
     };
 
     /**
-     * Each {@link CdfValuesPerSplits} object in this array corresponds to one probability of skewed
-     * segments (one of values from {@link
+     * Each {@link CdfValuesForNumSplits} object in this array corresponds to one probability of
+     * skewed segments (one of values from {@link
      * HashCodeDistribution#HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS}), "p" or
      * "probabilityOfSuccess" in binomial distribution terms.
      *
      * Computed and printed in {@link ComputeBinomialCdfValues#computeBinomialCdfValues}.
      */
-    static final CdfValuesPerSplits[] CDF_VALUES = {
+    static final CdfValuesForNumSplits[] CDF_VALUES = {
             // Prob: 0.19341265286193732, at least 29/19 entries in skewed splits
-            new CdfValuesPerSplits("0"),
+            new CdfValuesForNumSplits("0"),
             // Prob: 0.11140289106101875, at least 30/18 entries in skewed splits
-            new CdfValuesPerSplits("1"),
+            new CdfValuesForNumSplits("1"),
             // Prob: 0.05946337525377032, at least 31/17 entries in skewed splits
-            new CdfValuesPerSplits("2"),
+            new CdfValuesForNumSplits("2"),
             // Prob: 0.02930494672052930, at least 32/16 entries in skewed splits
-            new CdfValuesPerSplits("3")
+            new CdfValuesForNumSplits("3")
     };
 
     // TODO move these checks to tests and verify values in CdfValuesPerSplits according to

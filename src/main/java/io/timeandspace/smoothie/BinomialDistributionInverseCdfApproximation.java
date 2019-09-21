@@ -41,8 +41,8 @@ import static io.timeandspace.smoothie.HashCodeDistribution.HASH_TABLE_HALF__SLO
  * on average (TODO run a test to check that empirically): about one in five segment splits is
  * skewed to the degree of having at least {@link
  * HashCodeDistribution#SKEWED_SEGMENT__HASH_TABLE_HALF__MAX_KEYS__MIN_ACCOUNTED} (29) keys in one
- * of the halves. (The "one in five" estimate is the inverse of the first probability in this table: {@link
- * HashCodeDistribution#HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS}.)
+ * of the halves. (The "one in five" estimate is the inverse of the first probability in this table:
+ * {@link HashCodeDistribution#HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS}.)
  * Accordingly, for 11% of splits the probability should be checked two times (for two different
  * skewness levels independently, see the loop in {@link
  * HashCodeDistribution#doAccountSkewedSegmentSplit}), three times for 6% of splits and four times
@@ -50,16 +50,16 @@ import static io.timeandspace.smoothie.HashCodeDistribution.HASH_TABLE_HALF__SLO
  * on average.
  *
  * The average occupancy of segments in a SmoothieMap always floats around 3/4 of the segment's max
- * capacity ({@link SmoothieMap.BitSetAndStateArea#SEGMENT_MAX_ALLOC_CAPACITY}), i. e. 32 entries.
- * The number of segment splits is equal to the number of segments minus one in a SmoothieMap, so
- * considering them equal for this approximate calculation. It means that one {@link
- * #inverseCumulativeProbability} call is amortized among 32 * (10 / 4) = 80 insertions in a
- * SmoothieMap. It means that the cost of tracking and reporting skewed segment's hash table halves
- * is about 500+ / 80 ~= 7 cycles per an insertion. Note again that this is the absolute worst case
- * of always having almost enough skewed segments to exceed the reporting threshold; if there are
- * less skewed segments, caching of lastComputedMaxNonReportedSkewedSplits (see {@link
+ * capacity ({@link SmoothieMap#SEGMENT_MAX_ALLOC_CAPACITY}), i. e. 32 entries. The number of
+ * segment splits is equal to the number of segments minus one in a SmoothieMap, so considering them
+ * equal for this approximate calculation. It means that one {@link #inverseCumulativeProbability}
+ * call is amortized among 32 * (10 / 4) = 80 insertions in a SmoothieMap. It means that the cost of
+ * tracking and reporting skewed segment's hash table halves is about 500+ / 80 ~= 7 cycles per an
+ * insertion. Note again that this is the absolute worst case of always having almost enough skewed
+ * segments to exceed the reporting threshold; if there are less skewed segments, caching of
+ * lastComputedMaxNonReportedSkewedSplits (see {@link
  * HashCodeDistribution#skewedSegment_splitStatsToCurrentAverageOrder}) allows to call {@link
- * #inverseCumulativeProbability} more rarely than one time per four probability checks.
+ * #inverseCumulativeProbability} less than one time per four probability checks.
  *
  * So if {@link BinomialDistribution#inverseCumulativeProbability} itself was used the overhead of
  * reporting would be from 1500..5000 / 80 = 18..60 cycles per inserting in a SmoothieMap, that is
@@ -140,7 +140,7 @@ final class BinomialDistributionInverseCdfApproximation {
         // BinomialDistributionInverseCdfNormalApproximationBias.
         double maxProbability_fractionOfMax =
                 poorHashCodeDistribution_benignOccasion_maxProbability /
-                        SmoothieMap.MAX__POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB;
+                        SmoothieMap.POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MAX;
         // lowerCorrectionIndex
         //   = Log[POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__EXP_BASE, maxProbability_fractionOfMax]
         //   = Log[maxProbability_fractionOfMax] / Log[POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__EXP_BASE]
@@ -153,7 +153,7 @@ final class BinomialDistributionInverseCdfApproximation {
         double higherCorrection = (double) corrections[higherCorrectionIndex];
 
         double higherProbability =
-                SmoothieMap.MAX__POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB *
+                SmoothieMap.POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MAX *
                         Math.pow(POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__EXP_BASE,
                                 (double) lowerCorrectionIndex);
         double lowerProbability;
@@ -162,7 +162,7 @@ final class BinomialDistributionInverseCdfApproximation {
                     POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__EXP_BASE;
         } else {
             lowerProbability =
-                    SmoothieMap.MIN__POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB;
+                    SmoothieMap.POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MIN;
         }
 
         if (poorHashCodeDistribution_benignOccasion_maxProbability < lowerProbability ||

@@ -1,3 +1,4 @@
+/* if Tracking hashCodeDistribution */
 /*
  * Copyright (C) The SmoothieMap Authors
  *
@@ -22,12 +23,17 @@ import org.checkerframework.checker.nullness.qual.Nullable;
 
 import java.util.Arrays;
 import java.util.ConcurrentModificationException;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
+import static io.timeandspace.smoothie.BitSetAndState.segmentOrder;
 import static io.timeandspace.smoothie.HashTable.HASH_TABLE_SLOTS;
 import static io.timeandspace.smoothie.ObjectSize.arraySizeInBytes;
 import static io.timeandspace.smoothie.ObjectSize.classSizeInBytes;
+import static io.timeandspace.smoothie.PoorHashCodeDistributionOccasion.Type.TOO_LARGE_INFLATED_SEGMENT;
+import static io.timeandspace.smoothie.PoorHashCodeDistributionOccasion.Type.TOO_MANY_SKEWED_SEGMENT_SPLITS;
 import static io.timeandspace.smoothie.SmoothieMap.maxSplittableSegmentOrder;
 import static io.timeandspace.smoothie.Statistics.PoissonDistribution;
 import static java.lang.Math.max;
@@ -38,6 +44,18 @@ import static java.lang.Math.max;
  *
  * The objective of this class is minimization of the memory footprint of SmoothieMaps that don't
  * track poor hash code distribution events.
+ *
+ * This class has three independent parts, accounting for different manifestations of poor hash code
+ * distribution:
+ *  - Too many inflated segments. See field {@link #hasReportedTooManyInflatedSegments} and a few
+ *  fields below, as well as the methods accessing these fields.
+ *  - A too large inflated segment. See field {@link #reportTooLargeInflatedSegment} and a few
+ *  fields below.
+ *  - Too many skewed segment splits. See field {@link #hasReportedTooManySkewedSegmentSplits} and
+ *  a few fields below.
+ * These three parts are completely independent. From the software design point of view, they should
+ * have been three different classes. They are kept within a single class HashCodeDistribution to
+ * reduce its memory footprint and the pointer indirection when the methods are called.
  */
 class HashCodeDistribution<K, V> {
     private static final long SIZE_IN_BYTES = classSizeInBytes(HashCodeDistribution.class);
@@ -50,8 +68,8 @@ class HashCodeDistribution<K, V> {
                     SKEWED_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__MAX_ACCOUNTED;
 
     /**
-     * numSkewedSplits + lastComputedMaxNonReportedSkewedSplits. See {@link
-     * #skewedSegment_splitStatsToCurrentAverageOrder}.
+     * Two stats: numSkewedSplits and numSkewedSplits_maxNonReported_lastComputed. See the comment
+     * for {@link #skewedSegment_splitStatsToCurrentAverageOrder} for details.
      */
     private static final int SKEWED_SEGMENT__SPLIT_STAT_SIZE = 2;
     private static final int SKEWED_SEGMENT__SPLIT_STATS__INT_ARRAY_LENGTH =
@@ -68,15 +86,17 @@ class HashCodeDistribution<K, V> {
      * A value at index `i` is a cumulative distribution of the event that a segment split ({@link
      * SmoothieMap#doSplit}) observes at least 29 + i keys that should have been fallen in either
      * the lower or the higher half of the segment's hash table (and, conversely, at most 19 - i
-     * keys should have been fallen in the less populated half). It is called a "skewness level"
-     * below in this class.
+     * keys should have been fallen in the less populated half). 29 + 19 = 48 = {@link
+     * SmoothieMap#SEGMENT_MAX_ALLOC_CAPACITY}. The value of `i` is called a "skewness level" below
+     * in this class.
      *
      * We don't account stats for events of 28 or less keys falling in a hash table's half for three
      * reasons:
      *
-     *  1) the probability of such events is too large (~0.31 for 28 keys), so
-     *  HashCodeDistribution's methods would be called too often from {@link SmoothieMap#doSplit},
-     *  contributing more significantly to the average CPU cost of the latter.
+     *  1) The probability of such events is too large (~0.31 for 28 keys, see
+     *  BinomialDistribution[48, 0.5]), so HashCodeDistribution's methods would be called too often
+     *  from {@link SmoothieMap#doSplit}, contributing more significantly to the average CPU cost of
+     *  the latter.
      *
      *  2) Both {@link #skewedSegment_splitStatsToCurrentAverageOrder} and {@link
      *  #skewedSegment_splitStatsToNextAverageOrder} would need to hold a stat for one more
@@ -85,20 +105,23 @@ class HashCodeDistribution<K, V> {
      *  3) On the other hand, 28 keys in a hash table's half (of 32 slots) means that there should
      *  be 4 empty slots "on average" (not considering that some of them may be taken by shifted
      *  keys from the other half), i. e. one empty slot per a 8-slot group on average (see {@link
-     *  SmoothieMap.HashTableArea}).
+     *  HashTable}).
      *
-     *  At this (or smaller) load factor the performance of a SwissTable suffers much less than at
-     *  higher load factors, because SwissTable examines the slots in groups. For the performance of
-     *  successful key search, it doesn't matter if a key is not shifted at or is shifted by one,
-     *  two, or seven slots. The performance of unsuccessful search and entry insertion depends on
-     *  the fact that each 8-slot group has at least one empty slot that allows to stop the search
-     *  after checking the first group.
+     *  At this (or smaller) load the performance of a SwissTable suffers much less than at higher
+     *  loads (3 or less empty slots per hash table half), because SwissTable examines the slots in
+     *  groups. For the performance of successful key search, it doesn't matter if a key is not
+     *  shifted at all or is shifted by one, two, or seven slots. The performance of unsuccessful
+     *  search and entry insertion depends on the fact that each 8-slot group has at least one empty
+     *  slot that allows to stop the search after checking the first group. (Note: this applies when
+     *  {@link ContinuousSegments} are used (and therefore SwissTable algorithm); however, when
+     *  {@link InterleavedSegments} segments are used, the same argument applies more or less to the
+     *  SmoothieMap's version of F14 as well.)
      *
      *  So although having unusually many segments in a SmoothieMap with hash tables that have 28
      *  (or 27, or 26, or 25) keys in one of their halves does indicate some problem with hash code
      *  distribution, this is effectively harmless for a SmoothieMap and thus it doesn't make much
-     *  sense to try to spot and report such problems unless a SmoothieMap is used specifically
-     *  to test the quality of hash code distribution (that is not a target use case).
+     *  sense to try to spot and report such problems unless a SmoothieMap is used specifically to
+     *  test the quality of hash code distribution (that is not a target use case).
      *
      * Conversely, we don't account stats for events of 33 or more keys falling in a hash table's
      * half (better to say - should have fallen, because 33 keys can't all reside in their "origin"
@@ -126,8 +149,19 @@ class HashCodeDistribution<K, V> {
         }
     }
 
-    final float poorHashCodeDistrib_badOccasion_minReportingProb;
-    final Consumer<PoorHashCodeDistributionOccasion<K, V>> reportingAction;
+    private final float poorHashCodeDistrib_badOccasion_minReportingProb;
+    private final Consumer<PoorHashCodeDistributionOccasion<K, V>> reportingAction;
+
+    /** TODO implement reporting of too many inflated segments */
+    @SuppressWarnings("unused")
+    private boolean hasReportedTooManyInflatedSegments = true;
+    @SuppressWarnings("unused")
+    private int numInflatedSegments;
+
+    private boolean reportTooLargeInflatedSegment = true;
+    private byte segmentSize_maxNonReported_lastComputed;
+    private byte lastSegmentOrderForWhichMaxNonReportedSizeIsComputed;
+    private long minMapSizeForWhichLastComputedMaxNonReportedSegmentSizeIsValid;
 
     /**
      * Whether to report a poor hash code distribution event when there are so many segments in the
@@ -143,21 +177,13 @@ class HashCodeDistribution<K, V> {
      * between the third bit and one of the bits that are used to determine to which segment a key
      * with a hash code should go (see {@link SmoothieMap#segmentLookupBits} and {@link
      * SmoothieMap#firstSegmentIndexByHashAndOrder}), i. e. a correlation with the {@link
-     * SmoothieMap#SEGMENT_LOOKUP_HASH_SHIFT}-th bit or any higher bit, or a combination of some of
+     * SmoothieMap#HASH__SEGMENT_LOOKUP_SHIFT}-th bit or any higher bit, or a combination of some of
      * these bits.
      *
      * TODO determine the correlating mask of the higher bits by maintaining exponential +1/-1
      *  windows per each bit.
      */
-    private boolean hasReportedTooManySkewedSegmentSplits = true;
-    boolean reportTooManyInflatedSegments = true;
-    private boolean reportTooLargeInflatedSegment = true;
-
-    private int numInflatedSegments;
-    private byte minReportedNumInflatedSegments;
-    private byte segmentWithAverageOrder_maxNonReportedSize_lastComputed;
-    private byte lastAverageSegmentOrderForWhichMaxNonReportedSizeIsComputed;
-    private long minMapSizeForWhichLastComputedMaxNonReportedSegmentSizeIsValid;
+    private boolean hasReportedTooManySkewedSegmentSplits = false;
 
     /**
      * The following four fields contain statistics of segment splits: "Current" are about the
@@ -179,13 +205,14 @@ class HashCodeDistribution<K, V> {
     int numSegmentSplitsToCurrentAverageOrder;
     /**
      * An array with {@link #SKEWED_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__MAX_ACCOUNTED}
-     * "stats" (each corresponding to one skewness level), each stat is comprised of two "fields":
+     * + 1 "stats" (each corresponding to one skewness level), each stat is comprised of two
+     * "fields":
      *   [0] numSkewedSplits: 4-byte integer, the number of segment splits during which it was
      *       observed that at least 29 + statIndex keys have been fallen in either the lower or
      *       the higher half of a segment's hash table since the last rotation of the stats (see
      *       {@link #rotateStatsOneOrderForward} and similar methods). This value is always less
      *       than or equal to {@link #numSegmentSplitsToCurrentAverageOrder}.
-     *   [1] lastComputedMaxNonReportedSkewedSplits: 4-byte integer, the maximum non-reported
+     *   [1] numSkewedSplits_maxNonReported_lastComputed: 4-byte integer, the maximum non-reported
      *       number of skewed segment splits (i. e. those counted as numSkewedSplits), computed or
      *       lower-bounded at some point for some {@link #numSegmentSplitsToCurrentAverageOrder}
      *       since the last rotation of the stats.
@@ -209,6 +236,8 @@ class HashCodeDistribution<K, V> {
                         SKEWED_SEGMENT__SPLIT_STATS__ARRAY__SIZE_IN_BYTES : 0);
     }
 
+    //region too large inflated segment reporting
+
     boolean isReportingTooLargeInflatedSegment() {
         return reportTooLargeInflatedSegment;
     }
@@ -218,11 +247,13 @@ class HashCodeDistribution<K, V> {
      * low factor because usually there should be only one inflated segment per 200k ordinary ones;
      * see {@link InflatedSegmentQueryContext}'s class-level Javadoc. However, under some rare
      * circumstances this method might become relatively hot, see the comment for {@link
-     * #reportTooLargeInflatedSegment}.
+     * #checkAndReportTooLargeInflatedSegment0}.
      */
+    @RarelyCalledAmortizedPerSegment
     void checkAndReportTooLargeInflatedSegment(int inflatedSegmentOrder,
             SmoothieMap.InflatedSegment<K, V> inflatedSegment,
-            long mapSize, SmoothieMap<K, V> map, int inflatedSegmentSize, K excludedKey) {
+            long mapSize, SmoothieMap<K, V> map, int inflatedSegmentSize,
+            long excludedKeyHash, K excludedKey) {
         // Using compareNormalizedSegmentSizes() because both inflatedSegmentOrder might be greater
         // than lastAverageSegmentOrderForWhichMaxNonReportedSizeIsComputed and vice versa, if there
         // were no operations involving the inflated segment for some time while the average
@@ -234,31 +265,40 @@ class HashCodeDistribution<K, V> {
         // SmoothieMap.lastComputedAverageSegmentOrder for long time: see a comment in
         // InflatedSegment.shouldBeSplit().
         //
-        // compareNormalizedSegmentSizes() is called inside segmentShouldBeReported() for the same
-        // reason.
-        //
         // If the size of the SmoothieMap is now less than
         // minMapSizeForWhichLastComputedMaxNonReportedSegmentSizeIsValid, then we
         // need to recompute segmentWithAverageOrder_maxNonReportedSize_lastComputed via
-        // segmentShouldBeReported().
+        // checkAndReportTooLargeInflatedSegment0().
         // TODO should use `|` instead of `||`?
         boolean distributionMightBePoor =
                 mapSize < minMapSizeForWhichLastComputedMaxNonReportedSegmentSizeIsValid
                         ||
                         compareNormalizedSegmentSizes(inflatedSegmentSize, inflatedSegmentOrder,
-                                (int) segmentWithAverageOrder_maxNonReportedSize_lastComputed,
-                                (int) lastAverageSegmentOrderForWhichMaxNonReportedSizeIsComputed)
+                                (int) segmentSize_maxNonReported_lastComputed,
+                                (int) lastSegmentOrderForWhichMaxNonReportedSizeIsComputed)
                                 > 0;
         if (!distributionMightBePoor) { // [Positive likely branch]
             return;
         }
-        if (!segmentShouldBeReported(mapSize, map.computeAverageSegmentOrder(mapSize),
-                inflatedSegmentSize, inflatedSegmentOrder)) { // [Positive likely branch]
+        int averageSegmentOrder = map.computeAverageSegmentOrder(mapSize);
+        // It is important that this call to trySplit() happens after
+        // SmoothieMap.computeAverageSegmentOrder() (the previous statement), which updates
+        // SmoothieMap.lastComputedAverageSegmentOrder field if it needs to be updated. This rules
+        // out the possibility of not splitting an inflated segment before because of carefully
+        // constructed sequence of entry insertions into a SmoothieMap which allowed to avoid
+        // updating this field for a long time while inflatedSegmentOrder become actually smaller
+        // than averageSegmentOrder (see a comment in the beginning of this method and the comment
+        // for SmoothieMap.lastComputedAverageSegmentOrder).
+        boolean haveSplit =
+                inflatedSegment.trySplit(inflatedSegmentOrder, map, excludedKeyHash);
+        // haveSplit == false guarantees that inflatedSegmentOrder > averageSegmentOrder, that is
+        // needed by the contract of checkAndReportTooLargeInflatedSegment0().
+        // [Positive likely branch]
+        if (haveSplit) {
             return;
         }
-
-        reportTooLargeInflatedSegment(
-                inflatedSegment, map, inflatedSegmentSize, excludedKey, mapSize);
+        checkAndReportTooLargeInflatedSegment0(mapSize, map, averageSegmentOrder,
+                inflatedSegment, inflatedSegmentSize, inflatedSegmentOrder, excludedKey);
     }
 
     /**
@@ -271,103 +311,150 @@ class HashCodeDistribution<K, V> {
      * The given averageSegmentOrder must be equal to the result of {@link
      * SmoothieMap#doComputeAverageSegmentOrder} called with the given size as the argument.
      *
+     * The given averageSegmentOrder must be not greater than the given segmentOrder.
+     *
      * See {@link InflatedSegmentQueryContext} Javadoc for more info about the statistical model
-     * TODO redo the stats, see https://stats.stackexchange.com/questions/384836/
-     *  time-component-in-the-distribution-of-n-elements-randomly-falling-in-m-bins
-     */
-    private boolean segmentShouldBeReported(long mapSize, int averageSegmentOrder,
-            int segmentSize, int segmentOrder) {
-        int averageSegments = 1 << averageSegmentOrder;
-        double averageSegmentSize = ((double) mapSize) / (double) averageSegments;
-        // TODO check Statistics code or benchmark, whether it's less computationally expensive
-        //  to make distribution calculations with smaller mean
-        // TODO avoid allocation
-        PoissonDistribution segmentSizeDistribution =
-                new PoissonDistribution(averageSegmentSize);
-        double minPoorHashCodeHalfSegmentOccupancyProbabilityForReporting = Math.pow(
-                (double) poorHashCodeDistrib_badOccasion_minReportingProb,
-                1.0 / (double) averageSegments);
-        // The inverseCumulativeProbability() result is the max non-reported size, not + 1, not - 1,
-        // because the discrete value is the bar (in a histogram visualisation of the distribution)
-        // where the threshold probability falls. See also computeMaxNonReportedSkewedSplits(), the
-        // same idea.
-        int segmentWithAverageOrder_maxNonReportedSize =
-                segmentSizeDistribution.inverseCumulativeProbability(
-                        minPoorHashCodeHalfSegmentOccupancyProbabilityForReporting);
-        // No need to guard the writes as in SmoothieMap.computeAverageSegmentOrder(), because
-        // segmentShouldBeReported() should be called rarely, and statistical calculations is a
-        // much heavier part of it.
-        segmentWithAverageOrder_maxNonReportedSize_lastComputed =
-                (byte) segmentWithAverageOrder_maxNonReportedSize;
-        lastAverageSegmentOrderForWhichMaxNonReportedSizeIsComputed = (byte) averageSegmentOrder;
-        // minMapSizeForWhichLastComputedMaxNonReportedSegmentSizeIsValid = TODO;
-        // Comparing segment size with "maxNonReported" rather than "minReported" size: if the
-        // segment order and the threshold order were for the same order, there would be no
-        // difference whether to compare the segment size with "maxNonReported" or "minReported"
-        // size (apart from choosing > and >= properly). But since the averageSegmentOrder may be
-        // higher than the order of the segment (see a comment in
-        // checkAndReportTooLargeInflatedSegment() explaining when it is possible), comparing with
-        // "minReported" would be a loss of precision.
-        //
-        // TODO redo, inflated segments with order less than average must simply be split. Note
-        //  that not returning a enum indicating this for simplicity and because of extreme rareness
-        //  of such cases.
-        // Although generally it may seem that when the average segment order is higher than the
-        // order of the _inflated_ segment, this comparison is trivial anyway because then
-        return compareNormalizedSegmentSizes(
-                segmentSize, segmentOrder,
-                segmentWithAverageOrder_maxNonReportedSize, averageSegmentOrder) > 0;
-    }
-
-    /**
-     * This method is extracted from {@link #checkAndReportTooLargeInflatedSegment} to reduce the
-     * bytecode size of the latter (along the lines with [Reducing bytecode size of a hot method]).
-     * {@link #checkAndReportTooLargeInflatedSegment} is not generally a hot method, but it may
-     * become so in some rare cases:
+     *
+     * checkAndReportTooLargeInflatedSegment0() is not generally a hot method, but it may become so
+     * in some rare cases:
      *  - some key that happens to fall into an inflated segment is removed and inserted into a
      *  SmoothieMap frequently (this case is also mentioned in {@link InflatedSegmentQueryContext}'s
      *  class-level Javadoc. However, {@link InflatedSegmentQueryContext} doesn't optimize for it.)
      *  - A SmoothieMap grows so large that the average segment order becomes {@link
      *  SmoothieMap#MAX_SEGMENTS_ARRAY_ORDER} and a significant portion of segments are inflated.
-     *  Obviously SmoothieMap doesn't and cannot optimize for this case in general, but nevertheless
-     *  helping this case to some degree (by extracting reportTooLargeInflatedSegment() as a method)
-     *  is good while there is little or no downside.
+     *  Obviously, SmoothieMap doesn't and cannot optimize for this case in general.
      */
-    private void reportTooLargeInflatedSegment(
-            SmoothieMap.InflatedSegment<K, V> inflatedSegment,
-            SmoothieMap<K, V> map, int inflatedSegmentSize, K excludedKey, long mapSize) {
-        float poorHashCodeDistribution_benignOccasion_maxProbability =
-                1.0f - poorHashCodeDistrib_badOccasion_minReportingProb;
-        String message = "In a map of " + mapSize + " entries the probability for a segment of " +
-                "above the average order to have " + inflatedSegmentSize + " entries " +
-                "(assuming the hash function distributes keys perfectly well) " +
-                "is below the configured threshold " +
-                poorHashCodeDistribution_benignOccasion_maxProbability;
-        Supplier<String> debugInformation = () -> {
-            // The following two fields are just updated in the segmentShouldBeReported() call
-            // above, so it's ok to call "lastAverageSegmentOrder..." _the_ averageSegmentOrder.
-            return "averageSegmentOrder=" +
-                    lastAverageSegmentOrderForWhichMaxNonReportedSizeIsComputed + "\n" +
-                    "minReportedSizeOfSegmentWithAverageOrder=" +
-                    segmentWithAverageOrder_maxNonReportedSize_lastComputed + "\n";
-            // TODO more fields
+    @RarelyCalledAmortizedPerSegment
+    private void checkAndReportTooLargeInflatedSegment0(long mapSize, SmoothieMap<K, V> map,
+            int averageSegmentOrder, SmoothieMap.InflatedSegment<K, V> inflatedSegment,
+            int segmentSize, int segmentOrder, K excludedKey) {
+        // "Virtual segment" may not exist in reality (there may be one coarser segment instead of
+        // two virtual segments, or there may be two finer segments instead of one virtual segment).
+        // This is just a "hash code basket" used in statistical computations.
+        //
+        // Using averageSegmentOrder as the order of virtual segments here rather than segmentOrder
+        // to improve the precision of the last comparison statement in this method
+        int numVirtualSegments = 1 << averageSegmentOrder;
+        double averageVirtualSegmentSize = ((double) mapSize) / (double) numVirtualSegments;
+        // TODO check Statistics code or benchmark, whether it's less computationally expensive
+        //  to make distribution calculations with smaller mean
+        // TODO avoid allocation
+        PoissonDistribution segmentSizeDistribution =
+                new PoissonDistribution(averageVirtualSegmentSize);
+        // Assuming that probability distributions of each of virtual segments are independent,
+        // Prob[poorHashCodeDistrib_badOccasion] =
+        //   Prob[tooLargeVirtualSegment_badOccasion] ^ numVirtualSegments, therefore
+        // Prob[tooLargeVirtualSegment_badOccasion] =
+        //   Prob[poorHashCodeDistrib_badOccasion] ^ (1 / numVirtualSegments).
+        // These probabilities are not actually independent, because all virtual segments "share"
+        // the same entries pool (mapSize), and virtual segments with sizes less than
+        // averageVirtualSegmentSize should be balanced with virtual segments with sizes greater
+        // than averageVirtualSegmentSize.
+        // TODO verify that this dependency is negligible, at least for the purposes of assessing
+        //  statistical probability of occurrences of outlier segments.
+        double tooLargeVirtualSegment_badOccasion_minReportingProb = Math.pow(
+                (double) poorHashCodeDistrib_badOccasion_minReportingProb,
+                1.0 / (double) numVirtualSegments);
+        // The inverseCumulativeProbability() result is the max non-reported size, not + 1, not - 1,
+        // because the discrete value is the bar (in a histogram visualisation of the distribution)
+        // where the threshold probability falls. See also computeMaxNonReportedSkewedSplits(), the
+        // same idea.
+        int virtualSegment_maxNonReportedSize =
+                segmentSizeDistribution.inverseCumulativeProbability(
+                        tooLargeVirtualSegment_badOccasion_minReportingProb);
+        // No need to guard the writes as in SmoothieMap.computeAverageSegmentOrder(), because
+        // checkAndReportTooLargeInflatedSegment0() should be called rarely, and statistical
+        // calculations is a much heavier part of it.
+        segmentSize_maxNonReported_lastComputed = (byte) virtualSegment_maxNonReportedSize;
+        lastSegmentOrderForWhichMaxNonReportedSizeIsComputed = (byte) segmentOrder;
 
+        double maxAverageSegmentSizeForWhichMaxNonReportedSegmentSizeIsInvalid =
+                poissonMeanByCdf(virtualSegment_maxNonReportedSize - 1,
+                        tooLargeVirtualSegment_badOccasion_minReportingProb);
+        minMapSizeForWhichLastComputedMaxNonReportedSegmentSizeIsValid = (long) Math.ceil(
+                maxAverageSegmentSizeForWhichMaxNonReportedSegmentSizeIsInvalid *
+                        (double) numVirtualSegments);
+        // Sanity check and adjust minMapSizeForWhichLastComputedMaxNonReportedSegmentSizeIsValid
+        if (minMapSizeForWhichLastComputedMaxNonReportedSegmentSizeIsValid > mapSize) {
+            String message = "poorHashCodeDistrib_badOccasion_minReportingProb = " +
+                    poorHashCodeDistrib_badOccasion_minReportingProb + "; " +
+                    "mapSize = " + mapSize + "; " +
+                    "segmentSize + " + segmentSize + "; " +
+                    "segmentOrder = " + segmentOrder;
+            throw new AssertionError(message);
+        }
+        long mapSizeDifference = mapSize -
+                minMapSizeForWhichLastComputedMaxNonReportedSegmentSizeIsValid;
+        if (mapSizeDifference > 0) {
+            // There is no confidence in the excellent precision of poissonMeanByCdf() which
+            // delegates to chiSquaredDistribution.inverseCumulativeProbability() which uses Brent
+            // method. So "playing it safe" by shifting
+            // minMapSizeForWhichLastComputedMaxNonReportedSegmentSizeIsValid a little towards
+            // mapSize. This shouldn't affect the performance much, since we still take advantage of
+            // not calling checkAndReportTooLargeInflatedSegment0() for the bulk of the mapSizes
+            // between the two values.
+            minMapSizeForWhichLastComputedMaxNonReportedSegmentSizeIsValid +=
+                    Math.max(1, mapSizeDifference / 100);
+        }
+
+        int segmentOrderDifference = segmentOrder - averageSegmentOrder;
+        // See the contract of checkAndReportTooLargeInflatedSegment0()
+        Utils.verifyThat(segmentOrderDifference >= 0);
+        int segmentSize_normalizedToVirtual = segmentSize << segmentOrderDifference;
+        // [Positive likely branch]
+        if (segmentSize_normalizedToVirtual <= virtualSegment_maxNonReportedSize) {
+            return;
+        }
+
+        String message = "In a map of " + mapSize + " entries (average segment order = " +
+                averageSegmentOrder + ") the probability for a segment of order " +
+                segmentOrder(inflatedSegment.bitSetAndState) + " to have " + segmentSize +
+                " entries (assuming the hash function distributes keys perfectly well) is below " +
+                "the configured threshold " +
+                poorHashCodeDistribution_benignOccasion_maxProbability();
+
+        @SuppressWarnings("Convert2Lambda") // https://youtrack.jetbrains.com/issue/IDEA-223095
+        Supplier<Map<String, Object>> debugInformation = new Supplier<Map<String, Object>>() {
+            @SuppressWarnings("AutoBoxing")
+            @Override
+            public Map<String, Object> get() {
+                String occasionProbabilityRepr = "CCDF[" + segmentSizeDistribution + ", " +
+                        (segmentSize_normalizedToVirtual - 1) + "]";
+                double occasionProbability = 1.0 - segmentSizeDistribution.cumulativeProbability(
+                        segmentSize_normalizedToVirtual - 1);
+                Map<String, Object> debugInfo = new LinkedHashMap<>();
+
+                debugInfo.put("lastSegmentOrderForWhichMaxNonReportedSizeIsComputed",
+                        lastSegmentOrderForWhichMaxNonReportedSizeIsComputed);
+                debugInfo.put("segmentSize_maxNonReported_lastComputed",
+                        segmentSize_maxNonReported_lastComputed);
+                debugInfo.put("averageSegmentOrder", averageSegmentOrder);
+                debugInfo.put("numVirtualSegments", numVirtualSegments);
+                debugInfo.put("averageVirtualSegmentSize", averageVirtualSegmentSize);
+                debugInfo.put("tooLargeVirtualSegment_badOccasion_minReportingProb",
+                        tooLargeVirtualSegment_badOccasion_minReportingProb);
+                debugInfo.put("occasionProbabilityRepr", occasionProbabilityRepr);
+                debugInfo.put("occasionProbability", occasionProbability);
+                return debugInfo;
+            }
         };
 
         PoorHashCodeDistributionOccasion<K, V> poorHashCodeDistribOccasion =
-                new PoorHashCodeDistributionOccasion<>(
-                        map,
-                        message,
-                        debugInformation,
-                        inflatedSegment,
-                        excludedKey
-
-                );
+                new PoorHashCodeDistributionOccasion<>(TOO_LARGE_INFLATED_SEGMENT, map, message,
+                        debugInformation, inflatedSegment, excludedKey);
         reportingAction.accept(poorHashCodeDistribOccasion);
 
         // If the reporting action doesn't actively remove elements, it doesn't make sense to
         // continue reporting about a too large inflated segment for the same SmoothieMap.
         reportTooLargeInflatedSegment = poorHashCodeDistribOccasion.removedSomeElement();
+    }
+
+    /** See https://stats.stackexchange.com/questions/119969 */
+    private static double poissonMeanByCdf(int k, double cdf) {
+        // TODO avoid allocation
+        Statistics.ChiSquaredDistribution chiSquaredDistribution =
+                new Statistics.ChiSquaredDistribution((double) (2 * (k + 1)));
+        return chiSquaredDistribution.inverseCumulativeProbability(1.0 - cdf) / 2.0;
     }
 
     /**
@@ -391,8 +478,23 @@ class HashCodeDistribution<K, V> {
         return normalizedSize1 - normalizedSize2;
     }
 
+    //endregion
+
+    //region too many skewed segment splits reporting
+
     @AmortizedPerOrder
     void averageSegmentOrderUpdated(
+            int previouslyComputedAverageSegmentOrder, int newAverageSegmentOrder) {
+        if (!hasReportedTooManySkewedSegmentSplits) { // [Positive likely branch]
+            // [Reducing bytecode size of a hot method]: extracting the body of the method as a
+            // separate method.
+            averageSegmentOrderUpdated0(
+                    previouslyComputedAverageSegmentOrder, newAverageSegmentOrder);
+        }
+    }
+
+    @AmortizedPerOrder
+    private void averageSegmentOrderUpdated0(
             int previouslyComputedAverageSegmentOrder, int newAverageSegmentOrder) {
         int differenceInComputedAverageSegmentOrders =
                 newAverageSegmentOrder - previouslyComputedAverageSegmentOrder;
@@ -460,9 +562,18 @@ class HashCodeDistribution<K, V> {
     }
 
     @AmortizedPerSegment
-    void accountSegmentSplit(SmoothieMap<?, ?> map, int priorSegmentOrder, int numKeysForHalfOne,
+    void accountSegmentSplit(SmoothieMap<K, V> map, int priorSegmentOrder, int numKeysForHalfOne,
             int totalNumKeysBeforeSplit) {
+        if (!hasReportedTooManySkewedSegmentSplits) { // [Positive likely branch]
+            // [Reducing bytecode size of a hot method]: extracting the body of the method as a
+            // separate method.
+            accountSegmentSplit0(
+                    map, priorSegmentOrder, numKeysForHalfOne, totalNumKeysBeforeSplit);
+        }
+    }
 
+    private void accountSegmentSplit0(SmoothieMap<K, V> map, int priorSegmentOrder,
+            int numKeysForHalfOne, int totalNumKeysBeforeSplit) {
         // ### Compute maxKeysForHalf.
         int numKeysForHalfTwo = totalNumKeysBeforeSplit - numKeysForHalfOne;
         int maxKeysForHalf = max(numKeysForHalfOne, numKeysForHalfTwo);
@@ -477,7 +588,7 @@ class HashCodeDistribution<K, V> {
         // handleSplitToNeitherCurrentNorNextAverageOrder() for details).
         int lastComputedAverageSegmentOrder = (int) map.lastComputedAverageSegmentOrder;
         int numSegmentSplitsToNewOrder;
-        int @MonotonicNonNull[] skewedSegment_splitStats;
+        int @MonotonicNonNull [] skewedSegment_splitStats;
         boolean splittingToCurrentAverageSegmentOrder =
                 priorSegmentOrder == lastComputedAverageSegmentOrder - 1;
         // TODO make this logic branchless by memory alignment, field offsets, and Unsafe.
@@ -525,18 +636,18 @@ class HashCodeDistribution<K, V> {
             }
         }
 
-        doAccountSkewedSegmentSplit(numSegmentSplitsToNewOrder,
-                maxKeysForHalf, skewedSegment_splitStats);
+        doAccountSkewedSegmentSplit(map, priorSegmentOrder,
+                numSegmentSplitsToNewOrder, maxKeysForHalf, skewedSegment_splitStats);
     }
 
     @AmortizedPerSegment
-    void doAccountSkewedSegmentSplit(
-            int numSplits, int maxKeysForHalf, int[] skewedSegment_splitStats) {
-        int statIndex = SKEWED_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__MAX_ACCOUNTED -
+    private void doAccountSkewedSegmentSplit(SmoothieMap<K, V> map, int priorSegmentOrder,
+            int totalNumSplitsFromOrder, int maxKeysForHalf, int[] skewedSegment_splitStats) {
+        int skewnessLevel = SKEWED_SEGMENT__HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__MAX_ACCOUNTED -
                 max(0, (HASH_TABLE_SLOTS / 2) - maxKeysForHalf);
         // Iterate over stats for different skewness levels.
-        for (; statIndex >= 0; statIndex--) {
-            int statOffset = statIndex * SKEWED_SEGMENT__SPLIT_STAT_SIZE;
+        for (; skewnessLevel >= 0; skewnessLevel--) {
+            int statOffset = skewnessLevel * SKEWED_SEGMENT__SPLIT_STAT_SIZE;
             // TODO use Unsafe to access the array for speed
             int numSkewedSplits = skewedSegment_splitStats[statOffset];
             numSkewedSplits += 1;
@@ -549,39 +660,46 @@ class HashCodeDistribution<K, V> {
             // current skewness level: a single L1 access memory access and an integer comparison
             // with a likely branch.
             // TODO read long word (int + int) from skewedSegment_splitStats to avoid an extra read.
-            int lastComputedMaxNonReportedSkewedSplits = skewedSegment_splitStats[statOffset + 1];
-            if (numSplits <= lastComputedMaxNonReportedSkewedSplits) { // [Positive likely branch]
+            int numSkewedSplits_maxNonReported_lastComputed =
+                    skewedSegment_splitStats[statOffset + 1];
+            // [Positive likely branch]
+            if (numSkewedSplits <= numSkewedSplits_maxNonReported_lastComputed) {
                 continue; // Don't report, continue to account and check in the next stat
             }
 
             // 2) Update the conservative bound: two floating point loads, a multiplication, a
             // truncation to an integer, an integer comparison with a likely branch, and an L1
             // write. Note that we don't store the newly computed conservative bound directly in
-            // lastComputedMaxNonReportedSkewedSplits but rather creating a new variable because
-            // it's unknown which value is greater (lastComputedMaxNonReportedSkewedSplits which is
-            // read on step 1 may be written on step 3 which computes exact bound, hence it might
-            // be greater than the conservative bound computed on this step). We later compute the
-            // maximum of them inside computeMaxNonReportedSkewedSplits().
-            int maxNonReportedSkewedSplitsLowerBound =
-                    computeMaxNonReportedSkewedSplitsLowerBound(statIndex, numSplits);
-            if (numSkewedSplits <= maxNonReportedSkewedSplitsLowerBound) {//[Positive likely branch]
-                skewedSegment_splitStats[statOffset + 1] = maxNonReportedSkewedSplitsLowerBound;
+            // numSkewedSplits_maxNonReported_lastComputed but rather creating a new variable
+            // because it's unknown which value is greater
+            // (numSkewedSplits_maxNonReported_lastComputed which is read on step 1 may have been
+            // written on step 3, i. e. may be an exact bound, hence it might be greater than the
+            // conservative bound computed on this step). We later compute the maximum of them
+            // inside computeNumSkewedSplits_maxNonReported().
+            int numSkewedSplits_maxNonReported_lowerBound =
+                    computeNumSkewedSplits_maxNonReported_lowerBound(
+                            skewnessLevel, totalNumSplitsFromOrder);
+            // [Positive likely branch]
+            if (numSkewedSplits <= numSkewedSplits_maxNonReported_lowerBound) {
+                skewedSegment_splitStats[statOffset + 1] =
+                        numSkewedSplits_maxNonReported_lowerBound;
                 continue; // Don't report, continue to account and check in the next stat
             }
 
             // 3) Compute the exact max num skewed splits on this skewness level: a very expensive
             // operation (500 cycles or 4 main memory reads), see the comment for
-            // computeMaxNonReportedSkewedSplits().
-            int maxNonReportedSkewedSplits = computeMaxNonReportedSkewedSplits(statIndex,
-                    numSplits, lastComputedMaxNonReportedSkewedSplits,
-                    maxNonReportedSkewedSplitsLowerBound);
+            // computeNumSkewedSplits_maxNonReported().
+            int maxNonReportedSkewedSplits = computeNumSkewedSplits_maxNonReported(skewnessLevel,
+                    totalNumSplitsFromOrder, numSkewedSplits_maxNonReported_lastComputed,
+                    numSkewedSplits_maxNonReported_lowerBound);
             if (numSkewedSplits <= maxNonReportedSkewedSplits) { // [Positive likely branch]
                 skewedSegment_splitStats[statOffset + 1] = maxNonReportedSkewedSplits;
                 continue; // Don't report, continue to account and check in the next stat
             }
 
             // numSkewedSplits is not within the precise max bound, reporting.
-            reportTooManySkewedSegmentSplits();
+            reportTooManySkewedSegmentSplits(map, priorSegmentOrder, totalNumSplitsFromOrder,
+                    skewnessLevel, numSkewedSplits);
             // Don't need to continue the loop after reporting the event,
             // hasReportedTooManySkewedSegmentSplits is set to true in the above call to
             // reportTooManySkewedSegmentSplits().
@@ -590,34 +708,39 @@ class HashCodeDistribution<K, V> {
     }
 
     @AmortizedPerSegment
-    private static int computeMaxNonReportedSkewedSplitsLowerBound(int statIndex, int numSplits) {
-        double prob = HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS[statIndex];
+    private static int computeNumSkewedSplits_maxNonReported_lowerBound(
+            int skewnessLevel, int numSplits) {
+        double prob = HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS[skewnessLevel];
         return (int) (prob * (double) numSplits);
     }
 
     /**
-     * Passing lastComputedMaxNonReportedSkewedSplits and maxNonReportedSkewedSplitsLowerBound
-     * separately into this method breaks the abstraction, but helps to reduce the bytecode size of
-     * the caller {@link #doAccountSkewedSegmentSplit} which calls this method relatively rarely. See
-     * [Reducing bytecode size of a hot method]. (See the comment in {@link
-     * #doAccountSkewedSegmentSplit}, step 2 explaining why these are two different values).
+     * Passing numSkewedSplits_maxNonReported_lastComputed and
+     * numSkewedSplits_maxNonReported_lowerBound separately into this method breaks the abstraction,
+     * but helps to reduce the bytecode size of the caller {@link #doAccountSkewedSegmentSplit}
+     * which calls this method relatively rarely. See [Reducing bytecode size of a hot method]. (See
+     * the comment in {@link #doAccountSkewedSegmentSplit}, step 2 explaining why these are two
+     * different values).
      *
      * This operation may take either ~500 cycles (see the comment for {@link
      * BinomialDistributionInverseCdfApproximation}) or require up to 4 main memory accesses (see
      * the comment for {@link PrecomputedBinomialCdfValues}).
      */
     @AmortizedPerSegment
-    private int computeMaxNonReportedSkewedSplits(int statIndex, int numSplits,
-            int lastComputedMaxNonReportedSkewedSplits, int maxNonReportedSkewedSplitsLowerBound) {
-        if (numSplits <= PrecomputedBinomialCdfValues.MAX_SPLITS_WITH_PRECOMPUTED_CDF_VALUES) {
-            int prevMaxNonReportedSkewedSegments = max(lastComputedMaxNonReportedSkewedSplits,
-                    maxNonReportedSkewedSplitsLowerBound);
-            return PrecomputedBinomialCdfValues.inverseCumulativeProbability(statIndex, numSplits,
-                    poorHashCodeDistrib_badOccasion_minReportingProb,
-                    prevMaxNonReportedSkewedSegments);
+    private int computeNumSkewedSplits_maxNonReported(int skewnessLevel,
+            int totalNumSplitsFromOrder, int numSkewedSplits_maxNonReported_lastComputed,
+            int numSkewedSplits_maxNonReported_lowerBound) {
+        if (totalNumSplitsFromOrder <=
+                PrecomputedBinomialCdfValues.MAX_SPLITS_WITH_PRECOMPUTED_CDF_VALUES) {
+            int skewedSegments_maxNonReported_prev = max(
+                    numSkewedSplits_maxNonReported_lastComputed,
+                    numSkewedSplits_maxNonReported_lowerBound);
+            return PrecomputedBinomialCdfValues.inverseCumulativeProbability(skewnessLevel,
+                    totalNumSplitsFromOrder, poorHashCodeDistrib_badOccasion_minReportingProb,
+                    skewedSegments_maxNonReported_prev);
         } else {
             return BinomialDistributionInverseCdfApproximation.inverseCumulativeProbability(
-                    statIndex, numSplits,
+                    skewnessLevel, totalNumSplitsFromOrder,
                     (double) poorHashCodeDistrib_badOccasion_minReportingProb);
         }
     }
@@ -626,9 +749,55 @@ class HashCodeDistribution<K, V> {
      * Extracted for [Reducing bytecode size of a hot method] {@link #doAccountSkewedSegmentSplit}.
      */
     @BarelyCalled
-    private void reportTooManySkewedSegmentSplits() {
+    private void reportTooManySkewedSegmentSplits(SmoothieMap<K, V> map, int priorSegmentOrder,
+            int totalNumSplitsFromOrder, int skewnessLevel, int numSkewedSplits) {
         hasReportedTooManySkewedSegmentSplits = true;
-        reportingAction.accept(null); // TODO
+        String message = "There have been " + numSkewedSplits + " \"skewed\" splits of segments " +
+                "of order " + priorSegmentOrder + " in a SmoothieMap.\n" +
+                "The probability of this (assuming the hash function distributes keys perfectly " +
+                "well) is below the configured threshold " +
+                poorHashCodeDistribution_benignOccasion_maxProbability() + ".\nThis is due to " +
+                "a correlation between bit #" + (Segment.HASH__BASE_GROUP_INDEX_BITS - 1) +
+                " in hash codes of keys in the map and one of the bits from #" +
+                SmoothieMap.HASH__SEGMENT_LOOKUP_SHIFT + ",\nor a combination of some of these " +
+                "bits.";
+        @SuppressWarnings("Convert2Lambda") // https://youtrack.jetbrains.com/issue/IDEA-223095
+        Supplier<Map<String, Object>> debugInformation = new Supplier<Map<String, Object>>() {
+            @SuppressWarnings("AutoBoxing")
+            @Override
+            public Map<String, Object> get() {
+                double skewnessProb = HASH_TABLE_HALF__SLOTS_MINUS_MAX_KEYS__SPLIT_CUMULATIVE_PROBS[
+                        skewnessLevel];
+                Statistics.BinomialDistribution skewnessDistribution =
+                        new Statistics.BinomialDistribution(totalNumSplitsFromOrder, skewnessProb);
+                String occasionProbabilityRepr =
+                        "CCDF[" + skewnessDistribution + ", " + (numSkewedSplits - 1) + "]";
+                double occasionProbability =
+                        1.0 - skewnessDistribution.cumulativeProbability(numSkewedSplits - 1);
+                Map<String, Object> debugInfo = new LinkedHashMap<>();
+                debugInfo.put("skewnessLevel", skewnessLevel);
+                debugInfo.put("priorSegmentOrder", priorSegmentOrder);
+                debugInfo.put("totalNumSplitsFromOrder", totalNumSplitsFromOrder);
+                debugInfo.put("occasionProbabilityRepr", occasionProbabilityRepr);
+                debugInfo.put("occasionProbability", occasionProbability);
+                debugInfo.put("mapSize", map.sizeAsLong());
+                debugInfo.put(
+                        "lastComputedAverageSegmentOrder", map.lastComputedAverageSegmentOrder);
+                debugInfo.put("numSegmentSplitsToCurrentAverageOrder",
+                        numSegmentSplitsToCurrentAverageOrder);
+                debugInfo.put("skewedSegment_splitStatsToCurrentAverageOrder",
+                        Arrays.toString(skewedSegment_splitStatsToCurrentAverageOrder));
+                debugInfo.put(
+                        "numSegmentSplitsToNextAverageOrder", numSegmentSplitsToNextAverageOrder);
+                debugInfo.put("skewedSegment_splitStatsToNextAverageOrder",
+                        Arrays.toString(skewedSegment_splitStatsToNextAverageOrder));
+                return debugInfo;
+            }
+        };
+        PoorHashCodeDistributionOccasion<K, V> poorHashCodeDistributionOccasion =
+                new PoorHashCodeDistributionOccasion<>(TOO_MANY_SKEWED_SEGMENT_SPLITS, map, message,
+                        debugInformation, null, null);
+        reportingAction.accept(poorHashCodeDistributionOccasion);
     }
 
     /**
@@ -659,4 +828,9 @@ class HashCodeDistribution<K, V> {
         }
     }
 
+    //endregion
+
+    private float poorHashCodeDistribution_benignOccasion_maxProbability() {
+        return 1.0f - poorHashCodeDistrib_badOccasion_minReportingProb;
+    }
 }

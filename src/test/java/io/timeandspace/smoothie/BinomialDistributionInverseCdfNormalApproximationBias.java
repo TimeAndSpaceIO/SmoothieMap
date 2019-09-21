@@ -40,8 +40,8 @@ import java.util.stream.IntStream;
  *
  *  2) inverseCumulativeProbability() arguments, ranging from 0.8 to 0.99999. These values
  *  correspond to complements of poor hash code distribution probability reporting thresholds,
- *  ranging from {@link #MAX__POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB} to {@link
- *  #MIN__POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB}. We choose {@link #CORRECTION_POINTS}
+ *  ranging from {@link #POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MAX} to {@link
+ *  #POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MIN}. We choose {@link #CORRECTION_POINTS}
  *  points on this range, so that the total of {@link #CORRECTION_POINTS} * {@code SKEW_PROBS.length}
  *  precomputed MAE correction values are stored and used from SmoothieMap. Points are spaced
  *  exponentially, approaching 1.0. See the comment for {@link
@@ -95,7 +95,7 @@ final class BinomialDistributionInverseCdfNormalApproximationBias {
     private static final int MIN_SPLITS = 1_000;
     private static final int MAX_SPLITS = 1_000_000_000;
 
-    /** Should be much less than {@link #MIN__POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB} */
+    /** Should be much less than {@link #POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MIN} */
     private static final double SOLVER_ABSOLUTE_ACCURACY = 0.0000001;
     /** Copied from {@link BaseAbstractUnivariateSolver} */
     private static final double SOLVER_RELATIVE_ACCURACY = 1e-14;
@@ -132,17 +132,17 @@ final class BinomialDistributionInverseCdfNormalApproximationBias {
      * approximation.
      *
      * RMSE of correction grows from approximately 0.02 (closer to {@link
-     * #MAX__POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB}, for all {@link #SKEW_PROBS}), up to
+     * #POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MAX}, for all {@link #SKEW_PROBS}), up to
      * 0.13, 0.14, 0.15 and 0.18 closer to {@link
-     * #MIN__POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB}, for probabilities from {@link
+     * #POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MIN}, for probabilities from {@link
      * #SKEW_PROBS} array respectively.
      */
     private static final int CORRECTION_POINTS = 128;
 
-    /** Copied {@link SmoothieMap#MAX__POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB} */
-    private static final double MAX__POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB = 0.2;
-    /** Copied {@link SmoothieMap#MIN__POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB} */
-    private static final double MIN__POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB = 0.00001;
+    /** Copied {@link SmoothieMap#POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MAX} */
+    private static final double POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MAX = 0.2;
+    /** Copied {@link SmoothieMap#POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MIN} */
+    private static final double POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MIN = 0.00001;
 
     /**
      * Choosing points for piecewise linear approximation on the poor hash code distribution
@@ -169,8 +169,8 @@ final class BinomialDistributionInverseCdfNormalApproximationBias {
     private static final double POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__EXP_BASE =
             1.0 /
                     Math.pow(
-                            MAX__POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB /
-                                    MIN__POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB,
+                            POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MAX /
+                                    POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MIN,
                             1.0 / CORRECTION_POINTS
                     );
 
@@ -181,9 +181,9 @@ final class BinomialDistributionInverseCdfNormalApproximationBias {
         for (double skewProb : SKEW_PROBS) {
             System.out.println("prob: " + skewProb);
             double min_poorHashCodeDistrib_badOccasion_minRequiredConfidence =
-                    1.0 - MAX__POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB;
+                    1.0 - POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MAX;
             double max_poorHashCodeDistrib_badOccasion_minRequiredConfidence =
-                    1.0 - MIN__POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB;
+                    1.0 - POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MIN;
 
             // Mean error correction is optimal:
             // see https://math.stackexchange.com/questions/2554243
@@ -213,9 +213,9 @@ final class BinomialDistributionInverseCdfNormalApproximationBias {
 
             // Exponential loop
             for (double poorHashCodeDistrib_benignOccasion_maxProb =
-                 MAX__POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB;
+                 POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MAX;
                  poorHashCodeDistrib_benignOccasion_maxProb >
-                         MIN__POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB;
+                         POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MIN;
                  poorHashCodeDistrib_benignOccasion_maxProb *=
                          POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__EXP_BASE) {
                 double poorHashCodeDistrib_badOccasion_minRequiredConfidence =
@@ -245,13 +245,13 @@ final class BinomialDistributionInverseCdfNormalApproximationBias {
                 // in turn, linearly translate to average segment orders of SmoothieMaps). Slope is
                 // always very close to zero and gets only slightly more significant when the poor
                 // hash code distribution reporting probability threshold approaches
-                // MIN__POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB (for all four
+                // POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MIN (for all four
                 // probabilities in SKEW_PROBS alike).
                 //
                 // SimpleRegression data (slope and intercept, two float values) requires two times
                 // more storage space than MAE corrections (a single float value). It allows
                 // to improve RMSE of the approximation by at most 0.04 (closer to
-                // MIN__POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB).
+                // POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MIN).
                 //
                 // It is chosen to apply MAE correction instead of SimpleRegression-based correction
                 // because that 0.04 difference in RMSE of correction almost doesn't affect the

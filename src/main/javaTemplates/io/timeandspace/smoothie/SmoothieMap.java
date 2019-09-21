@@ -239,8 +239,12 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
     private static final long ENTRY_SET__SIZE_IN_BYTES =
             classSizeInBytes(SmoothieMap.EntrySet.class);
 
-    static final double MAX__POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB = 0.2;
-    static final double MIN__POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB = 0.00001;
+    /**
+     * If these values are changed the documentation for {@link
+     * SmoothieMapBuilder#reportPoorHashCodeDistribution} should be updated.
+     */
+    static final double POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MAX = 0.2;
+    static final double POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MIN = 0.00001;
 
     public static <K, V> SmoothieMapBuilder<K, V> newBuilder() {
         return SmoothieMapBuilder.create();
@@ -516,14 +520,14 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
      * stored in the tag groups.
      */
     @CompileTimeConstant
-    static final int SEGMENT_LOOKUP_HASH_SHIFT = HASH__BASE_GROUP_INDEX_BITS + TAG_HASH_BITS;
+    static final int HASH__SEGMENT_LOOKUP_SHIFT = HASH__BASE_GROUP_INDEX_BITS + TAG_HASH_BITS;
 
     /**
      * The number of bytes to shift (masked) hash to the right to obtain the offset in {@link
      * #segmentsArray}.
      */
-    private static final int SEGMENT_ARRAY_OFFSET_HASH_SHIFT =
-            SEGMENT_LOOKUP_HASH_SHIFT - ARRAY_OBJECT_INDEX_SHIFT;
+    private static final int HASH__SEGMENT_ARRAY_OFFSET_SHIFT =
+            HASH__SEGMENT_LOOKUP_SHIFT - ARRAY_OBJECT_INDEX_SHIFT;
 
     private static final
     AtomicIntegerFieldUpdater<SmoothieMap> SEGMENT_STRUCTURE_MODIFICATION_STAMP_UPDATER =
@@ -630,7 +634,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
     /* endif */
 
     /* if Tracking hashCodeDistribution */
-    @Nullable HashCodeDistribution<K, V> hashCodeDistribution;
+    private @Nullable HashCodeDistribution<K, V> hashCodeDistribution;
     /* endif */
 
     /* if Tracking segmentOrderStats */
@@ -675,6 +679,9 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         /* endif */
         /* if Flag doShrink */
         this.doShrink = builder.doShrink();
+        /* endif */
+        /* if Tracking hashCodeDistribution */
+        this.hashCodeDistribution = builder.createHashCodeDistributionIfNeeded();
         /* endif */
 
         SegmentsArrayLengthAndNumSegments initialSegmentsArrayLengthAndNumSegments =
@@ -796,17 +803,17 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
      *
      * TODO update javadoc
      *
-     * Ensures that the lowest {@link #SEGMENT_LOOKUP_HASH_SHIFT} of the result are affected by all
+     * Ensures that the lowest {@link #HASH__SEGMENT_LOOKUP_SHIFT} of the result are affected by all
      * input hash bits, i. e. partial avalanche effect. To achieve full avalanche effect (all bits
      * of the result are affected by all input hash bits) considerably more steps are required,
      * e. g. see the finalization procedure of xxHash. Having the lowest {@link
-     * #SEGMENT_LOOKUP_HASH_SHIFT} bits of the result distributed well is critical because those
+     * #HASH__SEGMENT_LOOKUP_SHIFT} bits of the result distributed well is critical because those
      * bits are responsible for SmoothieMap's efficiency (number of collisions and unnecessary key
      * comparisons) within (ordinary) segments, that is not reported to a callback provided to
      * {@link SmoothieMapBuilder#reportPoorHashCodeDistribution}, because there are checks that only
      * catch higher level, inter-segment anomalies (see {@link
-     * #segmentShouldBeReported}, (TODO link to num inflated segments method) for
-     * more details).
+     * HashCodeDistribution#checkAndReportTooLargeInflatedSegment0},
+     * (TODO link to num inflated segments method) for more details).
      *  because of two types of intra-segment distribution problems - slot concentration and stored
      *  hash collisions
      *  TODO detect slot concentration?
@@ -828,7 +835,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
 
     static long intToLongHashCode(int intHashCode) {
         long x = ((long) intHashCode) * LONG_PHI_MAGIC;
-        return x ^ (x >>> (Long.SIZE - SEGMENT_LOOKUP_HASH_SHIFT));
+        return x ^ (x >>> (Long.SIZE - HASH__SEGMENT_LOOKUP_SHIFT));
     }
 
     /**
@@ -1113,7 +1120,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
 
     private void updateSegmentLookupMask(int segmentsArrayLength) {
         verifyIsPowerOfTwo(segmentsArrayLength, "segments array length");
-        segmentLookupMask = ((long) segmentsArrayLength - 1) << SEGMENT_LOOKUP_HASH_SHIFT;
+        segmentLookupMask = ((long) segmentsArrayLength - 1) << HASH__SEGMENT_LOOKUP_SHIFT;
     }
 
     /**
@@ -1148,7 +1155,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         // optimized _that_ hard) and has it's cost too, which is not guaranteed to be lower than
         // the cost of reading from the segmentsArray field twice.
         long visibleSegmentsArrayLength =
-                (this.segmentLookupMask >>> SEGMENT_LOOKUP_HASH_SHIFT) + 1;
+                (this.segmentLookupMask >>> HASH__SEGMENT_LOOKUP_SHIFT) + 1;
         // Needs to be a long, because if priorSegmentOrder = MAX_SEGMENTS_ARRAY_LENGTH == 30,
         // requiredSegmentsArrayLength = 2^31 will overflow as an int.
         long requiredSegmentsArrayLength = 1L << (priorSegmentOrder + 1);
@@ -1237,7 +1244,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
 
     @HotPath
     private Object segmentBySegmentLookupBits(long hash_segmentLookupBits) {
-        long segmentArrayOffset = hash_segmentLookupBits >>> SEGMENT_ARRAY_OFFSET_HASH_SHIFT;
+        long segmentArrayOffset = hash_segmentLookupBits >>> HASH__SEGMENT_ARRAY_OFFSET_SHIFT;
         @Nullable Object segmentsArray = this.segmentsArray;
         /* if Enabled moveToMapWithShrunkArray */
         // [segmentsArray non-null checks]
@@ -1259,7 +1266,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
     @HotPath
     private int isFullCapacitySegment(long hash_segmentLookupBits) {
         return IsFullCapacitySegmentBitSet.getValue(isFullCapacitySegmentBitSet,
-                hash_segmentLookupBits >>> SEGMENT_LOOKUP_HASH_SHIFT);
+                hash_segmentLookupBits >>> HASH__SEGMENT_LOOKUP_SHIFT);
     }
 
     @AmortizedPerSegment
@@ -1297,7 +1304,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
     static int firstSegmentIndexByHashAndOrder(long hash, int segmentOrder) {
         // In native implementation, BEXTR instruction (see en.wikipedia.org/wiki/
         // Bit_Manipulation_Instruction_Sets#BMI1_(Bit_Manipulation_Instruction_Set_1)) can be used.
-        return ((int) (hash >>> SEGMENT_LOOKUP_HASH_SHIFT)) & ((1 << segmentOrder) - 1);
+        return ((int) (hash >>> HASH__SEGMENT_LOOKUP_SHIFT)) & ((1 << segmentOrder) - 1);
     }
 
     private static int firstSegmentIndexByIndexAndOrder(@NonNegative int segmentIndex,
@@ -3228,7 +3235,10 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         int segmentOrder = segmentOrder(bitSetAndState);
         // InflatedSegment.shouldBeSplit() refers to and depends on the following call to
         // computeAverageSegmentOrder().
-        int averageSegmentOrder = computeAverageSegmentOrder(size);
+        // Using `size + 1` as the argument for computeAverageSegmentOrder() because we are in the
+        // process of insertion of a new entry. If just `size` was used it would be possible that
+        // a segment is inflated and then immediately split afterwards.
+        int averageSegmentOrder = computeAverageSegmentOrder(size + 1);
         boolean acceptableOrderAfterSplitting =
                 segmentOrder < averageSegmentOrder + MAX_SEGMENT_ORDER_DIFFERENCE_FROM_AVERAGE;
         int modCountAddition;
@@ -3381,7 +3391,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         Segment<K, V> intoSegment =
                 allocateNewSegmentWithoutSettingBitSetAndSet(intoSegmentAllocCapacity);
         int siblingSegmentsQualificationBitIndex =
-                SEGMENT_LOOKUP_HASH_SHIFT + siblingSegmentsOrder - 1;
+                HASH__SEGMENT_LOOKUP_SHIFT + siblingSegmentsOrder - 1;
 
         long fromSegmentIsHigher = doSplit(fromSegment,
                 fromSegment_bitSetAndState, intoSegment, intoSegmentAllocCapacity,
@@ -7332,11 +7342,20 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
                 //  which has it always non-null. (But properly then it should be inlined into
                 //  SmoothieMap altogether.)
                 if (hashCodeDistribution != null) {
-                    checkAndReportIfTooLarge(
-                            hashCodeDistribution, segmentOrder, smoothie, delegate.size(), key);
+                    checkAndReportIfTooLarge(hashCodeDistribution, segmentOrder, smoothie,
+                            delegate.size(), hash, key);
                 }
             }
             /* endif */
+        }
+
+        boolean trySplit(int segmentOrder, SmoothieMap<K, V> smoothie, long hash) {
+            if (shouldBeSplit(smoothie, segmentOrder)) {
+                smoothie.splitInflated(hash, this);
+                return true;
+            } else {
+                return false;
+            }
         }
 
         /**
@@ -7432,17 +7451,18 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
 
         /* if Tracking hashCodeDistribution */
         private void checkAndReportIfTooLarge(HashCodeDistribution<K, V> hashCodeDistribution,
-                int segmentOrder, SmoothieMap<K, V> smoothie, int delegateSize, K excludedKey) {
+                int segmentOrder, SmoothieMap<K, V> smoothie, int delegateSize,
+                long excludedKeyHash, K excludedKey) {
             if (!hashCodeDistribution.isReportingTooLargeInflatedSegment()) {
                 return;
             }
             long smoothieSize = smoothie.size;
+            // Unlikely branch
             // TODO should use `|` instead of `||`?
             if (smoothieSize < checkAndReportIfTooLarge_lastCall_smoothieSize ||
                     delegateSize > checkAndReportIfTooLarge_lastCall_delegateSize) {
-                hashCodeDistribution.checkAndReportTooLargeInflatedSegment(
-                        segmentOrder, this, smoothieSize, smoothie, delegateSize, excludedKey);
-
+                hashCodeDistribution.checkAndReportTooLargeInflatedSegment(segmentOrder, this,
+                        smoothieSize, smoothie, delegateSize, excludedKeyHash, excludedKey);
             }
             checkAndReportIfTooLarge_lastCall_smoothieSize = smoothieSize;
             checkAndReportIfTooLarge_lastCall_delegateSize = delegateSize;
