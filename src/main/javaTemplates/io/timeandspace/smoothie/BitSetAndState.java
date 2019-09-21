@@ -399,6 +399,17 @@ final class BitSetAndState {
             order = segmentOrder(bitSetAndState);
             allocCapacity = allocCapacity(bitSetAndState);
         }
+
+        @Override
+        public String toString() {
+            return "DebugBitSetAndState{" +
+                    "type=" + type +
+                    ", bitSet=" + bitSet +
+                    ", size=" + size +
+                    ", order=" + order +
+                    ", allocCapacity=" + allocCapacity +
+                    '}';
+        }
     }
 
     private BitSetAndState() {}
