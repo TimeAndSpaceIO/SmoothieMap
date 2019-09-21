@@ -135,6 +135,7 @@ tasks.withType(io.timeandspace.jpsg.JpsgTask) {
     with 'Disabled moveToMapWithShrunkArray'
     with 'Interleaved segments'
     with 'Supported intermediateSegments'
+    with 'Debug hashTableHalfPopulationStats'
 
     exclude 'Continuous segments'
 }

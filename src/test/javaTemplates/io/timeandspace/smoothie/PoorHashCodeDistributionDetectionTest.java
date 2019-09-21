@@ -85,14 +85,14 @@ final class PoorHashCodeDistributionDetectionTest {
                 .build();
         SplittableRandom r =
                 new SplittableRandom((long) Float.floatToRawIntBits(maxOccasionProbability));
-        int badHashCodeCadence = 10;
+        int badHashCodeCadence = 2;
         for (int i = 0; i < 1_000_000; i++) {
             int hashCode = r.nextInt();
             if (i % badHashCodeCadence == 0) {
                 if ((hashCode & (1 << SmoothieMap.Segment.HASH__BASE_GROUP_INDEX_BITS - 1)) != 0) {
-                    hashCode |= 1 << SmoothieMap.HASH__SEGMENT_LOOKUP_SHIFT;
+                    hashCode |= 1 << (SmoothieMap.HASH__SEGMENT_LOOKUP_SHIFT + 1);
                 } else {
-                    hashCode &= ~(1 << SmoothieMap.HASH__SEGMENT_LOOKUP_SHIFT);
+                    hashCode &= ~(1 << (SmoothieMap.HASH__SEGMENT_LOOKUP_SHIFT + 1));
                 }
             }
             smoothieMap.put(new BadHashCodeObject(hashCode), new Object());

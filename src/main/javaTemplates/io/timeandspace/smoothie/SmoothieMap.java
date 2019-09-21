@@ -35,6 +35,7 @@ import org.jetbrains.annotations.Contract;
 
 import java.io.Serializable;
 import java.util.AbstractCollection;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -42,6 +43,7 @@ import java.util.ConcurrentModificationException;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
@@ -665,6 +667,17 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
     private byte maxSegmentOrder;
     /* endif */
 
+    /* if Debug hashTableHalfPopulationStats */
+
+    // Tracking of hash table half population stats is not optimized super-heavily (unlike, for
+    // example, segmentOrderStats), therefore it must only be enabled for debugging. If you read
+    // this comment in the source code for a production build of SmoothieMap, this must be fixed.
+
+    private List<int[]> debug_hashTableHalfPopulationStatsByOrder = new ArrayList<>(1);
+    private int[] debug_hashTableHalfPopulationStats_total =
+            new int[SEGMENT_MAX_ALLOC_CAPACITY + 1];
+    /* endif */
+
     private @MonotonicNonNull ObjSet<K> keySet;
     private @MonotonicNonNull Collection<V> values;
     private @MonotonicNonNull ObjSet<Entry<K, V>> entrySet;
@@ -1091,6 +1104,19 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
     }
 
     /* endif */ /* comment // Tracking segmentOrderStats //*/
+    //endregion
+
+    //region hashTableHalfPopulationStats-related methods
+    /* if Debug hashTableHalfPopulationStats */
+    private void debug_accountHashTableHalfPopulation(
+            int fromSegmentOrder, int numKeysForLowerHalf) {
+        debug_hashTableHalfPopulationStats_total[numKeysForLowerHalf]++;
+        while (debug_hashTableHalfPopulationStatsByOrder.size() <= fromSegmentOrder) {
+            debug_hashTableHalfPopulationStatsByOrder.add(new int[SEGMENT_MAX_ALLOC_CAPACITY + 1]);
+        }
+        debug_hashTableHalfPopulationStatsByOrder.get(fromSegmentOrder)[numKeysForLowerHalf]++;
+    }
+    /* endif */
     //endregion
 
 
@@ -3579,7 +3605,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
                 K key = readKeyAtOffset(fromSegment, fromSegment_allocOffset);
                 long hash = keyHashCode(key);
 
-                /* if Tracking hashCodeDistribution */
+                /* if Tracking hashCodeDistribution || Debug hashTableHalfPopulationStats */
                 int halfBit = 1 << (HASH__BASE_GROUP_INDEX_BITS - 1);
                 // Counting hashTableHalfBits regardless of whether hashCodeDistribution is null
                 // (see [hashCodeDistribution null check]), because adding a null check is
@@ -3955,11 +3981,16 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         // TODO [hashCodeDistribution null check]
         @Nullable HashCodeDistribution<K, V> hashCodeDistribution = this.hashCodeDistribution;
         if (hashCodeDistribution != null) {
-            int numKeysForHalfOne =
+            int numKeysForHigherHalf =
                     hashTableHalfBits >>> (HASH__BASE_GROUP_INDEX_BITS - 1);
             hashCodeDistribution.accountSegmentSplit(
-                    this, newSegmentOrder - 1, numKeysForHalfOne, fromSegment_initialSize);
+                    this, newSegmentOrder - 1, numKeysForHigherHalf, fromSegment_initialSize);
         }
+        /* endif */
+        /* if Debug hashTableHalfPopulationStats */
+        int numKeysForHigherHalf = hashTableHalfBits >>> (HASH__BASE_GROUP_INDEX_BITS - 1);
+        int numKeysForLowerHalf = fromSegment_initialSize - numKeysForHigherHalf;
+        debug_accountHashTableHalfPopulation(newSegmentOrder - 1, numKeysForLowerHalf);
         /* endif */
 
         return swappedSegments;
