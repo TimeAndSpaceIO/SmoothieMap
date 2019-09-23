@@ -14,7 +14,7 @@ final class PrintLargeMapStats {
     public static void main(String[] args) {
         fillMap();
 
-        System.out.println("Average segment order: " + map.lastComputedAverageSegmentOrder);
+        System.out.println("Average segment order: " + map.averageSegmentOrder_lastComputed);
         System.out.printf("Map size per entry: %.2f%n",
                 (double) map.sizeInBytes() / (double) map.size());
         SmoothieMapStats smoothieMapStats = new SmoothieMapStats();

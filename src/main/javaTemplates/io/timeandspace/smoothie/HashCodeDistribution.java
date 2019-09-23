@@ -262,7 +262,7 @@ class HashCodeDistribution<K, V> {
         // SmoothieMap.InflatedSegment.shouldBeSplit() that should intercept the case of
         // inflatedSegmentOrder being smaller than the average segment order, it might be possible
         // to construct a sequence of actions that allow to avoid that interception by not updating
-        // SmoothieMap.lastComputedAverageSegmentOrder for long time: see a comment in
+        // SmoothieMap.averageSegmentOrder_lastComputed for long time: see a comment in
         // InflatedSegment.shouldBeSplit().
         //
         // If the size of the SmoothieMap is now less than
@@ -283,12 +283,12 @@ class HashCodeDistribution<K, V> {
         int averageSegmentOrder = map.computeAverageSegmentOrder(mapSize);
         // It is important that this call to trySplit() happens after
         // SmoothieMap.computeAverageSegmentOrder() (the previous statement), which updates
-        // SmoothieMap.lastComputedAverageSegmentOrder field if it needs to be updated. This rules
+        // SmoothieMap.averageSegmentOrder_lastComputed field if it needs to be updated. This rules
         // out the possibility of not splitting an inflated segment before because of carefully
         // constructed sequence of entry insertions into a SmoothieMap which allowed to avoid
         // updating this field for a long time while inflatedSegmentOrder become actually smaller
         // than averageSegmentOrder (see a comment in the beginning of this method and the comment
-        // for SmoothieMap.lastComputedAverageSegmentOrder).
+        // for SmoothieMap.averageSegmentOrder_lastComputed).
         boolean haveSplit =
                 inflatedSegment.trySplit(inflatedSegmentOrder, map, excludedKeyHash);
         // haveSplit == false guarantees that inflatedSegmentOrder > averageSegmentOrder, that is
@@ -484,20 +484,20 @@ class HashCodeDistribution<K, V> {
 
     @AmortizedPerOrder
     void averageSegmentOrderUpdated(
-            int previouslyComputedAverageSegmentOrder, int newAverageSegmentOrder) {
+            int averageSegmentOrder_prevComputed, int newAverageSegmentOrder) {
         if (!hasReportedTooManySkewedSegmentSplits) { // [Positive likely branch]
             // [Reducing bytecode size of a hot method]: extracting the body of the method as a
             // separate method.
             averageSegmentOrderUpdated0(
-                    previouslyComputedAverageSegmentOrder, newAverageSegmentOrder);
+                    averageSegmentOrder_prevComputed, newAverageSegmentOrder);
         }
     }
 
     @AmortizedPerOrder
     private void averageSegmentOrderUpdated0(
-            int previouslyComputedAverageSegmentOrder, int newAverageSegmentOrder) {
+            int averageSegmentOrder_prevComputed, int newAverageSegmentOrder) {
         int differenceInComputedAverageSegmentOrders =
-                newAverageSegmentOrder - previouslyComputedAverageSegmentOrder;
+                newAverageSegmentOrder - averageSegmentOrder_prevComputed;
         if (differenceInComputedAverageSegmentOrders == 1) { // [Positive likely branch]
             // "Shift" stats one order forward when a SmoothieMap is growing.
             rotateStatsOneOrderForward();
@@ -506,12 +506,12 @@ class HashCodeDistribution<K, V> {
             rotateStatsOneOrderBackward();
         } else if (differenceInComputedAverageSegmentOrders < -1) {
             // This may happen when SmoothieMap just started growing again after significant
-            // shrinking, see the comment for SmoothieMap.lastComputedAverageSegmentOrder.
+            // shrinking, see the comment for SmoothieMap.averageSegmentOrder_lastComputed.
             rotateStatsSeveralOrdersBackward();
         } else {
             throw new IllegalStateException(
                     "Unexpected change of average segment order: previously computed = " +
-                            previouslyComputedAverageSegmentOrder + ", newly computed = " +
+                            averageSegmentOrder_prevComputed + ", newly computed = " +
                             newAverageSegmentOrder);
         }
     }
@@ -545,7 +545,7 @@ class HashCodeDistribution<K, V> {
     /**
      * Zero out both "Current" and "Next". This may happen when a SmoothieMap starts growing after
      * significant shrinking, see the comment for {@link
-     * SmoothieMap#lastComputedAverageSegmentOrder}.
+     * SmoothieMap#averageSegmentOrder_lastComputed}.
      */
     @BarelyCalled
     private void rotateStatsSeveralOrdersBackward() {
@@ -586,11 +586,11 @@ class HashCodeDistribution<K, V> {
         // on this) or if this is a split to the order which is neither the current average segment
         // order nor the next average segment order in the SmoothieMap (see the comment for
         // handleSplitToNeitherCurrentNorNextAverageOrder() for details).
-        int lastComputedAverageSegmentOrder = (int) map.lastComputedAverageSegmentOrder;
+        int averageSegmentOrder_lastComputed = (int) map.averageSegmentOrder_lastComputed;
         int numSegmentSplitsToNewOrder;
         int @MonotonicNonNull [] skewedSegment_splitStats;
         boolean splittingToCurrentAverageSegmentOrder =
-                priorSegmentOrder == lastComputedAverageSegmentOrder - 1;
+                priorSegmentOrder == averageSegmentOrder_lastComputed - 1;
         // TODO make this logic branchless by memory alignment, field offsets, and Unsafe.
         if (splittingToCurrentAverageSegmentOrder) { // 50-50 unpredictable branch
             numSegmentSplitsToNewOrder = numSegmentSplitsToCurrentAverageOrder + 1;
@@ -610,7 +610,7 @@ class HashCodeDistribution<K, V> {
             // Fall-through to the doAccountSkewedSegmentSplit() call
         } else {
             boolean splittingToNextAverageSegmentOrder =
-                    priorSegmentOrder == lastComputedAverageSegmentOrder;
+                    priorSegmentOrder == averageSegmentOrder_lastComputed;
             if (splittingToNextAverageSegmentOrder) { // [Positive likely branch]
                 numSegmentSplitsToNewOrder = numSegmentSplitsToNextAverageOrder + 1;
                 this.numSegmentSplitsToNextAverageOrder = numSegmentSplitsToNewOrder;
@@ -631,7 +631,7 @@ class HashCodeDistribution<K, V> {
                 // See the comment for numSegmentSplitsToCurrentAverageOrder,
                 // [Some information is lost] section.
                 handleSplitToNeitherCurrentNorNextAverageOrder(
-                        priorSegmentOrder, lastComputedAverageSegmentOrder);
+                        priorSegmentOrder, averageSegmentOrder_lastComputed);
                 return;
             }
         }
@@ -782,7 +782,7 @@ class HashCodeDistribution<K, V> {
                 debugInfo.put("occasionProbability", occasionProbability);
                 debugInfo.put("mapSize", map.sizeAsLong());
                 debugInfo.put(
-                        "lastComputedAverageSegmentOrder", map.lastComputedAverageSegmentOrder);
+                        "averageSegmentOrder_lastComputed", map.averageSegmentOrder_lastComputed);
                 debugInfo.put("numSegmentSplitsToCurrentAverageOrder",
                         numSegmentSplitsToCurrentAverageOrder);
                 debugInfo.put("skewedSegment_splitStatsToCurrentAverageOrder",
@@ -807,9 +807,9 @@ class HashCodeDistribution<K, V> {
      * concurrent modifications going on between the moment of making a {@link
      * SmoothieMap#MAX_SEGMENT_ORDER_DIFFERENCE_FROM_AVERAGE}-involving in {@link
      * SmoothieMap#makeSpaceAndInsert} and the moment of reading {@link
-     * SmoothieMap#lastComputedAverageSegmentOrder} in {@link #accountSegmentSplit} (which is called
+     * SmoothieMap#averageSegmentOrder_lastComputed} in {@link #accountSegmentSplit} (which is called
      * downstream from {@link SmoothieMap#makeSpaceAndInsert}) which result in {@link
-     * SmoothieMap#lastComputedAverageSegmentOrder} being updated.
+     * SmoothieMap#averageSegmentOrder_lastComputed} being updated.
      *
      * Hence the only purpose of this method is to check the condition that means there are
      * concurrent modifications and throw a {@link ConcurrentModificationException}. Rare, but
@@ -817,12 +817,12 @@ class HashCodeDistribution<K, V> {
      * in statistics.
      */
     private static void handleSplitToNeitherCurrentNorNextAverageOrder(
-            int priorSegmentOrder, int lastComputedAverageSegmentOrder) {
-        if (priorSegmentOrder > maxSplittableSegmentOrder(lastComputedAverageSegmentOrder)) {
+            int priorSegmentOrder, int averageSegmentOrder_lastComputed) {
+        if (priorSegmentOrder > maxSplittableSegmentOrder(averageSegmentOrder_lastComputed)) {
             throw new ConcurrentModificationException(
                     "Prior segment order: " + priorSegmentOrder +
                             ", last computed average segment order: " +
-                            lastComputedAverageSegmentOrder + ". " +
+                            averageSegmentOrder_lastComputed + ". " +
                             "This cannot be an ordinary segment split without concurrent " +
                             "modification of the map going on.");
         }

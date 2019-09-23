@@ -17,7 +17,7 @@ import static io.timeandspace.smoothie.Utils.verifyThat;
  * not used and always appear as free allocation indexes.
  *
  * The next 5 bits (from 48th to 52nd) represent the segment order. See {@link
- * SmoothieMap#lastComputedAverageSegmentOrder} and {@link SmoothieMap#order} for more info about
+ * SmoothieMap#averageSegmentOrder_lastComputed} and {@link SmoothieMap#order} for more info about
  * this concept.
  *
  * The next 5 bits (from 53rd to 57th) are used to codify the allocation capacity of the segment

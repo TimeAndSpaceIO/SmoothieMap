@@ -580,7 +580,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
      * (triggered when a segment grows too large) and {@link #splitInflated} (triggered when the
      * average segment order grows large enough for an inflated segment to not be considered outlier
      * anymore). It means that if no entries are inserted into a SmoothieMap or more entries are
-     * deleted from a SmoothieMap than inserted the value stored in lastComputedAverageSegmentOrder
+     * deleted from a SmoothieMap than inserted the value stored in averageSegmentOrder_lastComputed
      * could become stale, much larger than the actual average segment order. It's updated when a
      * SmoothieMap starts to grow again (in the next {@link #doSplit} call), so there shouldn't be
      * any "high watermark" effects, unless entries are inserted into a SmoothieMap in an artificial
@@ -588,7 +588,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
      * removals happen from ordinary segments. See also the comment for {@link
      * InflatedSegment#shouldBeSplit}, and the comments inside that method.
      */
-    byte lastComputedAverageSegmentOrder;
+    byte averageSegmentOrder_lastComputed;
 
     /* if Supported intermediateSegments */
     /** Mirror field: {@link SmoothieMapBuilder#allocateIntermediateSegments}. */
@@ -1629,34 +1629,34 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         return context;
     }
 
-    /** @see #lastComputedAverageSegmentOrder */
+    /** @see #averageSegmentOrder_lastComputed */
     @AmortizedPerSegment
     final int computeAverageSegmentOrder(long size) {
-        int previouslyComputedAverageSegmentOrder = (int) lastComputedAverageSegmentOrder;
+        int averageSegmentOrder_prevComputed = (int) averageSegmentOrder_lastComputed;
         int averageSegmentOrder = doComputeAverageSegmentOrder(size);
-        // Guarding unlikely write: it's unlikely that lastComputedAverageSegmentOrder actually
+        // Guarding unlikely write: it's unlikely that averageSegmentOrder_lastComputed actually
         // needs to be updated. Guarding the write (which is done in updateAverageSegmentOrder())
         // should be preferable when a GC algorithm with expensive write barriers is used.
         // [Positive likely branch]
-        if (averageSegmentOrder == previouslyComputedAverageSegmentOrder) {
+        if (averageSegmentOrder == averageSegmentOrder_prevComputed) {
             return averageSegmentOrder;
         } else {
             // [Rarely taken branch is extracted as a method]
-            updateAverageSegmentOrder(previouslyComputedAverageSegmentOrder, averageSegmentOrder);
+            updateAverageSegmentOrder(averageSegmentOrder_prevComputed, averageSegmentOrder);
             return averageSegmentOrder;
         }
     }
 
     @AmortizedPerOrder
     private void updateAverageSegmentOrder(
-            int previouslyComputedAverageSegmentOrder, int newAverageSegmentOrder) {
-        lastComputedAverageSegmentOrder = (byte) newAverageSegmentOrder;
+            int averageSegmentOrder_prevComputed, int newAverageSegmentOrder) {
+        averageSegmentOrder_lastComputed = (byte) newAverageSegmentOrder;
         /* if Tracking hashCodeDistribution */
         // TODO [hashCodeDistribution null check]
         @Nullable HashCodeDistribution<K, V> hashCodeDistribution = this.hashCodeDistribution;
         if (hashCodeDistribution != null) {
             hashCodeDistribution.averageSegmentOrderUpdated(
-                    previouslyComputedAverageSegmentOrder, newAverageSegmentOrder);
+                    averageSegmentOrder_prevComputed, newAverageSegmentOrder);
         }
         /* endif */
     }
@@ -4741,11 +4741,12 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         // intermediate capacity and it's quite likely that they need to be replaced with
         // full-capacity segment(s) while the entries are moved from the inflated segment.
         //
-        // Finally, if inflatedSegmentOrder is less than the current lastComputedAverageSegmentOrder
-        // + MAX_SEGMENT_ORDER_DIFFERENCE_FROM_AVERAGE - 1 (which shouldn't normally happen, but
-        // is possible if an artificial sequence of key insertions is constructed so that the
-        // inflated segment is not accessed while the rest of the map has become more than four
-        // times bigger) then the result segments can even be split during doSplitInflated().
+        // Finally, if inflatedSegmentOrder is less than the current
+        // averageSegmentOrder_lastComputed + MAX_SEGMENT_ORDER_DIFFERENCE_FROM_AVERAGE - 1 (which
+        // shouldn't normally happen, but is possible if an artificial sequence of key insertions is
+        // constructed so that the inflated segment is not accessed while the rest of the map has
+        // become more than four times bigger) then the result segments can even be split during
+        // doSplitInflated().
         //
         // Accounting for these possibilities would make the private insertion procedure in this
         // method too complex, especially considering that methods handling inflated segments don't
@@ -7262,14 +7263,14 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
          * equal to {@link #MAX_SEGMENTS_ARRAY_LENGTH}.)
          */
         private boolean shouldBeSplit(SmoothieMap<K, V> smoothie, int segmentOrder) {
-            int lastComputedAverageSegmentOrder = (int) smoothie.lastComputedAverageSegmentOrder;
+            int averageSegmentOrder_lastComputed = (int) smoothie.averageSegmentOrder_lastComputed;
             // If this inflated segment's order is equal to MAX_SEGMENTS_ARRAY_ORDER it can't be
             // split anyway, even if the average segment order is equal to
             // MAX_SEGMENTS_ARRAY_ORDER - 1 or MAX_SEGMENTS_ARRAY_ORDER.
             //
             // The alternative to having this check as a separate branch is to compute
             // bound = min(MAX_SEGMENTS_ARRAY_ORDER,
-            //     lastComputedAverageSegmentOrder + MAX_SEGMENT_ORDER_DIFFERENCE_FROM_AVERAGE)
+            //     averageSegmentOrder_lastComputed + MAX_SEGMENT_ORDER_DIFFERENCE_FROM_AVERAGE)
             // and to have `segmentOrder < bound` as the outer check in the branch below. However,
             // since `segmentOrder != MAX_SEGMENTS_ARRAY_ORDER` should be perfectly predicted in all
             // target cases (the maximum optimization of throughput when the average segment order
@@ -7280,7 +7281,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
                 // a relatively expensive computeAverageSegmentOrder() call on each structural
                 // mutation access to an inflated segment, the second (nested) check is definitive.
                 //
-                // Average segment order is computed (and therefore lastComputedAverageSegmentOrder
+                // Average segment order is computed (and therefore averageSegmentOrder_lastComputed
                 // is updated) every time before a segment is split in a SmoothieMap in
                 // makeSpaceAndInsert(). Inflated segments normally start to appear only in large
                 // SmoothieMaps which have a lot of segments, so when a SmoothieMap grows and the
@@ -7288,21 +7289,21 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
                 // comparison to the size of the map and, therefore, the frequency of updates of any
                 // single given inflated segment) in the process. This makes unlikely that segments
                 // will stay inflated needlessly for long time and are not deflated because of this
-                // optimizing pre-check, when lastComputedAverageSegmentOrder becomes stale. If a
+                // optimizing pre-check, when averageSegmentOrder_lastComputed becomes stale. If a
                 // SmoothieMap is so large that all segments are inflated and no splits occur (and,
-                // therefore, lastComputedAverageSegmentOrder is not updated), or is in a shrinking
+                // therefore, averageSegmentOrder_lastComputed is not updated), or is in a shrinking
                 // phase after growing that large, shouldBeSplit() and splitInflated() are
                 // irrelevant. In the latter case the inflated segment is expected to deflate
                 // eventually via deflateSmall().
                 //
                 // [Positive likely branch]
-                if (segmentOrder > maxSplittableSegmentOrder(lastComputedAverageSegmentOrder)) {
+                if (segmentOrder > maxSplittableSegmentOrder(averageSegmentOrder_lastComputed)) {
                     return false;
                 } else {
-                    lastComputedAverageSegmentOrder =
+                    averageSegmentOrder_lastComputed =
                             smoothie.computeAverageSegmentOrder(smoothie.size);
                     int maxSplittableSegmentOrder =
-                            maxSplittableSegmentOrder(lastComputedAverageSegmentOrder);
+                            maxSplittableSegmentOrder(averageSegmentOrder_lastComputed);
                     return segmentOrder <= maxSplittableSegmentOrder;
                 }
             } else {
