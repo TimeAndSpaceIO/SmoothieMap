@@ -1,3 +1,4 @@
+/* if Tracking hashCodeDistribution */
 package io.timeandspace.smoothie;
 
 import org.apache.commons.math3.util.Pair;

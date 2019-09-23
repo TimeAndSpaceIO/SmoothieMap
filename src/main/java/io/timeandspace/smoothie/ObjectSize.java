@@ -14,9 +14,11 @@ import static io.timeandspace.smoothie.Utils.verifyThat;
 
 public final class ObjectSize {
 
+    private static final Field[] EMPTY_FIELDS = new Field[0];
     private static final long OBJECT_HEADER_SIZE;
     private static final @Nullable Field HASH_MAP_TABLE_FIELD;
     private static final ClassValue<Long> CLASS_SIZES = new ClassValue<Long>() {
+        @SuppressWarnings("UnnecessaryBoxing")
         @Override
         protected Long computeValue(Class<?> type) {
             return Long.valueOf(internalClassSizeInBytes(type));
@@ -53,14 +55,16 @@ public final class ObjectSize {
 
     private static long internalClassSizeInBytes(Class<?> objClass) {
         verifyThat(!objClass.isArray());
-        @Nullable Field[] lastSetOfDeclaredFields = lastSetOfDeclaredFields(objClass);
-        if (lastSetOfDeclaredFields == null) { // There are no declared fields.
+        Field[] lastSetOfDeclaredFields = lastSetOfDeclaredFields(objClass);
+        // U::objectFieldOffset triggers forbidden-apis of Objects.requireNonNull() for some reason
+        //noinspection Convert2MethodRef
+        @Nullable Field lastField = Stream
+                .of(lastSetOfDeclaredFields)
+                .max(Comparator.comparingLong(f -> U.objectFieldOffset(f)))
+                .orElse(null);
+        if (lastField == null) { // There are no declared fields.
             return OBJECT_HEADER_SIZE;
         }
-        Field lastField = Stream
-                .of(lastSetOfDeclaredFields)
-                .max(Comparator.comparingLong(U::objectFieldOffset))
-                .get();
         long lastFieldOffset = U.objectFieldOffset(lastField);
         Class<?> lastFieldType = lastField.getType();
         int lastFieldSize = U.arrayIndexScale(arrayClassByElementClass(lastFieldType));
@@ -92,7 +96,7 @@ public final class ObjectSize {
         }
     }
 
-    private static @Nullable Field[] lastSetOfDeclaredFields(Class<?> objClass) {
+    private static Field[] lastSetOfDeclaredFields(Class<?> objClass) {
         while (objClass != Object.class) {
             Field[] lastSetOfDeclaredFields = Stream
                     .of(objClass.getDeclaredFields())
@@ -103,7 +107,7 @@ public final class ObjectSize {
             }
             objClass = objClass.getSuperclass();
         }
-        return null;
+        return EMPTY_FIELDS;
     }
 
     private static Class<?> arrayClassByElementClass(Class<?> elementClass) {
@@ -111,6 +115,7 @@ public final class ObjectSize {
     }
 
     private static class ClassWithOneByteField {
+        @SuppressWarnings("unused")
         byte field;
     }
 

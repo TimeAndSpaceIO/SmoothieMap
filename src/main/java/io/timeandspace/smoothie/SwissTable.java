@@ -250,7 +250,7 @@ final class SwissTable<K, V> {
     }
 
     public @Nullable V get(K key) {
-        Objects.requireNonNull(key);
+        Utils.checkNonNull(key);
         long hash = keyHashCode(key);
         long hashControlBits = hashControlBits(hash);
         long groupFirstSlotIndex = firstSlotIndex(hash);
@@ -279,7 +279,7 @@ final class SwissTable<K, V> {
     }
 
     public @Nullable V put(K key, V value) {
-        Objects.requireNonNull(key);
+        Utils.checkNonNull(key);
         long hash = keyHashCode(key);
         return putInternal(key, hash, value);
     }

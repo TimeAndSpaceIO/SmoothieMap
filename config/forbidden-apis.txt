@@ -1,1 +1,1 @@
-java.util.Objects#requireNonNull(java.lang.Object) @ Use Utils.requireNonNull() instead
+java.util.Objects#requireNonNull(java.lang.Object) @ Use Utils.checkNonNull() instead

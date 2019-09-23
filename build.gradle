@@ -129,15 +129,28 @@ tasks.withType(io.timeandspace.jpsg.JpsgTask) {
     // also small - perhaps just replacing NPEs with CMEs and throwing them earlier, which may make
     // investigation of some bugs easier.
     with 'Disabled extraConcurrencyChecks'
-    with 'Tracking hashCodeDistribution'
+    // If this is set to Tracking then should also comment out the exclusion in
+    // sourceSets.main.resources below.
+    with 'NotTracking hashCodeDistribution'
     with 'Flag doShrink'
-    with 'Tracking segmentOrderStats'
+    with 'NotTracking segmentOrderStats'
     with 'Disabled moveToMapWithShrunkArray'
     with 'Interleaved segments'
     with 'Supported intermediateSegments'
-    with 'Debug hashTableHalfPopulationStats'
+    with 'NotTracking hashTableHalfPopulationStats'
 
     exclude 'Continuous segments'
+}
+
+sourceSets {
+    main {
+        resources {
+            // These two lines must be commented out if Tracking hashCodeDistribution is set
+            // in JPSG configuration above.
+            exclude '**/*.offsets'
+            exclude '**/*.cdfValues'
+        }
+    }
 }
 
 tasks.withType(Checkstyle) {
@@ -154,10 +167,17 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 forbiddenApis {
+    ignoreFailures = false
+}
+
+forbiddenApisMain {
     bundledSignatures = [ 'jdk-system-out', 'jdk-deprecated' ]
     signaturesFiles = files('config/forbidden-apis.txt')
     suppressAnnotations = ['**.SuppressForbidden']
-    ignoreFailures = false
+}
+
+forbiddenApisTest {
+    bundledSignatures = [ 'jdk-deprecated' ]
 }
 
 //checkerFramework {

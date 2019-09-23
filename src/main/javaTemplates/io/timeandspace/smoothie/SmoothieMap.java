@@ -5573,7 +5573,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
 
         @Override
         public boolean removeAll(Collection<?> c) {
-            Objects.requireNonNull(c);
+            Utils.checkNonNull(c);
             if (sizeAsLong() > (long) c.size() &&
                     // [Optimization of removeAll() in a set view]
                     smoothie.keyEquivalence().equals(Equivalence.defaultEquality()) &&
