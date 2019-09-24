@@ -107,6 +107,7 @@ public abstract class Equivalence<T> {
      *
      * @return the {@link CharSequence} equivalence
      */
+    @SuppressWarnings("unused") // Public API; TODO use in tests
     public static Equivalence<CharSequence> charSequence() {
         return CHAR_SEQUENCE;
     }
@@ -146,11 +147,12 @@ public abstract class Equivalence<T> {
      * @param <V> the entry value type
      * @return a {@link java.util.Map.Entry} equivalence for the given key and value equivalences
      */
+    @SuppressWarnings("unused") // Public API; TODO use in tests
     public static <K, V> Equivalence<Map.Entry<K, V>> entryEquivalence(
             Equivalence<K> keyEquivalence, Equivalence<V> valueEquivalence) {
         if (keyEquivalence.equals(defaultEquality()) && valueEquivalence.equals(defaultEquality()))
             return defaultEquality();
-        return new AutoValue_Equivalence_EntryEquivalence<K, V>(keyEquivalence, valueEquivalence);
+        return new AutoValue_Equivalence_EntryEquivalence<>(keyEquivalence, valueEquivalence);
     }
 
     @AutoValue
@@ -162,9 +164,11 @@ public abstract class Equivalence<T> {
 
         @Override
         public boolean equivalent(Map.Entry<K, V> a, Map.Entry<K, V> b) {
-            return a == b ||
-                    keyEquivalence().nullableEquivalent(a.getKey(), b.getKey()) &&
-                            valueEquivalence().nullableEquivalent(a.getValue(), b.getValue());
+            //noinspection ObjectEquality: identity comparison is intended
+            boolean entriesIdentical = a == b;
+            return entriesIdentical ||
+                    (keyEquivalence().nullableEquivalent(a.getKey(), b.getKey()) &&
+                            valueEquivalence().nullableEquivalent(a.getValue(), b.getValue()));
         }
 
         @Override
@@ -195,11 +199,13 @@ public abstract class Equivalence<T> {
 
         @Override
         public boolean nullableEquivalent(@Nullable Object a, @Nullable Object b) {
+            //noinspection ObjectEquality: identity comparison is intended
             return a == b;
         }
 
         @Override
         public boolean equivalent(Object a, Object b) {
+            //noinspection ObjectEquality: identity comparison is intended
             return a == b;
         }
 
@@ -235,7 +241,11 @@ public abstract class Equivalence<T> {
 
         @Override
         public boolean equivalent(CharSequence a, CharSequence b) {
-            if (a.equals(b))
+            // Intentionally trying equals to return earlier when `a` and `b` are identical or both
+            // are Strings.
+            @SuppressWarnings("UndefinedEquals")
+            boolean charSequencesEqual = a.equals(b);
+            if (charSequencesEqual)
                 return true;
             if (a instanceof String)
                 return ((String) a).contentEquals(b);
@@ -283,7 +293,9 @@ public abstract class Equivalence<T> {
      *         {@code false} otherwise
      */
     public boolean nullableEquivalent(@Nullable T a, @Nullable T b) {
-        return a == b || (a != null && b != null && equivalent(a, b));
+        //noinspection ObjectEquality: identity comparison is intended
+        boolean objectsIdentical = a == b;
+        return objectsIdentical || (a != null && b != null && equivalent(a, b));
     }
 
     /**

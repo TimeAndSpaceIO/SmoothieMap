@@ -7411,7 +7411,8 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
                 // If internalNode is not identical to nodeWithKeyAndHash it means that an entry
                 // already existed in the delegate HashMap with it. mappingFunction wan't executed,
                 // internalNode was just returned from context.computeIfAbsent().
-                //noinspection ObjectEquality: identity comparision is intended
+                @SuppressWarnings({"ObjectEquality", "ReferenceEquality"})
+                // Identity comparision is intended.
                 boolean entryInserted = internalNode == nodeWithKeyAndHash;
                 if (entryInserted) {
                     onEntryInsertion(smoothie, hash
@@ -7435,7 +7436,8 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
                 // See the Javadoc comment for InflatedSegmentQueryContext.compute() for
                 // explanations of why the expression below means that an entry was inserted into
                 // the delegate map.
-                //noinspection ObjectEquality: identity comparision is intended
+                @SuppressWarnings({"ObjectEquality", "ReferenceEquality"})
+                // Identity comparision is intended.
                 boolean entryInserted = internalNode == nodeWithKeyAndHash;
                 // [Segment structure modification only after entry structure modification]
                 if (entryInserted) {
@@ -7466,7 +7468,8 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
                 // If internalNode is not identical to nodeWithKeyAndHash it means that an entry
                 // already existed in the delegate HashMap with it, in other words, no entry
                 // insertion have happened to the delegate map.
-                //noinspection ObjectEquality: identity comparision is intended
+                @SuppressWarnings({"ObjectEquality", "ReferenceEquality"})
+                // Identity comparision is intended.
                 boolean entryInserted = internalNode == nodeWithKeyAndHash;
                 if (entryInserted) {
                     onEntryInsertion(smoothie, hash
