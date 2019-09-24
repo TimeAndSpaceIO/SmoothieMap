@@ -16,7 +16,7 @@ plugins {
 
     id 'checkstyle'
     id 'de.thetaphi.forbiddenapis' version '2.6'
-    id 'net.ltgt.errorprone' version '0.8'
+    id 'net.ltgt.errorprone' version '0.8.1'
 }
 
 // The plugin inhibits annotation processing, disabling for now: see
