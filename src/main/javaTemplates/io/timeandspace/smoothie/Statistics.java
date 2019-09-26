@@ -36,6 +36,7 @@ import java.util.function.DoubleUnaryOperator;
  */
 @SuppressWarnings({"ImplicitNumericConversion", "FloatingPointLiteralPrecision"})
 final class Statistics {
+    //CHECKSTYLE:OFF: MagicNumber
 
     private Statistics() {}
 
@@ -189,7 +190,7 @@ final class Statistics {
      * Default implementations are provided for some of the methods
      * that do not vary from distribution to distribution.
      */
-    static abstract class AbstractContinuousDistribution
+    abstract static class AbstractContinuousDistribution
             implements ContinuousDistribution {
         /**
          * {@inheritDoc}
@@ -541,7 +542,7 @@ final class Statistics {
          * @param sd Standard deviation for this distribution.
          * @throws IllegalArgumentException if {@code sd <= 0}.
          */
-        public NormalDistribution(double mean,
+        NormalDistribution(double mean,
                 double sd) {
             if (sd <= 0) {
                 throw new IllegalArgumentException(sd + " <= 0");
@@ -1078,7 +1079,7 @@ final class Statistics {
          * @throws IllegalArgumentException if {@code trials < 0}, or if
          * {@code p < 0} or {@code p > 1}.
          */
-        public BinomialDistribution(int trials,
+        BinomialDistribution(int trials,
                 double p) {
             if (trials < 0) {
                 throw new IllegalArgumentException(trials + " trials is negative");
@@ -1273,7 +1274,8 @@ final class Statistics {
          *
          * <ul>
          *   <li>
-         *   I. J. Thompson,  A. R. Barnett. "Coulomb and Bessel Functions of Complex Arguments and Order."
+         *   I. J. Thompson,  A. R. Barnett. "Coulomb and Bessel Functions of Complex Arguments and
+         *   Order."
          *   <a target="_blank" href="http://www.fresco.org.uk/papers/Thompson-JCP64p490.pdf">
          *   http://www.fresco.org.uk/papers/Thompson-JCP64p490.pdf</a>
          *   </li>
@@ -1319,8 +1321,8 @@ final class Statistics {
                 hN = hPrev * deltaN;
 
                 if (Double.isInfinite(hN)) {
-                    throw new RuntimeException(
-                            "Continued fraction convergents diverged to +/- infinity for value " + x);
+                    throw new RuntimeException("Continued fraction convergents diverged to " +
+                            "+/- infinity for value " + x);
                 }
                 if (Double.isNaN(hN)) {
                     throw new RuntimeException("Continued fraction diverged to NaN for value " + x);
@@ -1616,7 +1618,8 @@ final class Statistics {
      *
      * It is related to the Gamma function by the following equation
      * \[
-     * \Gamma(x) = \sqrt{2\pi} \, \frac{(g + x + \frac{1}{2})^{x + \frac{1}{2}} \, e^{-(g + x + \frac{1}{2})} \, \mathrm{lanczos}(x)}
+     * \Gamma(x) = \sqrt{2\pi} \, \frac{(g + x + \frac{1}{2})^{x + \frac{1}{2}} \,
+     *   e^{-(g + x + \frac{1}{2})} \, \mathrm{lanczos}(x)}
      *                                 {x}
      * \]
      * where \( g \) is the Lanczos constant.
@@ -2448,7 +2451,8 @@ final class Statistics {
              * is implemented when no overflow is likely to occur. If overflow occurs
              * with the natural computation, the following identity is used. It is
              * based on the BOOST library
-             * http://www.boost.org/doc/libs/1_35_0/libs/math/doc/sf_and_dist/html/math_toolkit/special/sf_gamma/igamma.html
+             * http://www.boost.org/doc/libs/1_35_0/libs/math/doc/sf_and_dist/html/math_toolkit/
+             * special/sf_gamma/igamma.html
              * Formula (15) needs adaptations, which are detailed below.
              *
              *       y      a
@@ -2688,9 +2692,9 @@ final class Statistics {
          * Two float numbers are considered equal if there are {@code (maxUlps - 1)}
          * (or fewer) floating point numbers between them, i.e. two adjacent floating
          * point numbers are considered equal.
-         * Adapted from <a
-         * href="http://randomascii.wordpress.com/2012/02/25/comparing-floating-point-numbers-2012-edition/">
-         * Bruce Dawson</a>.  Returns {@code false} if either of the arguments is NaN.
+         * Adapted from <a href="
+         * http://randomascii.wordpress.com/2012/02/25/comparing-floating-point-numbers-2012-edition
+         * ">Bruce Dawson</a>.  Returns {@code false} if either of the arguments is NaN.
          *
          * @param x first value
          * @param y second value
@@ -2769,9 +2773,9 @@ final class Statistics {
          * floating point numbers are considered equal.
          * </p>
          * <p>
-         * Adapted from <a
-         * href="http://randomascii.wordpress.com/2012/02/25/comparing-floating-point-numbers-2012-edition/">
-         * Bruce Dawson</a>. Returns {@code false} if either of the arguments is NaN.
+         * Adapted from <a href="
+         * http://randomascii.wordpress.com/2012/02/25/comparing-floating-point-numbers-2012-edition
+         * ">Bruce Dawson</a>. Returns {@code false} if either of the arguments is NaN.
          * </p>
          *
          * @param x first value
@@ -2971,7 +2975,8 @@ final class Statistics {
              *   Incomplete Gamma Function</a>, equation (4).
              *  </li>
              *  <li>
-             *   <a href="http://mathworld.wolfram.com/ConfluentHypergeometricFunctionoftheFirstKind.html">
+             *   <a href="
+             *   http://mathworld.wolfram.com/ConfluentHypergeometricFunctionoftheFirstKind.html">
              *   Confluent Hypergeometric Function of the First Kind</a>, equation (1).
              *  </li>
              * </ul>
@@ -3024,7 +3029,8 @@ final class Statistics {
         }
 
         /**
-         * Creates the \( Q(a, x) \equiv 1 - P(a, x) \) <a href="http://mathworld.wolfram.com/RegularizedGammaFunction.html">
+         * Creates the \( Q(a, x) \equiv 1 - P(a, x) \)
+         * <a href="http://mathworld.wolfram.com/RegularizedGammaFunction.html">
          * regularized Gamma function</a>.
          *
          * Class is immutable.
@@ -3121,7 +3127,8 @@ final class Statistics {
         private static final double HALF_LOG_TWO_PI = 0.5 * Math.log(TWO_PI);
 
         /** exact Stirling expansion error for certain values. */
-        private static final double[] EXACT_STIRLING_ERRORS = { 0.0, /* 0.0 */
+        private static final double[] EXACT_STIRLING_ERRORS = {
+                0.0, /* 0.0 */
                 0.1534264097200273452913848, /* 0.5 */
                 0.0810614667953272582196702, /* 1.0 */
                 0.0548141210519176538961390, /* 1.5 */
@@ -3275,4 +3282,5 @@ final class Statistics {
             return ret;
         }
     }
+    //CHECKSTYLE:ON: MagicNumber
 }

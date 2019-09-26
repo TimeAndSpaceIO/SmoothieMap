@@ -1,4 +1,20 @@
 /* if Interleaved segments */
+/*
+ * Copyright (C) The SmoothieMap Authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package io.timeandspace.smoothie;
 
 import io.timeandspace.smoothie.BitSetAndState.DebugBitSetAndState;
@@ -1364,7 +1380,7 @@ final class InterleavedSegments {
     static abstract class IntermediateCapacitySegment_AllocationSpaceBeforeGroup0<K, V>
             extends SmoothieMap.Segment<K, V> {
         @SuppressWarnings("unused")
-        @Nullable Object k0, v0, k1, v1;
+        private @Nullable Object k0, v0, k1, v1;
     }
 
     static abstract class IntermediateCapacitySegment_Group0<K, V>
@@ -1376,7 +1392,7 @@ final class InterleavedSegments {
     static abstract class IntermediateCapacitySegment_AllocationSpaceBetweenGroups0And1<K, V>
             extends IntermediateCapacitySegment_Group0<K, V> {
         @SuppressWarnings("unused")
-        @Nullable Object k2, v2, k3, v3, k4, v4, k5, v5;
+        private @Nullable Object k2, v2, k3, v3, k4, v4, k5, v5;
     }
 
     static abstract class IntermediateCapacitySegment_Group1<K, V>
@@ -1388,7 +1404,7 @@ final class InterleavedSegments {
     static abstract class IntermediateCapacitySegment_AllocationSpaceBetweenGroups1And2<K, V>
             extends IntermediateCapacitySegment_Group1<K, V> {
         @SuppressWarnings("unused")
-        @Nullable Object k6, v6, k7, v7, k8, v8, k9, v9;
+        private @Nullable Object k6, v6, k7, v7, k8, v8, k9, v9;
     }
 
     static abstract class IntermediateCapacitySegment_Group2<K, V>
@@ -1400,7 +1416,7 @@ final class InterleavedSegments {
     static abstract class IntermediateCapacitySegment_AllocationSpaceBetweenGroups2And3<K, V>
             extends IntermediateCapacitySegment_Group2<K, V> {
         @SuppressWarnings("unused")
-        @Nullable Object k10, v10, k11, v11, k12, v12, k13, v13;
+        private @Nullable Object k10, v10, k11, v11, k12, v12, k13, v13;
     }
 
     static abstract class IntermediateCapacitySegment_Group3<K, V>
@@ -1412,7 +1428,7 @@ final class InterleavedSegments {
     static abstract class IntermediateCapacitySegment_AllocationSpaceBetweenGroups3And4<K, V>
             extends IntermediateCapacitySegment_Group3<K, V> {
         @SuppressWarnings("unused")
-        @Nullable Object k14, v14, k15, v15, k16, v16, k17, v17;
+        private @Nullable Object k14, v14, k15, v15, k16, v16, k17, v17;
     }
 
     static abstract class IntermediateCapacitySegment_Group4<K, V>
@@ -1424,7 +1440,7 @@ final class InterleavedSegments {
     static abstract class IntermediateCapacitySegment_AllocationSpaceBetweenGroups4And5<K, V>
             extends IntermediateCapacitySegment_Group4<K, V> {
         @SuppressWarnings("unused")
-        @Nullable Object k18, v18, k19, v19, k20, v20, k21, v21;
+        private @Nullable Object k18, v18, k19, v19, k20, v20, k21, v21;
     }
 
     static abstract class IntermediateCapacitySegment_Group5<K, V>
@@ -1436,7 +1452,7 @@ final class InterleavedSegments {
     static abstract class IntermediateCapacitySegment_AllocationSpaceBetweenGroups5And6<K, V>
             extends IntermediateCapacitySegment_Group5<K, V> {
         @SuppressWarnings("unused")
-        @Nullable Object k22, v22, k23, v23, k24, v24, k25, v25;
+        private @Nullable Object k22, v22, k23, v23, k24, v24, k25, v25;
     }
 
     static abstract class IntermediateCapacitySegment_Group6<K, V>
@@ -1448,7 +1464,7 @@ final class InterleavedSegments {
     static abstract class IntermediateCapacitySegment_AllocationSpaceBetweenGroups6And7<K, V>
             extends IntermediateCapacitySegment_Group6<K, V> {
         @SuppressWarnings("unused")
-        @Nullable Object k26, v26, k27, v27, k28, v28, k29, v29;
+        private @Nullable Object k26, v26, k27, v27, k28, v28, k29, v29;
     }
 
     static abstract class IntermediateCapacitySegment_Group7<K, V>
@@ -1460,7 +1476,7 @@ final class InterleavedSegments {
     static abstract class IntermediateCapacitySegment_AllocationSpaceAfterGroup7<K, V>
             extends IntermediateCapacitySegment_Group7<K, V> {
         @SuppressWarnings("unused")
-        @Nullable Object k30, v30, k31, v31;
+        private @Nullable Object k30, v30, k31, v31;
     }
     //endregion
 

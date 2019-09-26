@@ -153,9 +153,12 @@ sourceSets {
     }
 }
 
-tasks.withType(Checkstyle) {
-    exclude '**/generated-src/**'
-    include '**/javaTemplates/**'
+configure(project.sourceSets) { sourceSet ->
+    project.tasks.getByName(sourceSet.getTaskName('checkstyle', null)) {
+        ignoreFailures = true
+        // JPSG-generated files are excluded in config/checkstyle/suppressions.xml
+        source(fileTree("${project.projectDir}/src/${sourceSet.name}/javaTemplates/"))
+    }
 }
 
 import net.ltgt.gradle.errorprone.CheckSeverity

@@ -21,7 +21,9 @@ import io.timeandspace.collect.Equivalence;
 import org.checkerframework.checker.nullness.qual.Nullable;
 import org.jetbrains.annotations.Contract;
 
+/* if Tracking hashCodeDistribution */
 import java.util.function.Consumer;
+/* endif */
 import java.util.function.Supplier;
 import java.util.function.ToLongFunction;
 
@@ -364,9 +366,8 @@ public final class SmoothieMapBuilder<K, V> {
             Consumer<PoorHashCodeDistributionOccasion<K, V>> reportingAction) {
         if (maxProbabilityOfOccasionIfHashFunctionWasRandom <
                 (float) SmoothieMap.POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MIN ||
-                maxProbabilityOfOccasionIfHashFunctionWasRandom >
-                        (float) SmoothieMap.POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MAX)
-        {
+                maxProbabilityOfOccasionIfHashFunctionWasRandom > (float)
+                        SmoothieMap.POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MAX) {
             throw new IllegalArgumentException(
                     maxProbabilityOfOccasionIfHashFunctionWasRandom + " is out of [" +
                     SmoothieMap.POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MIN + ", " +

@@ -302,6 +302,7 @@ final class PrecomputedBinomialCdfValues {
                     118, 118, 118, 119, 119, 119, 119, 119, 120, 120, 120, 120, 120, 121, 121, 121,
                     121, 121, 122, 122, 122, 122, 122, 123, 123, 123, 123, 123, 124, 124, 124, 124,
                     124, 125, 125, 125, 125, 125, 126, 126, 126, 126, 126, 127, 127, 127, 127, 127,
+                    //CHECKSTYLE:OFF: LineLength
                     (byte) 128, (byte) 128, (byte) 128, (byte) 128, (byte) 128, (byte) 129, (byte) 129, (byte) 129, (byte) 129, (byte) 129, (byte) 130, (byte) 130,
                     (byte) 130, (byte) 130, (byte) 130, (byte) 131, (byte) 131, (byte) 131, (byte) 131, (byte) 131, (byte) 132, (byte) 132, (byte) 132, (byte) 132,
                     (byte) 132, (byte) 133, (byte) 133, (byte) 133, (byte) 133, (byte) 133, (byte) 134, (byte) 134, (byte) 134, (byte) 134, (byte) 134, (byte) 135,
@@ -336,6 +337,7 @@ final class PrecomputedBinomialCdfValues {
                     (byte) 202, (byte) 202, (byte) 202, (byte) 202, (byte) 203, (byte) 203, (byte) 203, (byte) 203, (byte) 203, (byte) 203, (byte) 204, (byte) 204,
                     (byte) 204, (byte) 204, (byte) 204, (byte) 205, (byte) 205, (byte) 205, (byte) 205, (byte) 205, (byte) 206, (byte) 206, (byte) 206, (byte) 206,
                     (byte) 206, (byte) 207, (byte) 207, (byte) 207, (byte) 207, (byte) 207, (byte) 208, (byte) 208, (byte) 208, (byte) 208, (byte) 208},
+                    //CHECKSTYLE:ON: LineLength
 
             // Prob: 0.11140289106101875
             {0, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 5,

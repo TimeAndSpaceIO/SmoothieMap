@@ -1,3 +1,19 @@
+/*
+ * Copyright (C) The SmoothieMap Authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package io.timeandspace.smoothie;
 
 import org.checkerframework.checker.nullness.qual.Nullable;
@@ -24,12 +40,12 @@ final class SwissTable<K, V> {
     private static final int GROUP_SLOTS = 8;
 
     /** [Pre-casted constant] */
-    static final long ARRAY_LONG_BASE_OFFSET_AS_LONG = (long) Unsafe.ARRAY_LONG_BASE_OFFSET;
+    private static final long ARRAY_LONG_BASE_OFFSET_AS_LONG = (long) Unsafe.ARRAY_LONG_BASE_OFFSET;
 
     /** `* 2` because there are two objects in each slot: key and value. */
-    static final long TABLE_SLOT_INDEX_SCALE = ARRAY_OBJECT_INDEX_SCALE_AS_LONG * 2;
+    private static final long TABLE_SLOT_INDEX_SCALE = ARRAY_OBJECT_INDEX_SCALE_AS_LONG * 2;
 
-    static final long TABLE_VALUE_BASE_OFFSET =
+    private static final long TABLE_VALUE_BASE_OFFSET =
             ARRAY_OBJECT_BASE_OFFSET_AS_LONG + ARRAY_OBJECT_INDEX_SCALE_AS_LONG;
 
     private static final long MOST_SIGNIFICANT_BYTE_BITS = 0x8080808080808080L;
@@ -46,8 +62,8 @@ final class SwissTable<K, V> {
      * necessary in C++ due to how C++ iterators work, requiring the end() pointer. See
      * https://github.com/Amanieu/hashbrown/issues/35#issuecomment-444684378 for more info.
      */
-    static final @IntVal(0b1111_1111) byte EMPTY_CONTROL = -1;
-    static final @IntVal(0b1000_0000) byte DELETED_CONTROL = -128;
+    private static final @IntVal(0b1111_1111) byte EMPTY_CONTROL = -1;
+    private static final @IntVal(0b1000_0000) byte DELETED_CONTROL = -128;
 
     /**
      * Has all bits set because {@link #EMPTY_CONTROL} is all bits set.
@@ -73,7 +89,7 @@ final class SwissTable<K, V> {
         return nextPowerOfTwo;
     }
 
-    static long clearLowestSetBit(long bitMask) {
+    private static long clearLowestSetBit(long bitMask) {
         return bitMask & (bitMask - 1);
     }
 
@@ -89,7 +105,7 @@ final class SwissTable<K, V> {
      * bits until the most significant bit of the corresponding matched control byte (see {@link
      * #matchEmptyOrDeleted}), i. e. until the 7th bit.
      */
-    static int extractMatchingEmpty(long controlsGroup, int trailingZeros) {
+    private static int extractMatchingEmpty(long controlsGroup, int trailingZeros) {
         return (int) ((controlsGroup >>> (trailingZeros - 1)) & 1);
     }
 
@@ -112,21 +128,21 @@ final class SwissTable<K, V> {
      * This method is copied from https://github.com/abseil/abseil-cpp/blob/
      * 3088e76c597e068479e82508b1770a7ad0c806b6/absl/container/internal/raw_hash_set.h#L428-L446
      */
-    static long match(long controlsGroup, long hashControlBits) {
+    private static long match(long controlsGroup, long hashControlBits) {
         long x = controlsGroup ^ (LEAST_SIGNIFICANT_BYTE_BITS * hashControlBits);
         return (x - LEAST_SIGNIFICANT_BYTE_BITS) & ~x & MOST_SIGNIFICANT_BYTE_BITS;
     }
 
-    static long matchEmpty(long controlsGroup) {
+    private static long matchEmpty(long controlsGroup) {
         // Matches when the two highest bits in a control byte are ones.
         return (controlsGroup & (controlsGroup << 1)) & MOST_SIGNIFICANT_BYTE_BITS;
     }
 
-    static long matchEmptyOrDeleted(long controlsGroup) {
+    private static long matchEmptyOrDeleted(long controlsGroup) {
         return controlsGroup & MOST_SIGNIFICANT_BYTE_BITS;
     }
 
-    static long matchFull(long controlsGroup) {
+    private static long matchFull(long controlsGroup) {
         // Matches when the highest bit in a byte is zero.
         return (~controlsGroup) & MOST_SIGNIFICANT_BYTE_BITS;
     }
@@ -142,7 +158,7 @@ final class SwissTable<K, V> {
         this(DEFAULT_EXPECTED_SIZE);
     }
 
-    public SwissTable(int expectedSize) {
+    private SwissTable(int expectedSize) {
         int capacity = nextPowerOfTwo(expectedSize);
         if (expectedSize > maxNumNonEmptySlotsBeforeRehash(capacity) && capacity < MAX_CAPACITY) {
             capacity *= 2;
@@ -182,7 +198,7 @@ final class SwissTable<K, V> {
         return x ^ (x >>> (Long.SIZE - CONTROL_BITS));
     }
 
-    boolean keysEqual(Object queriedKey, K internalKey) {
+    private boolean keysEqual(Object queriedKey, K internalKey) {
         return queriedKey.equals(internalKey);
     }
 

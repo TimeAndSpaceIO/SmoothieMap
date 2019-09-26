@@ -5681,6 +5681,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
             return s.entrySet();
         }
 
+        //CHECKSTYLE.OFF: LeftCurly - make code more compact
         @Override public int size() { return s.size(); }
         @Override public boolean isEmpty() { return s.isEmpty(); }
         @Override public boolean containsKey(Object key) { return s.containsKey(key); }
@@ -5715,6 +5716,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         @Override public int hashCode() { return s.hashCode(); }
         @Override public boolean equals(Object obj) { return s.equals(obj); }
         @Override public String toString() { return s.toString(); }
+        //CHECKSTYLE.ON: LeftCurly
     }
 
     //endregion
@@ -7255,12 +7257,12 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         /**
          * Checks whether this inflated segment should be split (see {@link #splitInflated}) because
          * it's not anymore an outlier in the SmoothieMap. Returns a negative number if this segment
-         * should be split, or the latest computed (non-negative) {@link #computeAverageSegmentOrder}
-         * value, if this segment shouldn't be split. In the latter case it's guaranteed that the
-         * order of this segment is not less than the returned average segment order in the map.
-         * (Note that it might be less than the average segment order plus {@link
-         * #MAX_SEGMENT_ORDER_DIFFERENCE_FROM_AVERAGE} if {@link #segmentsArray}'s length is already
-         * equal to {@link #MAX_SEGMENTS_ARRAY_LENGTH}.)
+         * should be split, or the latest computed (non-negative) {@link
+         * #computeAverageSegmentOrder} value, if this segment shouldn't be split. In the latter
+         * case it's guaranteed that the order of this segment is not less than the returned average
+         * segment order in the map. (Note that it might be less than the average segment order plus
+         * {@link #MAX_SEGMENT_ORDER_DIFFERENCE_FROM_AVERAGE} if {@link #segmentsArray}'s length is
+         * already equal to {@link #MAX_SEGMENTS_ARRAY_LENGTH}.)
          */
         private boolean shouldBeSplit(SmoothieMap<K, V> smoothie, int segmentOrder) {
             int averageSegmentOrder_lastComputed = (int) smoothie.averageSegmentOrder_lastComputed;
@@ -7364,9 +7366,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
             int segmentOrder = segmentOrder(bitSetAndState);
             if (shouldBeSplit(smoothie, segmentOrder)) {
                 smoothie.splitInflated(hash, this);
-            }
-            /* if Tracking hashCodeDistribution */
-            else {
+            } /* if Tracking hashCodeDistribution */ else {
                 @Nullable HashCodeDistribution<K, V> hashCodeDistribution =
                         smoothie.hashCodeDistribution;
                 // TODO hashCodeDistribution null check: might need to be removed, if
@@ -7514,7 +7514,8 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         @DoNotCall
         @Deprecated
         @Override
-        final void copyEntriesDuringInflate(SmoothieMap<K, V> map, InflatedSegment<K, V> intoSegment) {
+        final void copyEntriesDuringInflate(
+                SmoothieMap<K, V> map, InflatedSegment<K, V> intoSegment) {
             throw new UnsupportedOperationException();
         }
 
