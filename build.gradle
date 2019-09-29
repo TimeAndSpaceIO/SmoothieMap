@@ -6,7 +6,7 @@ buildscript {
 
     dependencies {
         classpath 'com.jaredsburrows:gradle-checker-framework-plugin:0.2.2'
-        classpath 'io.timeandspace:jpsg-gradle-plugin:1.3-SNAPSHOT'
+        classpath 'io.timeandspace:jpsg-gradle-plugin:1.3'
     }
 }
 
