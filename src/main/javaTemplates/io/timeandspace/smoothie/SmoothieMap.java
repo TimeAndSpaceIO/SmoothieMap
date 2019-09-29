@@ -732,6 +732,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
                 /* if Tracking segmentOrderStats */
                 objectSizeInBytes(segmentCountsByOrder) +
                 /* endif */
+                // Not adding hashTableHalfPopulationStats because it's a debug-only feature.
                 (keySet != null ? KEY_SET__SIZE_IN_BYTES : 0) +
                 (values != null ? VALUES__SIZE_IN_BYTES : 0) +
                 (entrySet != null ? ENTRY_SET__SIZE_IN_BYTES : 0);
@@ -5079,6 +5080,10 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         checkModCountOrThrowCme(modCount);
     }
 
+    /**
+     * TODO track the counts of intermediate-capacity, full-capacity, and inflated segments in a
+     *  SmoothieMap and calculate the total size of segments in O(1) rather than O(num segments).
+     */
     private long totalSizeOfSegmentsInBytes() {
         long totalSizeOfSegmentsInBytes = 0;
         int modCount = getModCountOpaque();

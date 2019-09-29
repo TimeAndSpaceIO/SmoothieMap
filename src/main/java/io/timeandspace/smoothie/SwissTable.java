@@ -31,7 +31,7 @@ import static io.timeandspace.smoothie.UnsafeUtils.ARRAY_OBJECT_INDEX_SCALE_AS_L
 import static io.timeandspace.smoothie.UnsafeUtils.U;
 import static io.timeandspace.smoothie.Utils.BYTE_SIZE_DIVISION_SHIFT;
 
-final class SwissTable<K, V> {
+public final class SwissTable<K, V> {
 
     private static final boolean LITTLE_ENDIAN = ByteOrder.nativeOrder() == ByteOrder.LITTLE_ENDIAN;
     private static final int CONTROL_BITS = 7;
@@ -158,7 +158,8 @@ final class SwissTable<K, V> {
         this(DEFAULT_EXPECTED_SIZE);
     }
 
-    private SwissTable(int expectedSize) {
+    @SuppressWarnings("WeakerAccess")
+    public SwissTable(int expectedSize) {
         int capacity = nextPowerOfTwo(expectedSize);
         if (expectedSize > maxNumNonEmptySlotsBeforeRehash(capacity) && capacity < MAX_CAPACITY) {
             capacity *= 2;
