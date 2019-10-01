@@ -20,6 +20,8 @@ package net.openhft.smoothie;
 import sun.misc.Unsafe;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+import java.util.stream.Stream;
 
 final class UnsafeAccess {
     public static final Unsafe U;
@@ -32,6 +34,17 @@ final class UnsafeAccess {
         } catch (Exception e) {
             throw new AssertionError(e);
         }
+    }
+
+    static long minInstanceFieldOffset(Class<?> objectClass) {
+        // U::objectFieldOffset triggers forbidden-apis of Objects.requireNonNull() for some reason
+        //noinspection Convert2MethodRef
+        return Stream
+                .of(objectClass.getDeclaredFields())
+                .filter(f -> !Modifier.isStatic(f.getModifiers()))
+                .mapToLong((Field field) -> U.objectFieldOffset(field))
+                .min()
+                .getAsLong();
     }
 
     private UnsafeAccess() {

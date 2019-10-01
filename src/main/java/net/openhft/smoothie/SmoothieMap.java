@@ -1,6 +1,5 @@
 /*
- *    Copyright 2015, 2016 Chronicle Software
- *    Copyright 2016, 2018 Roman Leventov
+ *    Copyright (C) Smoothie Map Authors
  *
  *    Licensed under the Apache License, Version 2.0 (the "License");
  *    you may not use this file except in compliance with the License.
@@ -25,6 +24,7 @@ import java.lang.invoke.MethodHandle;
 import java.util.*;
 import java.util.function.*;
 
+import static net.openhft.smoothie.ObjectSize.objectSizeInBytes;
 import static net.openhft.smoothie.UnsafeAccess.U;
 import static sun.misc.Unsafe.ARRAY_OBJECT_BASE_OFFSET;
 import static sun.misc.Unsafe.ARRAY_OBJECT_INDEX_SCALE;
@@ -579,6 +579,10 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements Cloneable, S
      */
     protected boolean valuesEqual(@NotNull Object queriedValue, @Nullable V valueInMap) {
         return queriedValue.equals(valueInMap);
+    }
+
+    public long sizeInBytes() {
+        return objectSizeInBytes(this) + objectSizeInBytes(segments) + totalSizeOfSegmentsInBytes();
     }
 
     private void updateSegmentsMask() {
@@ -1285,6 +1289,24 @@ public class SmoothieMap<K, V> extends AbstractMap<K, V> implements Cloneable, S
         if (mc != modCount)
             throw new ConcurrentModificationException();
         return mc != initialModCount;
+    }
+
+    private long totalSizeOfSegmentsInBytes() {
+        int mc = this.modCount;
+        Segment<K, V> segment;
+        long totalSizeInBytes = 0;
+        long segmentObjectSize = 0;
+        for (long segmentIndex = 0; segmentIndex >= 0;
+             segmentIndex = nextSegmentIndex(segmentIndex, segment)) {
+            segment = segment(segmentIndex);
+            if (segmentObjectSize == 0) {
+                segmentObjectSize = objectSizeInBytes(segment);
+            }
+            totalSizeInBytes += segmentObjectSize;
+        }
+        if (mc != modCount)
+            throw new ConcurrentModificationException();
+        return totalSizeInBytes;
     }
 
     /**
