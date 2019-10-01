@@ -21,9 +21,11 @@ import org.checkerframework.common.value.qual.IntVal;
 import sun.misc.Unsafe;
 
 import java.nio.ByteOrder;
+import java.util.AbstractMap;
 import java.util.Arrays;
 import java.util.ConcurrentModificationException;
 import java.util.Objects;
+import java.util.Set;
 
 import static io.timeandspace.smoothie.SmoothieMap.LONG_PHI_MAGIC;
 import static io.timeandspace.smoothie.UnsafeUtils.ARRAY_OBJECT_BASE_OFFSET_AS_LONG;
@@ -31,7 +33,7 @@ import static io.timeandspace.smoothie.UnsafeUtils.ARRAY_OBJECT_INDEX_SCALE_AS_L
 import static io.timeandspace.smoothie.UnsafeUtils.U;
 import static io.timeandspace.smoothie.Utils.BYTE_SIZE_DIVISION_SHIFT;
 
-public final class SwissTable<K, V> {
+public final class SwissTable<K, V> extends AbstractMap<K, V> {
 
     private static final boolean LITTLE_ENDIAN = ByteOrder.nativeOrder() == ByteOrder.LITTLE_ENDIAN;
     private static final int CONTROL_BITS = 7;
@@ -177,6 +179,7 @@ public final class SwissTable<K, V> {
         Arrays.fill(controls, EMPTY_CONTROL_GROUP);
     }
 
+    @Override
     public int size() {
         return size;
     }
@@ -266,7 +269,8 @@ public final class SwissTable<K, V> {
                 (long) trailingZeros >>> BYTE_SIZE_DIVISION_SHIFT);
     }
 
-    public @Nullable V get(K key) {
+    @Override
+    public @Nullable V get(Object key) {
         Utils.checkNonNull(key);
         long hash = keyHashCode(key);
         long hashControlBits = hashControlBits(hash);
@@ -295,10 +299,16 @@ public final class SwissTable<K, V> {
         }
     }
 
+    @Override
     public @Nullable V put(K key, V value) {
         Utils.checkNonNull(key);
         long hash = keyHashCode(key);
         return putInternal(key, hash, value);
+    }
+
+    @Override
+    public Set<Entry<K, V>> entrySet() {
+        throw new UnsupportedOperationException();
     }
 
     private @Nullable V putInternal(K key, long hash, V value) {
