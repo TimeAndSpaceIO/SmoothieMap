@@ -1,6 +1,5 @@
 /*
- *    Copyright 2015, 2016 Chronicle Software
- *    Copyright 2016, 2018 Roman Leventov
+ *    Copyright (C) Smoothie Map Authors
  *
  *    Licensed under the Apache License, Version 2.0 (the "License");
  *    you may not use this file except in compliance with the License.
@@ -24,7 +23,6 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Random;
-import java.util.concurrent.ThreadLocalRandom;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
