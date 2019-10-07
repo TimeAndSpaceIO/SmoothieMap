@@ -234,6 +234,8 @@ publishing {
             pom {
                 name = 'SmoothieMap 2'
                 inceptionYear = '2018'
+                description = 'Map implementation with low footprint and no latency spikes'
+                url = 'https://github.com/TimeAndSpaceIO/SmoothieMap'
                 licenses {
                     license {
                         name = 'The Apache Software License, Version 2.0'

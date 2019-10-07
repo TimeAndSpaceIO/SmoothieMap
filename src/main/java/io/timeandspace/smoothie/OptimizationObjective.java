@@ -23,7 +23,7 @@ package io.timeandspace.smoothie;
 public enum OptimizationObjective {
     /**
      * In the "low-garbage" mode, {@link SmoothieMap} generates very little garbage (that is, heap
-     * objects that  later become unreachable and need to be swept by the GC), either during the
+     * objects that later become unreachable and need to be swept by the GC), either during the
      * growth phase or the shrinkage phase (when a map reduces in size after the peak growth).
      *
      * @implSpec Configuring {@link SmoothieMapBuilder#optimizeFor
