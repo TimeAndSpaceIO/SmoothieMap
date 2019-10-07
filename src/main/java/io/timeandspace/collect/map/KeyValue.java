@@ -18,7 +18,7 @@ package io.timeandspace.collect.map;
 
 /**
  * Defines a simple key-value pair. The difference between this interface and {@link
- * java.util.Map.Entry} is that this interface doesn't specify {@link #equals} and {@link #hashCode}
+ * java.util.Map.Entry} is that this interface doesn't specify {@link Object#equals} and {@link Object#hashCode}
  * and whether they should depend on key's and value's equivalence and hash codes at all.
  * KeyValue also doesn't have an equivalent of {@link java.util.Map.Entry}'s {@code setValue()}
  * method.

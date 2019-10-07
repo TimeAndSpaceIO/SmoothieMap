@@ -13,6 +13,7 @@ buildscript {
 plugins {
     id 'java-library'
     id 'maven-publish'
+    id 'signing'
 
     id 'checkstyle'
     id 'de.thetaphi.forbiddenapis' version '2.6'
@@ -198,6 +199,24 @@ test {
 task sourcesJar(type: Jar, dependsOn: classes) {
     classifier 'sources'
     from sourceSets.main.allSource
+}
+
+javadoc {
+    options {
+        links 'http://docs.oracle.com/javase/8/docs/api/'
+        tags = [
+                'apiNote:a:API Note:',
+                'implSpec:a:Implementation Requirements:',
+                'implNote:a:Implementation Note:',
+                'param',
+                'return',
+                'throws',
+                'since',
+                'version',
+                'serialData',
+                'see'
+        ]
+    }
 }
 
 task javadocJar(type: Jar) {

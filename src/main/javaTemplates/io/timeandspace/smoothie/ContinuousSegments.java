@@ -17,7 +17,6 @@
 
 package io.timeandspace.smoothie;
 
-import com.sun.xml.internal.bind.v2.TODO;
 import org.checkerframework.checker.nullness.qual.Nullable;
 
 import java.util.ConcurrentModificationException;
@@ -589,7 +588,7 @@ final class ContinuousSegments {
      * Don't create a single long extension chain (e. g. {@link Segment18} extends {@link
      * Segment17}, {@link Segment19} extends {@link Segment20}, etc), because it might cause more
      * classes to be loaded (e. g. if only {@link Segment48} is ever used, that happens if {@link
-     * OptimizationObjective#ALLOCATION_RATE} is used and {@link SmoothieMap#shrinkAndTrimToSize()}
+     * OptimizationObjective#LOW_GARBAGE} is used and {@link SmoothieMap#shrinkAndTrimToSize()}
      * is never called), and also might be more troublesome for some GC heap traversal
      * implementations (?)
      */

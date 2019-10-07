@@ -18,7 +18,6 @@ package io.timeandspace.smoothie;
 
 import org.checkerframework.checker.nullness.qual.Nullable;
 import org.junit.Before;
-import org.junit.Ignore;
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -31,7 +30,7 @@ import static org.junit.Assert.assertTrue;
 public class GrowTest {
 
     private SmoothieMap<Integer, Integer> map =
-            SmoothieMap.<Integer, Integer>newBuilder().allocateIntermediateSegments(true).build();
+            SmoothieMap.<Integer, Integer>newBuilder().allocateIntermediateCapacitySegments(true).build();
     private List<Integer> keys = new ArrayList<>();
     private Random random = new Random(0);
 

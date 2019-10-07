@@ -15,13 +15,11 @@
  */
 
 
-/**
- *
- */
 @CheckReturnValue
-@DefaultQualifier(NonNull.class)
+@DefaultQualifier(value = NonNull.class, locations = TypeUseLocation.ALL)
 package io.timeandspace.collect.map;
 
 import com.google.errorprone.annotations.CheckReturnValue;
 import org.checkerframework.checker.nullness.qual.NonNull;
 import org.checkerframework.framework.qual.DefaultQualifier;
+import org.checkerframework.framework.qual.TypeUseLocation;

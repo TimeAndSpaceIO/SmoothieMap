@@ -24,7 +24,7 @@ import static org.junit.Assert.assertTrue;
 
 final class PrintLargeMapStats {
     private static final SmoothieMap<Integer, Integer> map =
-            SmoothieMap.<Integer, Integer>newBuilder().allocateIntermediateSegments(true).build();
+            SmoothieMap.<Integer, Integer>newBuilder().allocateIntermediateCapacitySegments(true).build();
     private static final Random random = new Random(0);
 
     public static void main(String[] args) {

@@ -31,6 +31,25 @@ import java.util.function.BiFunction;
 import java.util.function.BiPredicate;
 import java.util.function.Function;
 
+/**
+ * An extension of the {@link Map} interface. Notable additions and differences:
+ * <ul>
+ *     <li>{@code null} keys and values are explicitly prohibited. Attempt to query nulls via
+ *     methods like {@link #get(Object)} or {@link #containsValue(Object)} are specified to throw
+ *     a {@link NullPointerException} as well. In the {@link Map} interface, both aspects (rejecting
+ *     nulls for storage and rejecting null queries) are optional.</li>
+ *     <li>The notion of non-standard key and value equivalences is formalized in {@link
+ *     #keyEquivalence()} and {@link #valueEquivalence()} methods.</li>
+ *     <li>{@link #sizeAsLong()} returns the exact size of the map if it exceeds {@link
+ *     Integer#MAX_VALUE}.</li>
+ *     <li>{@link #containsEntry(Object, Object)}</li>
+ *     <li>{@link #getInternalKey} allows to use the map as the vehicle for key interning.</li>
+ *     <li>{@link #forEachWhile(BiPredicate)}</li>
+ *     <li>{@link #removeIf(BiPredicate)}</li>
+ * </ul>
+ * @param <K> the type of keys maintained by this map
+ * @param <V> the type of mapped values
+ */
 public interface ObjObjMap<K, V> extends Map<K, V> {
 
     /**
@@ -117,8 +136,10 @@ public interface ObjObjMap<K, V> extends Map<K, V> {
      * <p>This method could be used to deduplicate objects in the application, to reduce the memory
      * footprint and make the application to conform to the "most objects die young" hypothesis that
      * most GC algorithms are optimized for. This method is functionally similar to {@link
-     * String#intern()} and Guava's Interner, but allows to piggy-back a map data structure which
-     * may already exist in an application.
+     * String#intern()} and Guava's <a
+     * href="https://guava.dev/releases/28.0-jre/api/docs/com/google/common/collect/Interner.html">
+     * Interner</a>, but allows to piggy-back a map data structure which may already exist in an
+     * application.
      *
      * <p>{@link #keySet()}.{@link ObjSet#getInternal(Object) getInternal(key)} delegates to this
      * method.

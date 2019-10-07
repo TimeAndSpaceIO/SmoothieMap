@@ -26,7 +26,7 @@ import java.util.Map;
  * A strategy for determining whether two instances are considered equivalent.
  *
  * <p>This class is inspired and very similar to
- * <a href="http://docs.guava-libraries.googlecode.com/git-history/release/javadoc/com/google/common/base/Equivalence.html">
+ * <a href="https://guava.dev/releases/27.1-jre/api/docs/com/google/common/base/Equivalence.html">
  * Guava's {@code Equivalence}</a>, with one notable difference: this {@code Equivalence} forces
  * the actual implementation to override {@link #equals(Object)} and {@link #hashCode()}. Notice
  * these are {@code Equivalence}'s own equals and hashCode, not the strategy

@@ -30,9 +30,28 @@ import java.util.function.ToLongFunction;
 import static io.timeandspace.smoothie.Utils.checkNonNegative;
 import static io.timeandspace.smoothie.Utils.checkNonNull;
 
+/**
+ * SmoothieMapBuilder is used to configure and create {@link SmoothieMap}s. A new builder could be
+ * created via {@link SmoothieMap#newBuilder()} method. A SmoothieMap is created using {@link
+ * #build()} method.
+ *
+ * <p>SmoothieMapBuilder is mutable: all its configuration methods change its state, and return the
+ * receiver builder object to enable the "fluent builder" pattern:
+ * <pre>{@code
+ * SmoothieMap.newBuilder().expectedSize(100_000).doShrink(false).build();
+ * }</pre>
+ *
+ * <p>SmoothieMapBuilder could be used to create any number of SmoothieMap objects. Created
+ * SmoothieMaps don't retain a link to the builder and therefore don't depend on any possible
+ * subsequent modifications of the builder's state.
+ *
+ * @param <K> the type of keys in created SmoothieMaps
+ * @param <V> the type of values in created SmoothieMaps
+ */
 public final class SmoothieMapBuilder<K, V> {
 
     static final long UNKNOWN_SIZE = Long.MAX_VALUE;
+    private static final double MAX_EXPECTED_SIZE_ERROR_FRACTION = 0.05;
 
     @Contract(value = " -> new", pure = true)
     public static <K, V> SmoothieMapBuilder<K, V> create() {
@@ -41,7 +60,7 @@ public final class SmoothieMapBuilder<K, V> {
 
     /* if Supported intermediateSegments */
     /** Mirror field: {@link SmoothieMap#allocateIntermediateSegments}. */
-    private boolean allocateIntermediateSegments;
+    private boolean allocateIntermediateCapacitySegments;
     /** Mirror field: {@link SmoothieMap#splitBetweenTwoNewSegments}. */
     private boolean splitBetweenTwoNewSegments;
     /* endif */
@@ -55,7 +74,7 @@ public final class SmoothieMapBuilder<K, V> {
     private Equivalence<V> valueEquivalence = Equivalence.defaultEquality();
 
     private long expectedSize = UNKNOWN_SIZE;
-    private long minExpectedSize = UNKNOWN_SIZE;
+    private long minPeakSize = UNKNOWN_SIZE;
 
     /* if Tracking hashCodeDistribution */
     private float maxProbabilityOfOccasionIfHashFunctionWasRandom;
@@ -66,22 +85,38 @@ public final class SmoothieMapBuilder<K, V> {
         defaultOptimizationConfiguration();
     }
 
+    /**
+     * Specifies whether SmoothieMaps created using this builder should operate in the "low-garbage"
+     * mode (if {@link OptimizationObjective#LOW_GARBAGE} is passed into this method) or the
+     * "footprint" mode (if {@link OptimizationObjective#FOOTPRINT} is passed into this method). See
+     * the documentation for these enum constants for more details about the modes.
+     *
+     * <p>By default, SmoothieMaps operate in the "mixed" mode which is a compromise between the
+     * "low-garbage" and the "footprint" modes. Calling {@link #defaultOptimizationConfiguration()}
+     * configures this mode explicitly.
+     *
+     * @param optimizationObjective the primary optimization objective for created SmoothieMaps
+     * @return this builder back
+     * @throws NullPointerException if the provided optimization objective is null
+     * @see #defaultOptimizationConfiguration
+     */
     @CanIgnoreReturnValue
     @Contract("_ -> this")
     public SmoothieMapBuilder<K, V> optimizeFor(OptimizationObjective optimizationObjective) {
+        Utils.checkNonNull(optimizationObjective);
         switch (optimizationObjective) {
-            case ALLOCATION_RATE:
+            case LOW_GARBAGE:
                 /* if Supported intermediateSegments */
-                this.allocateIntermediateSegments = false;
+                this.allocateIntermediateCapacitySegments = false;
                 this.splitBetweenTwoNewSegments = false;
                 /* endif */
                 /* if Flag doShrink */
                 this.doShrink = false;
                 /* endif */
                 break;
-            case MEMORY_FOOTPRINT:
+            case FOOTPRINT:
                 /* if Supported intermediateSegments */
-                this.allocateIntermediateSegments = true;
+                this.allocateIntermediateCapacitySegments = true;
                 this.splitBetweenTwoNewSegments = true;
                 /* endif */
                 /* if Flag doShrink */
@@ -95,14 +130,23 @@ public final class SmoothieMapBuilder<K, V> {
     }
 
     /**
-     * The default objective is a compromise between {@link OptimizationObjective#MEMORY_FOOTPRINT}
-     * and {@link OptimizationObjective#ALLOCATION_RATE}.
+     * Specifies that SmoothieMaps created using this builder should operate in "mixed" mode which
+     * is a compromise between {@link OptimizationObjective#FOOTPRINT} and {@link
+     * OptimizationObjective#LOW_GARBAGE}.
+     *
+     * @implSpec the "mixed" mode includes {@linkplain
+     * #allocateIntermediateCapacitySegments(boolean) allocating intermediate-capacity segments} and
+     * {@linkplain #doShrink(boolean) turning SmoothieMap shrinking on}, but <i>doesn't</i> include
+     * {@linkplain #splitBetweenTwoNewSegments(boolean) splitting segments between two new ones}.
+     *
+     * @return this builder back
+     * @see #optimizeFor
      */
     @CanIgnoreReturnValue
     @Contract(" -> this")
     public SmoothieMapBuilder<K, V> defaultOptimizationConfiguration() {
         /* if Supported intermediateSegments */
-        this.allocateIntermediateSegments = true;
+        this.allocateIntermediateCapacitySegments = true;
         this.splitBetweenTwoNewSegments = false;
         /* endif */
         /* if Flag doShrink */
@@ -112,23 +156,154 @@ public final class SmoothieMapBuilder<K, V> {
     }
 
     /* if Supported intermediateSegments */
+    /**
+     * Specifies whether during the growth of SmoothieMaps created with this builder they should
+     * first allocate intermediate-capacity segments and then reallocate them as full-capacity
+     * segments when needed, or allocate full-capacity segments right away.
+     *
+     * <p>SmoothieMap stores the entries in small <i>segments</i> which are mini hash tables on
+     * their own. This hash table becomes full when the number of entries stored in it exceeds N.
+     * At this point, a segment is <i>split into two parts</i>. At least one new segment should be
+     * allocated upon a split to become the second part (or two new segments, if configured via
+     * {@link #splitBetweenTwoNewSegments(boolean)}). The population of each of these two parts just
+     * after the split is approximately N/2, subject to some variability (while their joint
+     * population is N + 1). The entry storage capacity of segments is decoupled from the hash
+     * table, so a newly allocated segment may have entry storage capacity smaller than N. A segment
+     * of storage capacity of approximately (2/3) * N is called an <i>intermediate-capacity
+     * segment</i>, and a segment  of storage capacity N is called a <i>full-capacity segment</i>.
+     *
+     * <p>Thus, upon a segment split, a newly allocated intermediate-capacity segment is on average
+     * 75% full in terms of the entry storage capacity, while a newly allocated full-capacity
+     * segment is on average 50% full. When the number of entries stored in an intermediate-capacity
+     * segment grows beyond its storage capacity (approximately, (2/3) * N), it's <i>reallocated</i>
+     * in place as a full-capacity segment.
+     *
+     * <p>Thus, intermediate-capacity segments reduce the total SmoothieMap's footprint per stored
+     * entry as well as the variability of the footprint at different SmoothieMap's sizes. The
+     * drawbacks of intermediate-capacity segments are:
+     * <ul>
+     *     <li>They are transient: being allocated and reclaimed during the growth of a SmoothieMap.
+     *     The total amount of garbage produced by a SmoothieMap instance (assuming it grows from
+     *     size 0 and neither {@link #expectedSize(long)} nor {@link #minPeakSize(long)} was
+     *     configured) becomes comparable with the SmoothieMap's footprint, though still lower than
+     *     the total amount of garbage produced by a typical open-addressing hash table
+     *     implementation such as {@link java.util.IdentityHashMap}, and comparable to the the total
+     *     amount of garbage produced by entry-based hash maps ({@link java.util.HashMap} and {@link
+     *     java.util.concurrent.ConcurrentHashMap}) without pre-configured capacity and assuming
+     *     that entries are not removed from them.</li>
+     *     <li>Reallocation of intermediate-capacity segments into full-capacity segments
+     *     contributes the amortized cost of inserting entries into a SmoothieMap.</li>
+     *     <li>The mix of full-capacity and intermediate-capacity segments precludes certain
+     *     variables to be hard-coded and generally adds some unpredictability (from the CPU
+     *     perspective) to SmoothieMap's key lookup and insertion operations which might slower them
+     *     relative to the setup where only full-capacity segments are used.</li>
+     * </ul>
+     *
+     * <p>By default, intermediate-capacity segments <i>are</i> allocated as a part of {@linkplain
+     * #defaultOptimizationConfiguration() the "mixed" mode (the default mode)} of SmoothieMap's
+     * operation. Intermediate-capacity segments are allocated in the "mixed" and the {@linkplain
+     * OptimizationObjective#FOOTPRINT "footprint"} modes, but are not allocated in the {@linkplain
+     * OptimizationObjective#LOW_GARBAGE "low-garbage"} mode.
+     *
+     * <p>Disabling allocating intermediate-capacity segments (that is, passing {@code false} into
+     * this method) also implicitly disables {@linkplain #splitBetweenTwoNewSegments(boolean)
+     * splitting between two new segments} because it doesn't make sense to allocate two new
+     * full-capacity segments and move entries there while we already have one full-capacity segment
+     * at hand (the old one).
+     *
+     * @param allocateIntermediateCapacitySegments whether the created SmoothieMaps should allocate
+     *        intermediate-capacity segments during the growth
+     * @return this builder back
+     * @see #splitBetweenTwoNewSegments(boolean)
+     */
     @CanIgnoreReturnValue
     @Contract("_ -> this")
-    public SmoothieMapBuilder<K, V> allocateIntermediateSegments(
-            boolean allocateIntermediateSegments) {
-        this.allocateIntermediateSegments = allocateIntermediateSegments;
+    public SmoothieMapBuilder<K, V> allocateIntermediateCapacitySegments(
+            boolean allocateIntermediateCapacitySegments) {
+        if (!allocateIntermediateCapacitySegments) {
+            splitBetweenTwoNewSegments(false);
+        }
+        this.allocateIntermediateCapacitySegments = allocateIntermediateCapacitySegments;
         return this;
     }
 
+    /**
+     * Specifies whether when segments are split in SmoothieMaps created with this builder, the
+     * entries from the segment being split should be moved into two new intermediate-capacity
+     * segments or the entries should be distributed between the old segment one newly allocated
+     * segment (full-capacity or intermediate-capacity).
+     *
+     * <p>See the description of the model of segments and the definitions of
+     * <i>intermediate-capacity</i> and <i>full-capacity</i> segments in the documentation for
+     * {@link #allocateIntermediateCapacitySegments(boolean)}. Moving entries from the old segment
+     * into two newly allocated intermediate-capacity segments means that just after the split they
+     * are jointly 75% full in terms of the entry storage capacity. Both newly allocated segments
+     * may then be reallocated as full-capacity segments when needed. One full-capacity segment and
+     * one newly allocated intermediate-capacity segment are jointly 60% full. Two full-capacity
+     * segments, the old one and a newly allocated one (if the allocation of intermediate-capacity
+     * segments is turned off) are jointly 50% full.
+     *
+     * <p>Thus, splitting between two newly allocated segments lowers the footprint per entry and
+     * the footprint variability at different SmoothieMap's sizes as much as possible. The downside
+     * of this strategy is that during SmoothieMap's growth, one full-capacity and two
+     * intermediate-capacity segments are allocated and then dropped per every 2 * N entries (given
+     * that a segment's hash table capacity is N) every time the map doubles in size. This is a
+     * significant rate of heap memory churn, exceeding that of typical open-addressing hash table
+     * implementations such as {@link java.util.IdentityHashMap} and entry-based hash maps: {@link
+     * java.util.HashMap} or {@link java.util.concurrent.ConcurrentHashMap}.
+     *
+     * <p>By default, during a split, entries are distributed between the old (full-capacity)
+     * segment and a newly allocated intermediate-capacity segment, as per {@linkplain
+     * #defaultOptimizationConfiguration() the "mixed" mode (the default mode)} of SmoothieMap's
+     * operation, that is, by default, splitting is <i>not</i> done between two newly allocated
+     * segments. Splitting between two new segments is not done in the {@linkplain
+     * OptimizationObjective#LOW_GARBAGE "low-garbage"} and the "mixed" modes. It's enabled only in
+     * the {@linkplain OptimizationObjective#FOOTPRINT "footprint"} mode.
+     *
+     * <p>Enabling splitting between two new segments also implicitly enables {@linkplain
+     * #allocateIntermediateCapacitySegments(boolean) allocation of intermediate-capacity segments}
+     * because the former doesn't make sense without the latter.
+     *
+     * @param splitBetweenTwoNewSegments whether created SmoothieMaps should move entries from
+     *        full-capacity segments into two newly allocated intermediate-capacity segments during
+     *        growth
+     * @return this builder back
+     * @see #allocateIntermediateCapacitySegments(boolean)
+     * @see OptimizationObjective#FOOTPRINT
+     */
     @CanIgnoreReturnValue
     @Contract("_ -> this")
     public SmoothieMapBuilder<K, V> splitBetweenTwoNewSegments(boolean splitBetweenTwoNewSegments) {
+        if (splitBetweenTwoNewSegments) {
+            allocateIntermediateCapacitySegments(true);
+        }
         this.splitBetweenTwoNewSegments = splitBetweenTwoNewSegments;
         return this;
     }
     /* endif */
 
     /* if Flag doShrink */
+    /**
+     * Specifies whether SmoothieMaps created with this builder should automatically shrink, i. e.
+     * reclaim the allocated heap space when they reduce in size.
+     *
+     * <p>By default, shrinking is turned on as a part of {@linkplain
+     * #defaultOptimizationConfiguration() the "mixed" mode (the default mode)} of SmoothieMap's
+     * operation. The "mixed" and the {@linkplain OptimizationObjective#FOOTPRINT "footprint"} modes
+     * turn shrinking on, but the {@linkplain OptimizationObjective#LOW_GARBAGE "low-garbage"} mode
+     * turns shrinking off.
+     *
+     * <p>Automatic shrinking creates some low-volume stream of allocations and reclamations of
+     * heap memory objects when entries are dynamically put into and removed from the SmoothieMap
+     * even if the number of entries in the map remains relatively stable during this process,
+     * though at a much lower rate than garbage is produced by entry-based Map implementations such
+     * as {@link java.util.HashMap}, {@link java.util.TreeMap}, or {@link
+     * java.util.concurrent.ConcurrentHashMap} during a similar process.
+     *
+     * @param doShrink whether the created SmoothieMaps should automatically reclaim memory when
+     *        they reduce in size
+     * @return this builder back
+     */
     @CanIgnoreReturnValue
     @Contract("_ -> this")
     public SmoothieMapBuilder<K, V> doShrink(boolean doShrink) {
@@ -137,6 +312,17 @@ public final class SmoothieMapBuilder<K, V> {
     }
     /* endif */
 
+    /**
+     * Sets the {@link Equivalence} {@linkplain io.timeandspace.collect.map.ObjObjMap#keyEquivalence
+     * used for comparing keys} in SmoothieMaps created with this builder to the given equivalence.
+     *
+     * @param keyEquivalence the key equivalence to use in created SmoothieMaps
+     * @return this builder back
+     * @throws NullPointerException if the given equivalence object is null
+     * @see #defaultKeyEquivalence()
+     * @see io.timeandspace.collect.map.ObjObjMap#keyEquivalence
+     * @see #valueEquivalence(Equivalence)
+     */
     @CanIgnoreReturnValue
     @Contract("_ -> this")
     public SmoothieMapBuilder<K, V> keyEquivalence(Equivalence<K> keyEquivalence) {
@@ -146,10 +332,13 @@ public final class SmoothieMapBuilder<K, V> {
     }
 
     /**
-     * Sets the {@link Equivalence} used for comparing keys in SmoothieMaps created by this builder
-     * to {@link Equivalence#defaultEquality()}.
+     * Sets the {@link Equivalence} {@linkplain io.timeandspace.collect.map.ObjObjMap#keyEquivalence
+     * used for comparing keys} in SmoothieMaps created with this builder to {@link
+     * Equivalence#defaultEquality()}.
      *
      * @return this builder back
+     * @see #keyEquivalence(Equivalence)
+     * @see io.timeandspace.collect.map.ObjObjMap#keyEquivalence
      */
     @CanIgnoreReturnValue
     @Contract(" -> this")
@@ -159,8 +348,15 @@ public final class SmoothieMapBuilder<K, V> {
     }
 
     /**
-     * Sets a key hash function to be used in {@linkplain SmoothieMap SmoothieMaps} created by this
-     * builder.
+     * Sets a key hash function to be used in {@linkplain SmoothieMap SmoothieMaps} created with
+     * this builder.
+     *
+     * <p>The default key hash function derives 64-bit hash codes from the 32-bit result of calling
+     * {@link Object#hashCode()} on the key objects (or {@link Equivalence#hash}, if {@link
+     * #keyEquivalence(Equivalence)} is configured for the builder). This means that if the number
+     * of entries in the SmoothieMap approaches or exceeds 2^32 (4 billion), a large number of
+     * hash code collisions is inevitable. Therefore, it's recommended to always configure a custom
+     * key hash function (using this method) for ultra-large SmoothieMaps.
      *
      * <p>The specified hash function must be consistent with {@link Object#equals} on the key
      * objects, or a custom key equivalence if specified via {@link #keyEquivalence(Equivalence)} in
@@ -176,6 +372,7 @@ public final class SmoothieMapBuilder<K, V> {
      * @param hashFunction a key hash function for each {@code SmoothieMap} created using this
      * builder
      * @return this builder back
+     * @throws NullPointerException if the given hash function object is null
      * @see #keyHashFunctionFactory(Supplier)
      * @see #defaultKeyHashFunction()
      * @see #keyEquivalence(Equivalence)
@@ -190,8 +387,8 @@ public final class SmoothieMapBuilder<K, V> {
 
     /**
      * Sets a factory to obtain a key hash function for each {@link SmoothieMap} created using this
-     * builder. Compared to {@link #keyHashFunction(ToLongFunction)}, this method allows to insert
-     * randomness into the hash function:
+     * builder. Compared to {@link #keyHashFunction(ToLongFunction)}, this method allows inserting
+     * variability or randomness into the hash function:
      * <pre>{@code
      * builder.keyHashFunctionFactory(() -> {
      *     LongHashFunction hashF = LongHashFunction.xx(ThreadLocalRandom.current().nextLong());
@@ -201,14 +398,15 @@ public final class SmoothieMapBuilder<K, V> {
      * <p>Hash functions returned by the specified factory must be consistent with {@link
      * Object#equals} on the key objects, or a custom key equivalence if specified via {@link
      * #keyEquivalence(Equivalence)} in the same way as {@link Object#hashCode()} must be consistent
-     * with {@code equals()}. This is the user's responsibility to ensure this. When {@link
-     * #keyEquivalence(Equivalence)} is called on a builder object, the key hash function factory,
-     * if already configured to a non-default, is <i>not</i> reset. See the Javadoc comment for
-     * {@link #keyHashFunction(ToLongFunction)} for more info.
+     * with {@code equals()}. This is the user's responsibility to ensure the consistency. When
+     * {@link #keyEquivalence(Equivalence)} is called on a builder object, the key hash function
+     * factory, if already configured to a non-default, is <i>not</i> reset. See the Javadoc comment
+     * for {@link #keyHashFunction(ToLongFunction)} for more information.
      *
      * @param hashFunctionFactory the factory to create a key hash function for each {@code
      * SmoothieMap} created using this builder
      * @return this builder back
+     * @throws NullPointerException if the given hash function factory object is null
      * @see #keyHashFunction(ToLongFunction)
      * @see #defaultKeyHashFunction()
      */
@@ -221,6 +419,16 @@ public final class SmoothieMapBuilder<K, V> {
         return this;
     }
 
+    /**
+     * Specifies that SmoothieMaps created with this builder should use the default key hash
+     * function which derives a 64-bit hash code from the 32-bit result of calling {@link
+     * Object#hashCode()} on the key object (or {@link Equivalence#hash}, if {@link
+     * #keyEquivalence(Equivalence)} is configured for the builder).
+     *
+     * @return this builder back
+     * @see #keyHashFunction(ToLongFunction)
+     * @see #keyHashFunctionFactory(Supplier)
+     */
     @CanIgnoreReturnValue
     @Contract(" -> this")
     public SmoothieMapBuilder<K, V> defaultKeyHashFunction() {
@@ -228,6 +436,18 @@ public final class SmoothieMapBuilder<K, V> {
         return this;
     }
 
+    /**
+     * Sets the {@link Equivalence} {@linkplain
+     * io.timeandspace.collect.map.ObjObjMap#valueEquivalence used for comparing values} in
+     * SmoothieMaps created with this builder to the given equivalence.
+     *
+     * @param valueEquivalence the value equivalence to use in created SmoothieMaps
+     * @return this builder back
+     * @throws NullPointerException if the given equivalence object is null
+     * @see #defaultValueEquivalence()
+     * @see io.timeandspace.collect.map.ObjObjMap#valueEquivalence()
+     * @see #keyEquivalence(Equivalence)
+     */
     @CanIgnoreReturnValue
     @Contract("_ -> this")
     public SmoothieMapBuilder<K, V> valueEquivalence(Equivalence<V> valueEquivalence) {
@@ -237,10 +457,13 @@ public final class SmoothieMapBuilder<K, V> {
     }
 
     /**
-     * Sets the {@link Equivalence} used for comparing values in SmoothieMaps created by this
-     * builder to {@link Equivalence#defaultEquality()}.
+     * Sets the {@link Equivalence} {@linkplain
+     * io.timeandspace.collect.map.ObjObjMap#valueEquivalence used for comparing values} in
+     * SmoothieMaps created with this builder to {@link Equivalence#defaultEquality()}.
      *
      * @return this builder back
+     * @see #valueEquivalence(Equivalence)
+     * @see io.timeandspace.collect.map.ObjObjMap#valueEquivalence()
      */
     @CanIgnoreReturnValue
     @Contract(" -> this")
@@ -249,7 +472,49 @@ public final class SmoothieMapBuilder<K, V> {
         return this;
     }
 
-
+    /**
+     * Specifies the expected <i>steady-state</i> size of each {@link SmoothieMap} created using
+     * this builder. The steady-state size is the map size after it's fully populated (when the map
+     * is used in a simple populate-then-access pattern), or if entries are dynamically inserted
+     * into and removed from the map, the steady-state size is the map size at which it should
+     * eventually balance.
+     *
+     * <p>The default expected size is considered unknown. Calling {@link #unknownExpectedSize()}
+     * after this method has been once called on the builder with a specific value overrides that
+     * values and sets the expected size to be unknown again.
+     *
+     * <p>Calling this method is a performance hint for created SmoothieMap(s) and doesn't affect
+     * the semantics of operations. The configured value must not be the exact steady-state size of
+     * a created SmoothieMap, but it should be within 5% from the actual steady-state size. If the
+     * steady-state size of created SmoothieMap(s) cannot be known with this level of precision,
+     * configuring {@code expectedSize()} might make more harm than good and therefore shouldn't be
+     * done. {@link #minPeakSize(long)} might be known with more confidence though and it's
+     * recommended to configure it instead.
+     *
+     * <p>In theory, the {@linkplain #minPeakSize(long) minimum peak size} might be less than the
+     * expected size by at most 5% (higher difference is not possible if the expected size is
+     * configured according with the configuration above). If both expected size and minimum peak
+     * size are specified and the latter is less than the former by more than 5% an {@link
+     * IllegalStateException} is thrown when {@link #build()} is called.
+     *
+     * <p>Most often, the minimum peak size should be equal to the expected size (e. g. in the
+     * populate-then-access usage pattern, there is no ground for differentiating the peak and the
+     * expected sizes). Because of this, by default, if the expected size is configured for a
+     * builder and the minimum peak size is not configured, the expected size is used as a
+     * substitute for the minimum peak size.
+     *
+     * <p>When entries are dynamically put into and removed from a SmoothieMap, the minimum peak
+     * size might also be greater than the expected size, if after reaching the peak size
+     * SmoothieMaps are consistently expected to shrink. This might also be the case
+     * when X entries are first inserted into a SmoothieMap and then some entries are removed until
+     * the map reduces to some specific size Y smaller than X.
+     *
+     * @param expectedSize the expected steady-state size of created SmoothieMaps
+     * @return this builder back
+     * @throws IllegalArgumentException if the provided expected size is not positive
+     * @see #unknownExpectedSize()
+     * @see #minPeakSize(long)
+     */
     @CanIgnoreReturnValue
     @Contract("_ -> this")
     public SmoothieMapBuilder<K, V> expectedSize(long expectedSize) {
@@ -258,6 +523,13 @@ public final class SmoothieMapBuilder<K, V> {
         return this;
     }
 
+    /**
+     * Specifies that the expected size of each {@link SmoothieMap} created using this builder is
+     * unknown.
+     *
+     * @return this builder back
+     * @see #expectedSize(long)
+     */
     @CanIgnoreReturnValue
     @Contract(" -> this")
     public SmoothieMapBuilder<K, V> unknownExpectedSize() {
@@ -265,18 +537,58 @@ public final class SmoothieMapBuilder<K, V> {
         return this;
     }
 
+    /**
+     * Specifies the minimum bound of the <i>peak</i> size of each {@link SmoothieMap} created
+     * using this builder. For example, it may be unknown what size the created SmoothieMap will
+     * have after it is fully populated (or reaches "saturation" if entries are dynamically put into
+     * and removed from the map): 1 million entries, or 2 million, or 3 million. But if it known
+     * that under no circumstance the peak size of the map will be less than 1 million, then it
+     * makes sense to configure this bound via this method.
+     *
+     * <p>The default minimum bound for the peak size of created SmoothieMaps is considered unknown,
+     * or 0. However, to configure unknown minimum bound of the peak size (the override a specific
+     * values which may have been once specified for the builder), {@link #unknownMinPeakSize()}
+     * should be called and not this method.
+     *
+     * <p>Calling this method is a performance hint for created SmoothieMap(s) and doesn't affect
+     * the semantics of operations. The configured value may be used to preallocate data structure
+     * when a SmoothieMap is created, so it's better to err towards a value lower than the actual
+     * peak size than towards a value higher than the actual peak size, especially when the
+     * {@linkplain #optimizeFor optimization objective} is set to {@link
+     * OptimizationObjective#LOW_GARBAGE}.
+     *
+     * <p>If the minimum peak size is not configured for a SmoothieMapBuilder, but {@linkplain
+     * #expectedSize(long) expected size} is configured, the minimum peak size of created maps is
+     * assumed to be equal to the expected size, although in some cases it may be about 5% less than
+     * that even if the expected size is configured properly. If this is the case, configure the
+     * minimum peak size along with the expected size explicitly. See the documentation for {@link
+     * #expectedSize(long)} method for more information.
+     *
+     * @param minPeakSize the minimum bound for the peak size of created SmoothieMaps
+     * @return this builder back
+     * @throws IllegalArgumentException if the provided minimum peak size is not positive
+     * @see #unknownMinPeakSize()
+     * @see #expectedSize(long)
+     */
     @CanIgnoreReturnValue
     @Contract("_ -> this")
-    public SmoothieMapBuilder<K, V> minExpectedSize(long minExpectedSize) {
-        checkNonNegative(minExpectedSize, "minimum expected size");
-        this.minExpectedSize = minExpectedSize;
+    public SmoothieMapBuilder<K, V> minPeakSize(long minPeakSize) {
+        checkNonNegative(minPeakSize, "minimum peak size");
+        this.minPeakSize = minPeakSize;
         return this;
     }
 
+    /**
+     * Specifies that the minimum bound of the peak size of each {@link SmoothieMap} created using
+     * this builder is unknown.
+     *
+     * @return this builder back
+     * @see #minPeakSize(long)
+     */
     @CanIgnoreReturnValue
     @Contract(" -> this")
-    public SmoothieMapBuilder<K, V> unknownMinExpectedSize() {
-        this.minExpectedSize = UNKNOWN_SIZE;
+    public SmoothieMapBuilder<K, V> unknownMinPeakSize() {
+        this.minPeakSize = UNKNOWN_SIZE;
         return this;
     }
 
@@ -426,8 +738,8 @@ public final class SmoothieMapBuilder<K, V> {
     }
 
     /* if Supported intermediateSegments */
-    boolean allocateIntermediateSegments() {
-        return allocateIntermediateSegments;
+    boolean allocateIntermediateCapacitySegments() {
+        return allocateIntermediateCapacitySegments;
     }
 
     boolean splitBetweenTwoNewSegments() {
@@ -459,12 +771,27 @@ public final class SmoothieMapBuilder<K, V> {
         return valueEquivalence;
     }
 
+    private void checkSizes() {
+        if (expectedSize == UNKNOWN_SIZE || minPeakSize == UNKNOWN_SIZE) {
+            // Nothing to check
+            return;
+        }
+        if (minPeakSize <
+                (long) ((double) expectedSize * (1.0 - MAX_EXPECTED_SIZE_ERROR_FRACTION))) {
+            throw new IllegalStateException("minPeakSize[" + minPeakSize + "] is less than " +
+                    "expectedSize[" + expectedSize + "] * " +
+                    (1.0 - MAX_EXPECTED_SIZE_ERROR_FRACTION));
+        }
+    }
+
     long expectedSize() {
+        checkSizes();
         return expectedSize;
     }
 
-    long minExpectedSize() {
-        return minExpectedSize;
+    long minPeakSize() {
+        checkSizes();
+        return minPeakSize != UNKNOWN_SIZE ? minPeakSize : expectedSize;
     }
 
     /* if Tracking hashCodeDistribution */

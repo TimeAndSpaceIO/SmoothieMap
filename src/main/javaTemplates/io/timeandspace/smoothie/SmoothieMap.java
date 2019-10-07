@@ -33,7 +33,6 @@ import org.checkerframework.checker.nullness.qual.Nullable;
 import org.checkerframework.common.value.qual.IntRange;
 import org.jetbrains.annotations.Contract;
 
-import java.io.Serializable;
 import java.util.AbstractCollection;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -46,7 +45,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
-import java.util.Objects;
 import java.util.Set;
 import java.util.Spliterator;
 import java.util.Spliterators;
@@ -176,16 +174,26 @@ import static sun.misc.Unsafe.ARRAY_OBJECT_INDEX_SCALE;
 
 /**
  * Unordered {@code Map} with worst {@link #put(Object, Object) put} latencies more than 100 times
- * smaller than in ordinary hash table implementations like {@link HashMap}.
+ * smaller than in ordinary hash table implementations like {@link HashMap} and very low footprint
+ * per entry. SmoothieMap may also operate in the {@linkplain OptimizationObjective#LOW_GARBAGE
+ * "low-garbage"} or the {@linkplain OptimizationObjective#FOOTPRINT "footprint"} modes.
  *
- * <p>{@code SmoothieMap} supports pluggable keys' and values' equivalences, via {@link
- * #keysEqual(Object, Object)}, {@link #keyHashCode(Object)} and {@link #valuesEqual(Object, Object)
- * }, that could be overridden.
+ * <p>SmoothieMap is created using a builder: {@link #newBuilder()
+ * SmoothieMap.newBuilder().build()}. See possible configurations in the documentation for {@link
+ * SmoothieMapBuilder}.
  *
- * <p>Functional additions to the {@code Map} interface, implemented in this class: {@link
- * #sizeAsLong()} ({@code SmoothieMap} maximum size is not limited with Java array maximum size,
- * that is {@code int}-indexed), {@link #containsEntry(Object, Object)}, {@link
- * #forEachWhile(BiPredicate)}, {@link #removeIf(BiPredicate)}.
+ * <p>Unlike {@link HashMap}, but like {@link java.util.concurrent.ConcurrentHashMap} or Guava's
+ * ImmutableMaps, SmoothieMap does <i>not</i> support null key and values. An attempt to put null
+ * key or value, or query null key or value (e. g. via {@link #get(Object) get(null)}), leads to
+ * a {@link NullPointerException}.
+ *
+ * <p>{@code SmoothieMap} supports pluggable keys' and values' equivalences which could be
+ * configured in the builder, via {@link SmoothieMapBuilder#keyEquivalence(Equivalence)} and
+ * {@link SmoothieMapBuilder#valueEquivalence(Equivalence)} methods.
+ *
+ * <p>Functional additions to the {@code Map} interface implemented by SmoothieMap are described
+ * in the documentation for {@link ObjObjMap} interface. It also provides {@link #sizeInBytes()} to
+ * track the footprint of the map.
  *
  * <p><b>Note that this implementation is not synchronized.</b> If multiple threads access a
  * {@code SmoothieMap} concurrently, and at least one of the threads modifies the map structurally,
@@ -197,29 +205,7 @@ import static sun.misc.Unsafe.ARRAY_OBJECT_INDEX_SCALE;
  * <p>If no such object exists, the map should be "wrapped" using the {@link
  * Collections#synchronizedMap Collections.synchronizedMap} method. This is best done at creation
  * time, to prevent accidental unsynchronized access to the map:<pre>
- *   Map m = Collections.synchronizedMap(new SmoothieMap(...));</pre>
- *
- * <p>{@code SmoothieMap} aims to be as close to {@link HashMap} behaviour and contract as possible,
- * to give an ability to be used as a drop-in replacement of {@link HashMap}. In particular:
- * <ul>
- *     <li>Supports {@code null} keys and values.</li>
- *     <li>Implements {@link Serializable} and {@link Cloneable}.</li>
- *     <li>The iterators returned by all of this class's "collection view methods" are <i>fail-fast
- *     </i>: if the map is structurally modified at any time after the iterator is created, in any
- *     way except through the iterator's own {@code remove} method, the iterator will throw a {@link
- *     ConcurrentModificationException}. Thus, in the face of concurrent modification, the iterator
- *     fails quickly and cleanly, rather than risking arbitrary, non-deterministic behavior at an
- *     undetermined time in the future.
- *
- *     <p>Note that the fail-fast behavior of an iterator cannot be guaranteed as it is, generally
- *     speaking, impossible to make any hard guarantees in the presence of unsynchronized concurrent
- *     modification. Fail-fast iterators (and all bulk operations like {@link #forEach(BiConsumer)},
- *     {@link #clear()}, {@link #replaceAll(BiFunction)} etc.) throw {@code
- *     ConcurrentModificationException} on a best-effort basis. Therefore, it would be wrong to
- *     write a program that depended on this exception for its correctness: <i>the fail-fast
- *     behavior of iterators should be used only to detect bugs.</i>
- *     </li>
- * </ul>
+ *   Map m = Collections.synchronizedMap(smoothieMap);</pre>
  *
  * <p>In terms of performance, favor calling bulk methods like {@link #forEach(BiConsumer)} to
  * iterating the {@code SmoothieMap} via {@code Iterator}, including for-each style iterations on
@@ -248,6 +234,13 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
     static final double POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MAX = 0.2;
     static final double POOR_HASH_CODE_DISTRIB__BENIGN_OCCASION__MAX_PROB__MIN = 0.00001;
 
+    /**
+     * Creates a new {@link SmoothieMapBuilder}.
+     *
+     * @param <K> the type of keys in SmoothieMap(s) to be created
+     * @param <V> the type of values in SmoothieMap(s) to be created
+     * @return a new {@link SmoothieMapBuilder}
+     */
     public static <K, V> SmoothieMapBuilder<K, V> newBuilder() {
         return SmoothieMapBuilder.create();
     }
@@ -406,27 +399,27 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
      */
     private static SegmentsArrayLengthAndNumSegments chooseInitialSegmentsArrayLength(
             SmoothieMapBuilder<?, ?> builder) {
-        long minExpectedSize = builder.minExpectedSize();
-        if (minExpectedSize == SmoothieMapBuilder.UNKNOWN_SIZE) {
+        long minPeakSize = builder.minPeakSize();
+        if (minPeakSize == SmoothieMapBuilder.UNKNOWN_SIZE) {
             return new SegmentsArrayLengthAndNumSegments(1, 1);
         }
-        return chooseInitialSegmentsArrayLengthInternal(minExpectedSize);
+        return chooseInitialSegmentsArrayLengthInternal(minPeakSize);
     }
 
     private static SegmentsArrayLengthAndNumSegments chooseInitialSegmentsArrayLengthInternal(
-            long minExpectedSize) {
-        verifyThat(minExpectedSize >= 0);
-        if (minExpectedSize <= SEGMENT_MAX_ALLOC_CAPACITY) {
+            long minPeakSize) {
+        verifyThat(minPeakSize >= 0);
+        if (minPeakSize <= SEGMENT_MAX_ALLOC_CAPACITY) {
             return new SegmentsArrayLengthAndNumSegments(1, 1);
         }
-        if (minExpectedSize <= 2 * SEGMENT_MAX_ALLOC_CAPACITY) {
+        if (minPeakSize <= 2 * SEGMENT_MAX_ALLOC_CAPACITY) {
             return new SegmentsArrayLengthAndNumSegments(2, 2);
         }
-        // TODO something more smart. For example, when minExpectedSize / SEGMENT_MAX_ALLOC_CAPACITY
+        // TODO something more smart. For example, when minPeakSize / SEGMENT_MAX_ALLOC_CAPACITY
         //  is just over a power of two N, it's better to choose initialNumSegments = N / 2,
         //  initialSegmentsArrayLength = N * 2.
         int initialNumSegments = (int) Math.min(MAX_SEGMENTS_ARRAY_LENGTH,
-                LongMath.floorPowerOfTwo(minExpectedSize / SEGMENT_MAX_ALLOC_CAPACITY));
+                LongMath.floorPowerOfTwo(minPeakSize / SEGMENT_MAX_ALLOC_CAPACITY));
         int initialSegmentsArrayLength = (int) Math.min(MAX_SEGMENTS_ARRAY_LENGTH,
                 ((long) initialNumSegments) * 2L);
         return new SegmentsArrayLengthAndNumSegments(
@@ -687,7 +680,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
      */
     SmoothieMap(SmoothieMapBuilder<K, V> builder) {
         /* if Supported intermediateSegments */
-        this.allocateIntermediateSegments = builder.allocateIntermediateSegments();
+        this.allocateIntermediateSegments = builder.allocateIntermediateCapacitySegments();
         this.splitBetweenTwoNewSegments = builder.splitBetweenTwoNewSegments();
         /* endif */
         /* if Flag doShrink */
@@ -716,6 +709,8 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
      * Returns the approximate footprint of this {@code SmoothieMap} instance in the heap of the JVM
      * process, in bytes. Does <i>not</i> include the footprints of the keys and values stored in
      * the {@code SmoothieMap}.
+     *
+     * @return the approximate footprint of this {@code SmoothieMap} proper
      */
     public final long sizeInBytes() {
         return smoothieMapClassSizeInBytes() +
@@ -1298,7 +1293,8 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
 
     @AmortizedPerSegment
     private int isFullCapacitySegmentByIndex(int segmentIndex) {
-        return IsFullCapacitySegmentBitSet.getValue(isFullCapacitySegmentBitSet, (long) segmentIndex);
+        return IsFullCapacitySegmentBitSet.getValue(
+                isFullCapacitySegmentBitSet, (long) segmentIndex);
     }
     /* endif */
 
@@ -1715,6 +1711,9 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         // Reading consistent segment and isFullCapacitySegment values: they reside in different
         // arrays, so to read consistent values the reads are confined between a stamp acquisition
         // and validation, a-la j.u.c.l.StampedLock idiom.
+        // TODO add `Flag intermediateSegments` JPSG generation dimension value and access
+        //  isFullCapacitySegmentBitSet and segmentStructureModStamp conditionally.
+        //  See the doc comment for isFullCapacitySegmentBitSet for more details.
         int segmentStructureModStamp = acquireSegmentStructureModStamp();
         /* endif */
         Object segment = segmentBySegmentLookupBits(hash_segmentLookupBits);
@@ -5312,6 +5311,8 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
      * Returns an iterator over the keys in this SmoothieMap that supports {@link Iterator#remove}
      * operation. This method may be usable because iterator of {@link #keySet()} may not support
      * {@link Iterator#remove}.
+     *
+     * @return a remove-supporting iterator over the keys in this SmoothieMap
      */
     @SuppressWarnings("unused") // Public API method, TODO add tests to make it used
     public Iterator<K> mutableKeyIterator() {
@@ -5452,6 +5453,8 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
      * Returns an iterator over the values in this SmoothieMap that supports {@link Iterator#remove}
      * operation. This method may be usable because iterator of {@link #values()} may not support
      * {@link Iterator#remove}.
+     *
+     * @return a remove-supporting iterator over the values in this SmoothieMap
      */
     @SuppressWarnings("unused") // Public API method, TODO add tests to make it used
     public Iterator<V> mutableValueIterator() {
@@ -5644,6 +5647,8 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
      * Returns an iterator over the entries in this SmoothieMap that supports {@link
      * Iterator#remove} operation. This method may be usable because iterator of {@link #entrySet()}
      * may not support {@link Iterator#remove}.
+     *
+     * @return a remove-supporting iterator over the entries in this SmoothieMap
      */
     @SuppressWarnings({"unused", "WeakerAccess"}) // Public API method, TODO add tests to "use" it
     public Iterator<Map.Entry<K, V>> mutableEntryIterator() {

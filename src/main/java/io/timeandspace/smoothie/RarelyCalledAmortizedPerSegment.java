@@ -28,5 +28,5 @@ package io.timeandspace.smoothie;
  *
  * @see AmortizedPerSegment
  */
-public @interface RarelyCalledAmortizedPerSegment {
+@interface RarelyCalledAmortizedPerSegment {
 }
