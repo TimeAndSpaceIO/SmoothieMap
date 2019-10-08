@@ -1,0 +1,1 @@
+packageSearchIndex = [{"l":"All Packages","url":"allpackages-index.html"},{"l":"io.timeandspace.collect"},{"l":"io.timeandspace.collect.map"},{"l":"io.timeandspace.smoothie"}]
