@@ -18,6 +18,7 @@ plugins {
     id 'checkstyle'
     id 'de.thetaphi.forbiddenapis' version '2.6'
     id 'net.ltgt.errorprone' version '0.8.1'
+    id 'io.freefair.javadoc-links' version '4.1.2'
 }
 
 // The plugin inhibits annotation processing, disabling for now: see
@@ -30,8 +31,8 @@ repositories {
 }
 
 dependencies {
-    api 'org.checkerframework:checker-qual:2.7.0'
-    compileOnly 'org.jetbrains:annotations:16.0.3'
+    api 'org.checkerframework:checker-qual:2.11.1'
+    compileOnly 'org.jetbrains:annotations:17.0.0'
     compileOnly 'com.google.errorprone:error_prone_annotations:2.3.3'
     def autoValueVersion = '1.6.5'
     compileOnly "com.google.auto.value:auto-value-annotations:$autoValueVersion"
@@ -203,7 +204,7 @@ task sourcesJar(type: Jar, dependsOn: classes) {
 
 javadoc {
     options {
-        links 'http://docs.oracle.com/javase/8/docs/api/'
+        links 'https://docs.oracle.com/en/java/javase/11/docs/api/'
         tags = [
                 'apiNote:a:API Note:',
                 'implSpec:a:Implementation Requirements:',
@@ -232,7 +233,7 @@ publishing {
             artifact sourcesJar
             artifact javadocJar
             pom {
-                name = 'SmoothieMap 2'
+                name = 'SmoothieMap'
                 inceptionYear = '2018'
                 description = 'Map implementation with low footprint and no latency spikes'
                 url = 'https://github.com/TimeAndSpaceIO/SmoothieMap'

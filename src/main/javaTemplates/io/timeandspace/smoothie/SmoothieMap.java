@@ -182,10 +182,10 @@ import static sun.misc.Unsafe.ARRAY_OBJECT_INDEX_SCALE;
  * SmoothieMap.newBuilder().build()}. See possible configurations in the documentation for {@link
  * SmoothieMapBuilder}.
  *
- * <p>Unlike {@link HashMap}, but like {@link java.util.concurrent.ConcurrentHashMap} or Guava's
- * ImmutableMaps, SmoothieMap does <i>not</i> support null key and values. An attempt to put null
- * key or value, or query null key or value (e. g. via {@link #get(Object) get(null)}), leads to
- * a {@link NullPointerException}.
+ * <p>Unlike {@link HashMap}, but like {@link java.util.concurrent.ConcurrentHashMap}, {@code
+ * Map.of()} immutable Maps, and Guava's ImmutableMaps, SmoothieMap does <i>not</i> support null key
+ * and values. An attempt to put null key or value, or query null key or value (e. g. via {@link
+ * #get(Object) get(null)}), leads to a {@link NullPointerException}.
  *
  * <p>{@code SmoothieMap} supports pluggable keys' and values' equivalences which could be
  * configured in the builder, via {@link SmoothieMapBuilder#keyEquivalence(Equivalence)} and
@@ -241,6 +241,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
      * @param <V> the type of values in SmoothieMap(s) to be created
      * @return a new {@link SmoothieMapBuilder}
      */
+    @Contract(value = " -> new", pure = true)
     public static <K, V> SmoothieMapBuilder<K, V> newBuilder() {
         return SmoothieMapBuilder.create();
     }

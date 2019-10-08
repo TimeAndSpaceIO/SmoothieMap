@@ -541,7 +541,7 @@ public interface ObjObjMap<K, V> extends Map<K, V> {
      * true. {@code hashCode()} on the entry set is the same as on the map itself, see {@link
      * #hashCode()}.
      *
-     * <p>The entry set does not support the {@code Set#add} and {@link Set#addAll} operations.
+     * <p>The entry set does not support the {@link Set#add} and {@link Set#addAll} operations.
      *
      * <p>The set is created the first time this method is called, and returned in response to all
      * subsequent calls. No synchronization is performed, so there is a slight chance that multiple

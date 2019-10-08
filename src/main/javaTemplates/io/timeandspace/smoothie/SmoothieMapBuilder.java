@@ -54,7 +54,7 @@ public final class SmoothieMapBuilder<K, V> {
     private static final double MAX_EXPECTED_SIZE_ERROR_FRACTION = 0.05;
 
     @Contract(value = " -> new", pure = true)
-    public static <K, V> SmoothieMapBuilder<K, V> create() {
+    static <K, V> SmoothieMapBuilder<K, V> create() {
         return new SmoothieMapBuilder<>();
     }
 
