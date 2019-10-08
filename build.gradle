@@ -19,6 +19,7 @@ plugins {
     id 'de.thetaphi.forbiddenapis' version '2.6'
     id 'net.ltgt.errorprone' version '0.8.1'
     id 'io.freefair.javadoc-links' version '4.1.2'
+    id 'org.ajoberstar.git-publish' version '2.1.1'
 }
 
 // The plugin inhibits annotation processing, disabling for now: see
@@ -204,6 +205,7 @@ task sourcesJar(type: Jar, dependsOn: classes) {
 
 javadoc {
     options {
+        use = true
         links 'https://docs.oracle.com/en/java/javase/11/docs/api/'
         tags = [
                 'apiNote:a:API Note:',
@@ -285,6 +287,17 @@ publishing {
     signing {
         required { isReleaseVersion && gradle.taskGraph.hasTask('publish') }
         sign publishing.publications.mavenJava
+    }
+}
+
+gitPublish {
+    repoUri = 'git@github.com:TimeAndSpaceIO/SmoothieMap.git'
+    branch = 'gh-pages'
+    contents {
+        from 'src/pages'
+        from(javadoc) {
+            into 'api'
+        }
     }
 }
 
