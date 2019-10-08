@@ -4,6 +4,11 @@ install: true
 jdk:
   - openjdk11
 
+env:
+  # For Github Pages publishing
+  - GRGIT_USER=leventov
+  - GRGIT_PASS=$GITHUB_API_TOKEN
+
 script:
   - ./gradlew build gitPublishPush
 
