@@ -10,7 +10,7 @@ env:
     - secure: Cde2MZD5IVIxhFZjFvDTxWyatDEpCqaEd8HZ4tWJ8JMfzbKTmnheQn8q+jJ2JdBAaaull9HzdO9POsI7NRf2ULipF90MsLmwC/JWW5FVMZGIeLRau+aTee7GkHFC7fw/XnbZ5m3mkYtyP1RkNGkqAtepS87U2Pd4Nm1nohRDjLYupxGAMlQqa6o87ULyvFX86SfquC2Zdb8UWmVEknvWiT/iyDeTQ/5oD88QYB/hhgZNrTm+XD/GSkQSob682hYW99cz1ul5hmno0btArwEkClgGtmgY14oAfa59DATTucOCkm47rBs4Xyxl0agMXo/tq5zCntjhrOUSwZrPdFcNZ2iSQWGNbOUjbKTDdKtQV+gcHBXKTy4Sw1f/Jbm8r4RudvcDHm3v7jaBZ76drnucaREOQoz5nPOZe4CKlSV1Vr/gQlSjNIK5GK2BNvUgSjLsfCpXzliHeVjfjqODtQwHBJoHygmBKqiVsrPopfTN2ASXTTtoEQLBE3AVRdqFTLf1ro2mm5zFF8dWXz+4bfO+u1+Ao2s4KWPcj4DQu1FPS1Lfiv7Lwc+RsAX+kEC4EMJ/4fIcFB4YD9KbQozYHCuuOyjIhcSWrNfEFw4DWUDgm2fWgeW9SEC0eRxZ/9s7Ki+pmAo1aF16pc07sbxfrgSi7ZSsp4CG1VViuofASZSATmo=
 
 script:
-  - ./gradlew build gitPublishPush
+  - ./gradlew build
 
 before_cache:
   - rm -f  $HOME/.gradle/caches/modules-2/modules-2.lock
