@@ -379,7 +379,7 @@ final class ContinuousSegments {
                     // lowestFreeAllocIndex(), because it's ensured that fitInAllocCapacity is less
                     // than allocCapacity in a guard condition above.
                     if (newAllocIndex >= fitInAllocCapacity) {
-                        throw cmeDuringCompactEntries();
+                        throw cmeDuringCompactEntries(newAllocIndex, fitInAllocCapacity);
                     }
                     // First calling setLowestAllocBit() and then clearAllocBit() leads to less
                     // data dependencies than if these methods were called in the reverse order.
@@ -408,8 +408,10 @@ final class ContinuousSegments {
          * #compactEntriesDuringSegmentSwap} which is called from {@link #swapContentsDuringSplit}
          * which is called from {@link SmoothieMap#doSplit}.
          */
-        private static ConcurrentModificationException cmeDuringCompactEntries() {
-            return new ConcurrentModificationException();
+        private static ConcurrentModificationException cmeDuringCompactEntries(
+                int newAllocIndex, int fitInAllocCapacity) {
+            return new ConcurrentModificationException("newAllocIndex: " + newAllocIndex + ", " +
+                    "fitInAllocCapacity: " + fitInAllocCapacity);
         }
 
         @RarelyCalledAmortizedPerSegment

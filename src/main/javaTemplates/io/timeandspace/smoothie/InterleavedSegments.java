@@ -1669,7 +1669,8 @@ final class InterleavedSegments {
                 // Can happen if entries are inserted into fullCapacitySegment (see the code of
                 // swapContentsDuringSplit()) concurrently with doSplit(), including concurrently
                 // with swapContentsDuringSplit() which is called from doSplit().
-                throw new ConcurrentModificationException();
+                throw new ConcurrentModificationException(
+                        "insertionAllocIndex: " + insertionAllocIndex);
             }
 
             // Write the new data slot into the segment's hash table.

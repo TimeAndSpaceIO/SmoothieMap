@@ -46,7 +46,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
-import java.util.Objects;
 import java.util.Set;
 import java.util.Spliterator;
 import java.util.Spliterators;
@@ -1256,7 +1255,9 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
                 // access to an array.
                 updateSegmentLookupMask(newSegments.length);
             } else {
-                throw new ConcurrentModificationException();
+                throw new ConcurrentModificationException(
+                        "oldSegments.length: " + oldSegments.length +
+                        ", requiredSegmentsArrayLength: " + requiredSegmentsArrayLength);
             }
         }
         finally {
@@ -1566,9 +1567,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         // modCount field directly) to make the modCount check more robust in the face of operation
         // reorderings performed by the JVM.
         int actualModCount = getModCountOpaque();
-        if (expectedModCount != actualModCount) {
-            throw new ConcurrentModificationException();
-        }
+        Utils.checkModCount(expectedModCount, actualModCount);
     }
 
     private static boolean isLockedSegmentStructureModStamp(int stamp) {
@@ -4502,7 +4501,9 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
                         // Hash table overflow is possible if there are put operations
                         // concurrent with this doShrinkInto() operation, or there is a racing
                         // doShrinkInto() operation.
-                        throw new ConcurrentModificationException();
+                        throw new ConcurrentModificationException(
+                                "intoSegment_allocIndex: " + intoSegment_allocIndex +
+                                ", intoSegment_allocCapacity: " + intoSegment_allocCapacity);
                     }
 
                     byte tag = (byte) tagBits(hash);
@@ -4642,7 +4643,9 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
                     if (intoSegment_allocIndex >= intoSegment_allocCapacity) {
                         // This is possible if entries are added to the inflated segment
                         // concurrently with the deflation.
-                        throw new ConcurrentModificationException();
+                        throw new ConcurrentModificationException(
+                                "intoSegment_allocIndex: " + intoSegment_allocIndex +
+                                ", intoSegment_allocCapacity: " + intoSegment_allocCapacity);
                     }
 
                     byte tag = (byte) tagBits(hash);
@@ -5895,9 +5898,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
 
         @HotPath
         final void checkModCount() {
-            if (expectedModCount != smoothie.modCount) {
-                throw new ConcurrentModificationException();
-            }
+            Utils.checkModCount(expectedModCount, smoothie.modCount);
         }
 
         @RarelyCalledAmortizedPerSegment
@@ -6318,9 +6319,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         @Override
         public V setValue(V value) {
             checkNonNull(value);
-            if (modCountCopy != smoothie.modCount) {
-                throw new ConcurrentModificationException();
-            }
+            Utils.checkModCount(modCountCopy, smoothie.modCount);
             Segment<K, V> segment = this.segment;
             int allocIndex = this.allocIndex;
             checkAllocIndex(segment, (long) allocIndex);
@@ -6518,7 +6517,8 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
             long bitSetAndState = getBitSetAndState(segment);
             int allocCapacity = allocCapacity(bitSetAndState);
             if (allocIndex >= (long) allocCapacity) {
-                throw new ConcurrentModificationException();
+                throw new ConcurrentModificationException(
+                        "allocIndex: " + allocIndex + ", allocCapacity: " + allocCapacity);
             }
         }
 
