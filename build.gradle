@@ -57,7 +57,7 @@ dependencies {
 }
 
 group = 'io.timeandspace'
-version = '2.1-SNAPSHOT'
+version = '2.0.2'
 description = 'SmoothieMap'
 sourceCompatibility = '1.8'
 
