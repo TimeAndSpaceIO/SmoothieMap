@@ -4507,6 +4507,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
                                 ", intoSegment_allocCapacity: " + intoSegment_allocCapacity);
                     }
 
+                    this.modCount++;
                     byte tag = (byte) tagBits(hash);
                     writeEntry(intoSegment,
                             /* if Interleaved segments Supported intermediateSegments */

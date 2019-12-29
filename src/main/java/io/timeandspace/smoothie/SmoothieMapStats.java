@@ -37,6 +37,10 @@ final class SmoothieMapStats {
     @Nullable OrdinarySegmentStats @Nullable [][] ordinarySegmentStatsPerOrderAndNumFullSlots =
             new OrdinarySegmentStats[MAX_SEGMENTS_ARRAY_ORDER + 1][];
 
+    int getNumAggregatedSegments() {
+        return numAggregatedSegments;
+    }
+
     int getNumInflatedSegments() {
         return numInflatedSegments;
     }
