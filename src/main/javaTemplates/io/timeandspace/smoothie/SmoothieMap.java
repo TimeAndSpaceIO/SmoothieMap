@@ -1681,7 +1681,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
 
     @Override
     public final boolean containsKey(Object key) {
-        // TODO specialize to avoid access into value's memory: see [Protecting null comparisons].
+        // TODO specialize to avoid access into value's memory: see [If-enabled null comparison].
         return getInternalKey(key) != null;
     }
 
@@ -1692,7 +1692,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         //noinspection ObjectEquality: identity comparision is intended
         boolean valuesIdentical = internalVal == value;
         // Avoiding `internalVal != null` check before valuesIdentical check for the same reason as
-        // [Protecting null comparisons].
+        // [If-enabled null comparison].
         return valuesIdentical || (internalVal != null && valuesEqual(value, internalVal));
     }
 
@@ -1700,7 +1700,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
     public final V getOrDefault(Object key, V defaultValue) {
         @Nullable V internalVal = get(key);
         // TODO specialize or implement get as getOrDefault(null) to avoid access into value's
-        //  memory: see [Protecting null comparisons].
+        //  memory: see [If-enabled null comparison].
         return internalVal != null ? internalVal : defaultValue;
     }
 
@@ -1747,7 +1747,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         /* endif */
 
         // TODO `== value` may be better than `!= null` (if the method also returns the
-        //  corresponding object) for the same reason as [Protecting null comparisons]. Or, the
+        //  corresponding object) for the same reason as [If-enabled null comparison]. Or, the
         //  method should be specialized. However, `== value` may not be possible due to the current
         //  contract of removeImpl(): see InflatedSegmentQueryContext.removeOrReplaceEntry().
         return removeImpl(segment,
@@ -1798,7 +1798,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         /* endif */
 
         // TODO `== oldValue` may be better than `!= null` (if the method also returns the
-        //  corresponding object) for the same reason as [Protecting null comparisons]. Or, the
+        //  corresponding object) for the same reason as [If-enabled null comparison]. Or, the
         //  method should be specialized. However, `== oldValue` may not be possible due to the
         //  current contract of replaceImpl(): see
         //  InflatedSegmentQueryContext.removeOrReplaceEntry().
@@ -2322,7 +2322,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
                     //noinspection ObjectEquality: identity comparision is intended
                     boolean valuesIdentical = internalVal == matchValue;
                     // Avoiding `matchValue == null` check before valuesIdentical check for the same
-                    // reason as [Protecting null comparisons].
+                    // reason as [If-enabled null comparison].
                     if (valuesIdentical || matchValue == null ||
                             valuesEqual(matchValue, internalVal)) {
                         // [Reusing local variable]
@@ -2487,7 +2487,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
                     //noinspection ObjectEquality: identity comparision is intended
                     boolean valuesIdentical = internalVal == matchValue;
                     // Avoiding `matchValue == null` check before valuesIdentical check for the same
-                    // reason as [Protecting null comparisons].
+                    // reason as [If-enabled null comparison].
                     if (valuesIdentical || matchValue == null ||
                             valuesEqual(matchValue, internalVal)) {
                         writeValueAtOffset(segment, allocOffset, replacementValue);
@@ -5182,7 +5182,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
         @Override
         public boolean remove(Object key) {
             // TODO specialize to avoid access into value's memory: see
-            //  [Protecting null comparisons].
+            //  [If-enabled null comparison].
             return smoothie.remove(key) != null;
         }
 
@@ -6472,11 +6472,11 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
             /* if Enabled extraChecks */assert segment != null;/* endif */
             //noinspection unchecked
             K key = (K) U.getObject(segment, allocOffset);
-            /* if Enabled extraConcurrencyChecks */
-            // Protecting null comparisons: comparisons of objects with nulls leads to access into
+            // If-enabled null comparison: comparisons of objects with nulls leads to access into
             // object's memory at least with some GC algorithms on Hotspot, which is wasteful if
             // the queried key is the same object as stored inside the SmoothieMap.
             // TODO research with which GCs this is the case
+            /* if Enabled extraConcurrencyChecks */
             if (key == null) {
                 throw new ConcurrentModificationException();
             }
@@ -6539,8 +6539,8 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
                     , isFullCapacitySegment/* endif */);
             //noinspection unchecked
             K key = (K) U.getObject(segment, allocOffset);
+            // [If-enabled null comparison]
             /* if Enabled extraConcurrencyChecks */
-            // [Protecting null comparisons]
             if (key == null) {
                 // Concurrent segment modification or an inflated segment: key may be null not only
                 // because of concurrent modification (entry deletion) in the segment, but also
@@ -6558,7 +6558,7 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
             //noinspection unchecked
             V value = (V) U.getObject(segment, valueOffsetFromAllocOffset(allocOffset));
             /* if Enabled extraConcurrencyChecks */
-            // [Protecting null comparisons]
+            // [If-enabled null comparison]
             if (value == null) {
                 throw new ConcurrentModificationException();
             }
@@ -6576,8 +6576,8 @@ public class SmoothieMap<K, V> implements ObjObjMap<K, V> {
                     , isFullCapacitySegment/* endif */);
             //noinspection unchecked
             V value = (V) U.getObject(segment, valueOffsetFromAllocOffset(allocOffset));
+            // [If-enabled null comparison]
             /* if Enabled extraConcurrencyChecks */
-            // [Protecting null comparisons]
             if (value == null) {
                 // [Concurrent segment modification or an inflated segment]
                 throw new ConcurrentModificationException();
