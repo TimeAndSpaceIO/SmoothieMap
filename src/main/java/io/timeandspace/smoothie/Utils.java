@@ -91,6 +91,14 @@ final class Utils {
         return obj;
     }
 
+    static void checkModCount(int expectedModCount, int actualModCount) {
+        if (expectedModCount != actualModCount) {
+            throw new ConcurrentModificationException(
+                    "expectedModCount: " + expectedModCount +
+                            ", actualModCount: " + actualModCount);
+        }
+    }
+
     @CanIgnoreReturnValue
     @Contract(value = "null -> fail; !null -> param1", pure = true)
     static <T> T verifyNonNull(@Nullable T obj) {

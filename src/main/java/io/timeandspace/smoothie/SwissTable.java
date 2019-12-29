@@ -24,7 +24,6 @@ import java.nio.ByteOrder;
 import java.util.AbstractMap;
 import java.util.Arrays;
 import java.util.ConcurrentModificationException;
-import java.util.Objects;
 import java.util.Set;
 
 import static io.timeandspace.smoothie.SmoothieMap.LONG_PHI_MAGIC;
@@ -473,8 +472,6 @@ public final class SwissTable<K, V> extends AbstractMap<K, V> {
             }
         }
 
-        if (this.modCount != modCount) {
-            throw new ConcurrentModificationException();
-        }
+        Utils.checkModCount(modCount, this.modCount);
     }
 }
